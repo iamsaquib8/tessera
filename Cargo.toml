@@ -1,6 +1,6 @@
 [package]
 name = "tessera-codegraph"
-version = "0.2.0"
+version = "0.2.1"
 edition = "2021"
 authors = ["Saquib <saquibulhassan6@gmail.com>"]
 description = "A local semantic code graph and MCP server for AI coding agents. Personalized PageRank impact, hallucination validator, incremental indexing."
@@ -42,13 +42,18 @@ serde_json = "1.0"
 sha2 = "0.10"
 strsim = "0.11"
 tempfile = "3.13"
-tree-sitter = "0.20"
-tree-sitter-go = "0.20"
-tree-sitter-java = "0.20"
-tree-sitter-javascript = "0.20"
-tree-sitter-python = "0.20"
-tree-sitter-rust = "0.20"
-tree-sitter-typescript = "0.20"
+# tree-sitter-rust 0.20.1+ declares `tree-sitter = ">= 0.20"` (no upper
+# bound), which lets fresh resolution pull tree-sitter 0.26 alongside our
+# 0.20 line. We pin to =0.20.0 (whose declared dep is the proper bounded
+# `tree-sitter = "0.20"`) to keep the workspace on a single tree-sitter
+# major. Same idea for the other grammars — bounded majors only.
+tree-sitter = ">=0.20, <0.21"
+tree-sitter-go = ">=0.20, <0.21"
+tree-sitter-java = ">=0.20, <0.21"
+tree-sitter-javascript = ">=0.20, <0.21"
+tree-sitter-python = ">=0.20, <0.21"
+tree-sitter-rust = "=0.20.0"
+tree-sitter-typescript = ">=0.20, <0.21"
 walkdir = "2.5"
 
 [dev-dependencies]
