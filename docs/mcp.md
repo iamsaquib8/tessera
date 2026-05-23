@@ -73,6 +73,21 @@ Returns `{ exists, bloom_hit, candidates }`. Used to catch hallucinated identifi
 
 Parses the snippet with the same Tree-sitter pipeline used by `index` and validates every call against the graph. Returns per-call resolution plus near-miss suggestions for unresolved calls.
 
+### `search`
+
+```json
+{
+  "pattern": "*Repository*",
+  "kinds": ["class", "interface"],
+  "languages": ["java"],
+  "exported": true,
+  "path_prefix": "consumer/",
+  "limit": 50
+}
+```
+
+Fuzzy / `*`-glob search across indexed symbols, filterable by kind, language, exported, and path prefix. Use this instead of running `grep -r` + reading files when looking up a symbol whose exact name you don't remember.
+
 ### `stats`
 
 ```json

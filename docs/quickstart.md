@@ -26,6 +26,9 @@ tessera impact findById
 tessera validate findByIdd
 tessera tests-for findById
 tessera stats
+tessera search '*Repository*' --kind class --language java
+tessera search parseFrom --language java
+tessera search 'init*' --kind method --exported
 ```
 
 Validate a snippet (stdin):

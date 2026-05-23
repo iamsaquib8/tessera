@@ -382,6 +382,79 @@ fn snapshot_command_writes_file() {
 }
 
 #[test]
+fn search_filters_by_kind_language_path() {
+    let temp = TempDir::new().unwrap();
+    write_sample(&temp);
+    let db = temp.path().join(".tessera/search.db");
+    Command::cargo_bin("tessera")
+        .unwrap()
+        .args([
+            "index",
+            temp.path().to_str().unwrap(),
+            "--db",
+            db.to_str().unwrap(),
+            "--full",
+        ])
+        .assert()
+        .success();
+
+    // Glob: every `*User*` symbol across languages.
+    Command::cargo_bin("tessera")
+        .unwrap()
+        .args(["search", "*User*", "--db", db.to_str().unwrap()])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("UserCard").and(predicate::str::contains("UserList")));
+
+    // Kind filter: only methods.
+    Command::cargo_bin("tessera")
+        .unwrap()
+        .args([
+            "search",
+            "User",
+            "--kind",
+            "method",
+            "--db",
+            db.to_str().unwrap(),
+            "--json",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::function(|out: &str| {
+            // Every hit should report kind=method.
+            let v: serde_json::Value = serde_json::from_str(out).unwrap();
+            let hits = v["hits"].as_array().unwrap();
+            !hits.is_empty()
+                && hits
+                    .iter()
+                    .all(|h| h["symbol"]["kind"].as_str() == Some("method"))
+        }));
+
+    // Language filter: only java.
+    Command::cargo_bin("tessera")
+        .unwrap()
+        .args([
+            "search",
+            "find",
+            "--language",
+            "java",
+            "--db",
+            db.to_str().unwrap(),
+            "--json",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::function(|out: &str| {
+            let v: serde_json::Value = serde_json::from_str(out).unwrap();
+            let hits = v["hits"].as_array().unwrap();
+            !hits.is_empty()
+                && hits
+                    .iter()
+                    .all(|h| h["symbol"]["language"].as_str() == Some("java"))
+        }));
+}
+
+#[test]
 fn validate_snippet_detects_unresolved_calls() {
     let temp = TempDir::new().unwrap();
     write_sample(&temp);

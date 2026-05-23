@@ -48,10 +48,11 @@ Per-query latency  ·  median of 3 runs
 cargo install tessera-codegraph
 ```
 
-## Three commands
+## Four commands
 
 ```sh
 tessera index .                          # index your repo into .tessera/tessera.db
+tessera search '*Repository*' --kind class --language java  # kill the grep spiral
 tessera impact findById                  # transitive callers, ranked by PageRank
 tessera validate findByIdd               # "did the model hallucinate this?" — yes; meant findById (0.98)
 ```
@@ -131,7 +132,7 @@ tessera impact findById --json | jq '.callers[0] | {symbol: .symbol.qualified_na
 
 Index once per repo (or in a post-clone hook); the MCP server picks up the snapshot automatically.
 
-**Exposed tools:** `find_definition` · `find_references` · `get_outline` · `expand_symbol` · `impact` · `validate` · `validate_snippet` · `stats` · `tests_for`. Schemas in [docs/mcp.md](docs/mcp.md).
+**Exposed tools:** `find_definition` · `find_references` · `get_outline` · `expand_symbol` · `impact` · `validate` · `validate_snippet` · `search` · `stats` · `tests_for`. Schemas in [docs/mcp.md](docs/mcp.md).
 
 ## Use as a Rust library
 

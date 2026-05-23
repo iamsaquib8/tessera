@@ -46,8 +46,8 @@ pub use types::{
     AlternativeQuery, BenchQuery, BenchResult, BenchSavings, CriticalityBreakdown,
     DefinitionResult, ExpandResult, GraphEngineKind, ImpactCaller, ImpactResult, KindCount,
     Language, LanguageCount, OutlineResult, QueryMeta, ReferenceRecord, ReferencesResult,
-    SnippetReferenceCheck, StatsResult, SymbolRecord, SymbolSuggestion, TestsForResult, TopFanout,
-    ValidateResult, ValidateSnippetResult,
+    SearchHit, SearchOptions, SearchResult, SnippetReferenceCheck, StatsResult, SymbolRecord,
+    SymbolSuggestion, TestsForResult, TopFanout, ValidateResult, ValidateSnippetResult,
 };
 
 /// High-level handle to a Tessera index. Holds a single SQLite connection and,
@@ -122,5 +122,9 @@ impl Index {
 
     pub fn tests_for(&self, symbol: &str) -> Result<TestsForResult> {
         query::tests_for_conn(&self.conn, symbol)
+    }
+
+    pub fn search(&self, pattern: &str, options: SearchOptions) -> Result<SearchResult> {
+        query::search_conn(&self.conn, pattern, options)
     }
 }

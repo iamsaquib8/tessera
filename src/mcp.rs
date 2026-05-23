@@ -8,7 +8,7 @@ use serde_json::{json, Value};
 
 use crate::db;
 use crate::query;
-use crate::types::Language;
+use crate::types::{Language, SearchOptions};
 
 #[derive(Debug, Deserialize)]
 struct JsonRpcRequest {
@@ -157,6 +157,29 @@ fn call_tool(
             let symbol = arg_string(&args, "symbol")?;
             serde_json::to_value(query::tests_for_conn(conn, &symbol).map_err(to_string)?)
         }
+        "search" => {
+            let pattern = arg_string(&args, "pattern")?;
+            let kinds = string_array(&args, "kinds");
+            let languages = string_array(&args, "languages");
+            let exported = args.get("exported").and_then(Value::as_bool);
+            let path_prefix = args
+                .get("path_prefix")
+                .and_then(Value::as_str)
+                .map(ToOwned::to_owned);
+            let limit = args
+                .get("limit")
+                .and_then(Value::as_u64)
+                .map(|n| n as usize)
+                .unwrap_or(50);
+            let options = SearchOptions {
+                kinds,
+                languages,
+                exported,
+                path_prefix,
+                limit,
+            };
+            serde_json::to_value(query::search_conn(conn, &pattern, options).map_err(to_string)?)
+        }
         _ => return Err(format!("unknown tool: {name}")),
     }
     .map_err(to_string)?;
@@ -177,6 +200,17 @@ fn arg_string(args: &Value, key: &str) -> std::result::Result<String, String> {
         .and_then(Value::as_str)
         .map(ToOwned::to_owned)
         .ok_or_else(|| format!("argument `{key}` is required"))
+}
+
+fn string_array(args: &Value, key: &str) -> Vec<String> {
+    args.get(key)
+        .and_then(Value::as_array)
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(ToOwned::to_owned))
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 fn tools() -> Value {
@@ -265,6 +299,22 @@ fn tools() -> Value {
                 "type": "object",
                 "properties": { "symbol": { "type": "string" } },
                 "required": ["symbol"]
+            }
+        },
+        {
+            "name": "search",
+            "description": "Fuzzy / glob search across indexed symbols. Supports `*` wildcards and substring/identifier matching. Filterable by kind, language, exported, and path prefix. Use this instead of running grep + read on file contents.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "pattern": { "type": "string", "description": "Substring, identifier, or `glob*` pattern" },
+                    "kinds": { "type": "array", "items": { "type": "string" } },
+                    "languages": { "type": "array", "items": { "type": "string" } },
+                    "exported": { "type": "boolean" },
+                    "path_prefix": { "type": "string" },
+                    "limit": { "type": "integer", "minimum": 1, "maximum": 500 }
+                },
+                "required": ["pattern"]
             }
         }
     ])

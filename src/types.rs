@@ -377,6 +377,56 @@ impl Display for ValidateSnippetResult {
     }
 }
 
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct SearchOptions {
+    /// Restrict to these symbol kinds (function, method, class, struct, …).
+    /// Empty means "any".
+    pub kinds: Vec<String>,
+    /// Restrict to these languages (typescript, java, …). Empty means "any".
+    pub languages: Vec<String>,
+    /// `Some(true)` = only exported; `Some(false)` = only non-exported.
+    pub exported: Option<bool>,
+    /// Match symbols whose file path starts with this prefix.
+    pub path_prefix: Option<String>,
+    /// Maximum number of hits to return.
+    pub limit: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SearchHit {
+    pub symbol: SymbolRecord,
+    pub score: f32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SearchResult {
+    pub query: String,
+    pub hits: Vec<SearchHit>,
+    pub meta: QueryMeta,
+}
+
+impl Display for SearchResult {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if self.hits.is_empty() {
+            writeln!(f, "No symbols matched {:?}.", self.query)?;
+        } else {
+            writeln!(f, "Search for {:?} ({} hits)", self.query, self.hits.len())?;
+            for hit in &self.hits {
+                writeln!(
+                    f,
+                    "  {:>4.2}  {:<9} {:<40} {}:{}",
+                    hit.score,
+                    hit.symbol.kind,
+                    hit.symbol.qualified_name,
+                    hit.symbol.path,
+                    hit.symbol.start_line
+                )?;
+            }
+        }
+        write_meta(f, &self.meta)
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StatsResult {
     pub files: usize,

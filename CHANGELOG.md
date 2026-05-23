@@ -2,6 +2,16 @@
 
 All notable changes to Tessera will be documented here.
 
+## 0.2.2 - 2026-05-24
+
+### Added
+- New `search` tool (CLI + MCP + library): fuzzy + `*`-glob search across indexed symbols, filterable by `--kind`, `--language`, `--exported`, and `--path` prefix. Closes the symbol-name "spiral find" loop without needing embeddings.
+  ```sh
+  tessera search '*Repository*' --kind class,interface --language java
+  tessera search parseFrom
+  tessera search 'init*' --kind method --exported
+  ```
+
 ## 0.2.1 - 2026-05-24
 
 ### Fixed

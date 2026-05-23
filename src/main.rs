@@ -10,7 +10,7 @@ use tessera_codegraph::indexer::{self, IndexOptions};
 use tessera_codegraph::mcp;
 use tessera_codegraph::query;
 use tessera_codegraph::snapshot;
-use tessera_codegraph::types::{GraphEngineKind, Language};
+use tessera_codegraph::types::{GraphEngineKind, Language, SearchOptions};
 
 #[derive(Debug, Parser)]
 #[command(name = "tessera")]
@@ -150,6 +150,32 @@ enum Commands {
         #[arg(long)]
         json: bool,
     },
+    /// Fuzzy / glob search across indexed symbols, filterable by kind,
+    /// language, exported, and path prefix.
+    Search {
+        /// Substring, identifier, or `glob*` pattern.
+        pattern: String,
+        /// Filter by symbol kind (function, method, class, struct, …).
+        /// Repeat or comma-separate to allow multiple.
+        #[arg(long, value_delimiter = ',')]
+        kind: Vec<String>,
+        /// Filter by language (typescript, java, python, …).
+        #[arg(long, value_delimiter = ',')]
+        language: Vec<String>,
+        /// Only show exported symbols (`--exported`) or only non-exported
+        /// (`--exported=false`).
+        #[arg(long, num_args = 0..=1, default_missing_value = "true")]
+        exported: Option<bool>,
+        /// Match symbols whose file path starts with this prefix.
+        #[arg(long)]
+        path: Option<String>,
+        #[arg(long, default_value_t = 50)]
+        limit: usize,
+        #[arg(long, default_value = ".tessera/tessera.db")]
+        db: PathBuf,
+        #[arg(long)]
+        json: bool,
+    },
     /// Return the minimal set of tests whose call graph touches the symbol.
     TestsFor {
         symbol: String,
@@ -271,6 +297,25 @@ fn main() -> Result<()> {
         }
         Commands::TestsFor { symbol, db, json } => {
             print_result(query::tests_for(&db, &symbol)?, json)?;
+        }
+        Commands::Search {
+            pattern,
+            kind,
+            language,
+            exported,
+            path,
+            limit,
+            db,
+            json,
+        } => {
+            let options = SearchOptions {
+                kinds: kind,
+                languages: language,
+                exported,
+                path_prefix: path,
+                limit,
+            };
+            print_result(query::search(&db, &pattern, options)?, json)?;
         }
         Commands::Bench {
             path,

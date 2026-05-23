@@ -13,8 +13,9 @@ use crate::indexer;
 use crate::types::{
     AlternativeQuery, CriticalityBreakdown, DefinitionResult, ExpandResult, ImpactCaller,
     ImpactResult, KindCount, Language, LanguageCount, OutlineResult, QueryMeta, ReferenceRecord,
-    ReferencesResult, SnippetReferenceCheck, StatsResult, SymbolRecord, SymbolSuggestion,
-    TestsForResult, TopFanout, ValidateResult, ValidateSnippetResult,
+    ReferencesResult, SearchHit, SearchOptions, SearchResult, SnippetReferenceCheck, StatsResult,
+    SymbolRecord, SymbolSuggestion, TestsForResult, TopFanout, ValidateResult,
+    ValidateSnippetResult,
 };
 
 // ─── Connection-based public API ─────────────────────────────────────────────
@@ -520,6 +521,63 @@ pub fn stats_conn(conn: &Connection, db_path: &Path) -> Result<StatsResult> {
     })
 }
 
+pub fn search_conn(
+    conn: &Connection,
+    pattern: &str,
+    options: SearchOptions,
+) -> Result<SearchResult> {
+    let limit = options.limit.clamp(1, 500);
+
+    // Two query modes:
+    //   - if the pattern has `*`, treat it as a glob → SQL LIKE
+    //   - otherwise fuzzy via FTS5 trigram + Jaro-Winkler
+    let candidates: Vec<SymbolRecord> = if pattern.contains('*') {
+        glob_symbol_matches(conn, pattern, limit.saturating_mul(4).max(50))?
+    } else if pattern.is_empty() {
+        list_symbols(conn, limit.saturating_mul(4).max(50))?
+    } else {
+        fuzzy_symbol_matches(conn, pattern, limit.saturating_mul(4).max(50))?
+    };
+
+    let mut hits: Vec<SearchHit> = candidates
+        .into_iter()
+        .filter(|s| options.kinds.is_empty() || options.kinds.contains(&s.kind))
+        .filter(|s| options.languages.is_empty() || options.languages.contains(&s.language))
+        .filter(|s| options.exported.is_none_or(|e| s.exported == e))
+        .filter(|s| {
+            options
+                .path_prefix
+                .as_deref()
+                .is_none_or(|prefix| s.path.starts_with(prefix))
+        })
+        .map(|s| {
+            let score = if pattern.is_empty() {
+                0.0
+            } else if pattern.contains('*') {
+                glob_score(pattern, &s.name).max(glob_score(pattern, &s.qualified_name))
+            } else {
+                jaro_winkler(pattern, &s.qualified_name).max(jaro_winkler(pattern, &s.name)) as f32
+            };
+            SearchHit { symbol: s, score }
+        })
+        .collect();
+
+    hits.sort_by(|a, b| {
+        b.score
+            .partial_cmp(&a.score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| a.symbol.qualified_name.cmp(&b.symbol.qualified_name))
+    });
+    hits.truncate(limit);
+
+    let tokens = estimate_tokens(&hits).max(40);
+    Ok(SearchResult {
+        query: pattern.to_string(),
+        hits,
+        meta: meta(tokens, "find_definition", 320, 0.7),
+    })
+}
+
 pub fn tests_for_conn(conn: &Connection, symbol: &str) -> Result<TestsForResult> {
     // Walk callers transitively until we either find a test-path caller or exhaust
     // a small depth budget. We collect any caller whose file path looks like a test.
@@ -606,6 +664,11 @@ pub fn stats(db_path: &Path) -> Result<StatsResult> {
 pub fn tests_for(db_path: &Path, symbol: &str) -> Result<TestsForResult> {
     let conn = db::open(db_path)?;
     tests_for_conn(&conn, symbol)
+}
+
+pub fn search(db_path: &Path, pattern: &str, options: SearchOptions) -> Result<SearchResult> {
+    let conn = db::open(db_path)?;
+    search_conn(&conn, pattern, options)
 }
 
 pub fn shell(db_path: &Path) -> Result<()> {
@@ -830,6 +893,67 @@ fn escape_fts_term(term: &str) -> String {
     term.chars()
         .filter(|c| c.is_ascii_alphanumeric() || *c == '_')
         .collect()
+}
+
+fn glob_symbol_matches(
+    conn: &Connection,
+    pattern: &str,
+    limit: usize,
+) -> Result<Vec<SymbolRecord>> {
+    // Translate `*` → SQL `%`; escape SQL wildcards in the literal part.
+    let like = pattern
+        .replace('\\', "\\\\")
+        .replace('%', "\\%")
+        .replace('_', "\\_")
+        .replace('*', "%");
+    let mut stmt = conn.prepare(
+        "
+        SELECT s.id, s.name, s.qualified_name, s.kind, s.file_id, f.path, f.language,
+               s.start_line, s.end_line, s.signature, s.exported
+        FROM symbols s
+        JOIN files f ON f.id = s.file_id
+        WHERE s.name LIKE ?1 ESCAPE '\\' OR s.qualified_name LIKE ?1 ESCAPE '\\'
+        ORDER BY length(s.qualified_name), s.qualified_name
+        LIMIT ?2
+        ",
+    )?;
+    let rows = stmt.query_map(params![like, limit as i64], db::map_symbol)?;
+    Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+}
+
+fn list_symbols(conn: &Connection, limit: usize) -> Result<Vec<SymbolRecord>> {
+    let mut stmt = conn.prepare(
+        "
+        SELECT s.id, s.name, s.qualified_name, s.kind, s.file_id, f.path, f.language,
+               s.start_line, s.end_line, s.signature, s.exported
+        FROM symbols s
+        JOIN files f ON f.id = s.file_id
+        ORDER BY s.qualified_name
+        LIMIT ?1
+        ",
+    )?;
+    let rows = stmt.query_map(params![limit as i64], db::map_symbol)?;
+    Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+}
+
+fn glob_score(pattern: &str, name: &str) -> f32 {
+    // Convert pattern to a simple SQL LIKE → boolean match; assign a heuristic
+    // score so shorter qualified names sort first within a glob hit set.
+    let lp = pattern.to_lowercase();
+    let ln = name.to_lowercase();
+    let head = lp.trim_start_matches('*');
+    let tail = head.trim_end_matches('*');
+    let stripped = tail.trim_matches('*');
+    if stripped.is_empty() {
+        return 0.5;
+    }
+    if ln == stripped {
+        return 1.0;
+    }
+    if ln.contains(stripped) {
+        return 0.85;
+    }
+    0.5
 }
 
 fn is_test_path(path: &str) -> bool {
