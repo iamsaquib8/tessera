@@ -19,7 +19,7 @@
 
 `tessera bench --path .` runs against any repo and prints the chart below. The harness ships in the binary — every number here is reproducible.
 
-### 951-file Java service (browserstack/observability-pipeline)
+### 951-file Java Service
 
 ```
 Tessera v0.3.1 bench
@@ -41,7 +41,7 @@ Per-query latency  ·  median of 3 runs
   validate             1 ms     ~    48 tokens
 ```
 
-### 1,063-file Node.js service (browserstack/testhub, CommonJS)
+### 1,063-file Node.js service
 
 ```
 Tessera v0.3.1 bench
