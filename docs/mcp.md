@@ -88,6 +88,54 @@ Parses the snippet with the same Tree-sitter pipeline used by `index` and valida
 
 Fuzzy / `*`-glob search across indexed symbols, filterable by kind, language, exported, and path prefix. Use this instead of running `grep -r` + reading files when looking up a symbol whose exact name you don't remember.
 
+### `context_pack`
+
+```json
+{ "symbol": "findById", "budget": 1500 }
+```
+
+Returns `{ symbol, body, dependency_signatures, caller_signatures, tests }` token-budgeted. Replaces 3-5 round trips an agent makes to "understand" a symbol before editing it. Body is clipped to ~40 % of the budget; dependency and caller signatures (no bodies) fill the rest; tests trim to fit.
+
+### `diff_impact`
+
+```json
+{ "from": "origin/main", "to": "HEAD", "depth": 3 }
+```
+
+Shells out to `git diff -U0`, maps changed hunks to indexed symbols, and runs PageRank impact on each. Single tool call answers "what does this PR break?" — returns the changed symbols plus the top impacted callers, deduplicated and ranked by criticality.
+
+### `imports`
+
+```json
+{ "path": "src/users.ts" }
+```
+
+List imports / uses / requires declared in a file. Path can be a directory prefix.
+
+### `imported_by`
+
+```json
+{ "source": "./users" }
+```
+
+Inverse of `imports`: list files that import a given module / source path. Substring-match, so `./users` finds importers of `./users.ts`, `./users/index.ts`, etc.
+
+### `signature`
+
+```json
+{ "symbol": "UserService" }
+```
+
+Returns just the signature plus, for container kinds (class / struct / interface / trait / enum / record / impl / module), the signatures of nested members. No bodies — vastly cheaper than `expand_symbol` when the agent only needs the shape.
+
+### `siblings`
+
+```json
+{ "symbol": "findById" }
+```
+
+Symbols that share callers with the target, ranked by overlap count. Useful for finding the cluster of related abstractions to refactor together.
+
 ### `stats`
 
 ```json

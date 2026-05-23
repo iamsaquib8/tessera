@@ -119,6 +119,13 @@ pub struct IndexedSymbol {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IndexedImport {
+    pub source: String,
+    pub line: usize,
+    pub kind: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IndexedReference {
     pub symbol_name: String,
     pub from_qualified_name: Option<String>,
@@ -371,6 +378,260 @@ impl Display for ValidateSnippetResult {
                         candidate.qualified_name, candidate.confidence
                     )?;
                 }
+            }
+        }
+        write_meta(f, &self.meta)
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ContextPack {
+    pub symbol: Option<SymbolRecord>,
+    pub body: Option<String>,
+    pub dependency_signatures: Vec<SignatureLine>,
+    pub caller_signatures: Vec<SignatureLine>,
+    pub tests: Vec<SymbolRecord>,
+    pub budget_tokens: usize,
+    pub meta: QueryMeta,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SignatureLine {
+    pub qualified_name: String,
+    pub kind: String,
+    pub path: String,
+    pub line: usize,
+    pub signature: String,
+}
+
+impl Display for ContextPack {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let Some(symbol) = &self.symbol else {
+            return writeln!(f, "No symbol found.");
+        };
+        writeln!(
+            f,
+            "{} {} at {}:{} (budget ~{} tokens)",
+            symbol.kind, symbol.qualified_name, symbol.path, symbol.start_line, self.budget_tokens
+        )?;
+        if let Some(body) = &self.body {
+            writeln!(f, "\n# body\n{body}")?;
+        }
+        if !self.dependency_signatures.is_empty() {
+            writeln!(f, "\n# dependencies")?;
+            for sig in &self.dependency_signatures {
+                writeln!(f, "  {} @ {}:{}", sig.qualified_name, sig.path, sig.line)?;
+                if !sig.signature.is_empty() {
+                    writeln!(f, "    {}", sig.signature)?;
+                }
+            }
+        }
+        if !self.caller_signatures.is_empty() {
+            writeln!(f, "\n# callers")?;
+            for sig in &self.caller_signatures {
+                writeln!(f, "  {} @ {}:{}", sig.qualified_name, sig.path, sig.line)?;
+                if !sig.signature.is_empty() {
+                    writeln!(f, "    {}", sig.signature)?;
+                }
+            }
+        }
+        if !self.tests.is_empty() {
+            writeln!(f, "\n# tests")?;
+            for test in &self.tests {
+                writeln!(
+                    f,
+                    "  {} @ {}:{}",
+                    test.qualified_name, test.path, test.start_line
+                )?;
+            }
+        }
+        write_meta(f, &self.meta)
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DiffImpactResult {
+    pub from_ref: String,
+    pub to_ref: String,
+    pub changed_files: usize,
+    pub changed_symbols: Vec<DiffChangedSymbol>,
+    pub impacted: Vec<DiffImpactedSymbol>,
+    pub meta: QueryMeta,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DiffChangedSymbol {
+    pub symbol: SymbolRecord,
+    pub added_lines: usize,
+    pub removed_lines: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DiffImpactedSymbol {
+    pub symbol: SymbolRecord,
+    pub via: String,
+    pub criticality: f32,
+}
+
+impl Display for DiffImpactResult {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        writeln!(
+            f,
+            "Diff impact {}..{}  ·  {} changed files, {} changed symbols, {} impacted",
+            self.from_ref,
+            self.to_ref,
+            self.changed_files,
+            self.changed_symbols.len(),
+            self.impacted.len()
+        )?;
+        if !self.changed_symbols.is_empty() {
+            writeln!(f, "\n# changed")?;
+            for c in &self.changed_symbols {
+                writeln!(
+                    f,
+                    "  +{:>3} -{:<3} {} @ {}:{}",
+                    c.added_lines,
+                    c.removed_lines,
+                    c.symbol.qualified_name,
+                    c.symbol.path,
+                    c.symbol.start_line
+                )?;
+            }
+        }
+        if !self.impacted.is_empty() {
+            writeln!(f, "\n# impacted callers (top {})", self.impacted.len())?;
+            for i in &self.impacted {
+                writeln!(
+                    f,
+                    "  score {:>5.1}  {} (via {}) @ {}:{}",
+                    i.criticality,
+                    i.symbol.qualified_name,
+                    i.via,
+                    i.symbol.path,
+                    i.symbol.start_line
+                )?;
+            }
+        }
+        write_meta(f, &self.meta)
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ImportRecord {
+    pub source: String,
+    pub from_path: String,
+    pub line: usize,
+    pub kind: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ImportsResult {
+    pub path: String,
+    pub imports: Vec<ImportRecord>,
+    pub meta: QueryMeta,
+}
+
+impl Display for ImportsResult {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if self.imports.is_empty() {
+            writeln!(f, "No imports under {}.", self.path)?;
+        } else {
+            writeln!(f, "Imports for {}", self.path)?;
+            for imp in &self.imports {
+                writeln!(f, "  {} ({}) @ line {}", imp.source, imp.kind, imp.line)?;
+            }
+        }
+        write_meta(f, &self.meta)
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ImportedByResult {
+    pub source: String,
+    pub importers: Vec<ImportRecord>,
+    pub meta: QueryMeta,
+}
+
+impl Display for ImportedByResult {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if self.importers.is_empty() {
+            writeln!(f, "Nothing imports {}.", self.source)?;
+        } else {
+            writeln!(
+                f,
+                "{} is imported by ({}):",
+                self.source,
+                self.importers.len()
+            )?;
+            for imp in &self.importers {
+                writeln!(f, "  {} @ line {}", imp.from_path, imp.line)?;
+            }
+        }
+        write_meta(f, &self.meta)
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SignatureResult {
+    pub symbol: Option<SymbolRecord>,
+    pub members: Vec<SignatureLine>,
+    pub meta: QueryMeta,
+}
+
+impl Display for SignatureResult {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let Some(symbol) = &self.symbol else {
+            return writeln!(f, "No symbol found.");
+        };
+        writeln!(
+            f,
+            "{} {} @ {}:{}",
+            symbol.kind, symbol.qualified_name, symbol.path, symbol.start_line
+        )?;
+        if !symbol.signature.is_empty() {
+            writeln!(f, "  {}", symbol.signature)?;
+        }
+        if !self.members.is_empty() {
+            writeln!(f, "  members:")?;
+            for m in &self.members {
+                writeln!(f, "    {:<9} {}", m.kind, m.signature)?;
+            }
+        }
+        write_meta(f, &self.meta)
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SiblingsResult {
+    pub symbol: String,
+    pub siblings: Vec<Sibling>,
+    pub meta: QueryMeta,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Sibling {
+    pub qualified_name: String,
+    pub shared_callers: usize,
+    pub path: Option<String>,
+    pub line: Option<usize>,
+}
+
+impl Display for SiblingsResult {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if self.siblings.is_empty() {
+            writeln!(f, "No siblings found for {}.", self.symbol)?;
+        } else {
+            writeln!(f, "Siblings of {} (by shared callers)", self.symbol)?;
+            for s in &self.siblings {
+                let where_ = match (&s.path, s.line) {
+                    (Some(p), Some(l)) => format!("{p}:{l}"),
+                    _ => "—".to_string(),
+                };
+                writeln!(
+                    f,
+                    "  {:>3}  {} @ {}",
+                    s.shared_callers, s.qualified_name, where_
+                )?;
             }
         }
         write_meta(f, &self.meta)

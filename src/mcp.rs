@@ -157,6 +157,48 @@ fn call_tool(
             let symbol = arg_string(&args, "symbol")?;
             serde_json::to_value(query::tests_for_conn(conn, &symbol).map_err(to_string)?)
         }
+        "context_pack" => {
+            let symbol = arg_string(&args, "symbol")?;
+            let budget = args
+                .get("budget")
+                .and_then(Value::as_u64)
+                .map(|n| n as usize)
+                .unwrap_or(1500);
+            serde_json::to_value(
+                query::context_pack_conn(conn, &symbol, budget).map_err(to_string)?,
+            )
+        }
+        "diff_impact" => {
+            let from = arg_string(&args, "from")?;
+            let to = args
+                .get("to")
+                .and_then(Value::as_str)
+                .map(ToOwned::to_owned);
+            let depth = args
+                .get("depth")
+                .and_then(Value::as_u64)
+                .map(|n| n as usize)
+                .unwrap_or(3);
+            serde_json::to_value(
+                query::diff_impact_conn(conn, &from, to.as_deref(), depth).map_err(to_string)?,
+            )
+        }
+        "imports" => {
+            let path = arg_string(&args, "path")?;
+            serde_json::to_value(query::imports_conn(conn, &path).map_err(to_string)?)
+        }
+        "imported_by" => {
+            let source = arg_string(&args, "source")?;
+            serde_json::to_value(query::imported_by_conn(conn, &source).map_err(to_string)?)
+        }
+        "signature" => {
+            let symbol = arg_string(&args, "symbol")?;
+            serde_json::to_value(query::signature_conn(conn, &symbol).map_err(to_string)?)
+        }
+        "siblings" => {
+            let symbol = arg_string(&args, "symbol")?;
+            serde_json::to_value(query::siblings_conn(conn, &symbol).map_err(to_string)?)
+        }
         "search" => {
             let pattern = arg_string(&args, "pattern")?;
             let kinds = string_array(&args, "kinds");
@@ -295,6 +337,67 @@ fn tools() -> Value {
         {
             "name": "tests_for",
             "description": "Return the minimal set of tests whose call graph transitively touches the given symbol.",
+            "inputSchema": {
+                "type": "object",
+                "properties": { "symbol": { "type": "string" } },
+                "required": ["symbol"]
+            }
+        },
+        {
+            "name": "context_pack",
+            "description": "Bundle a symbol's body + immediate-dep signatures + top caller signatures + relevant tests into a single token-budgeted response. Replaces 3-5 round trips an agent would otherwise make to prep an edit.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "symbol": { "type": "string" },
+                    "budget": { "type": "integer", "minimum": 200, "maximum": 8000, "description": "Approximate token budget for the entire response. Default 1500." }
+                },
+                "required": ["symbol"]
+            }
+        },
+        {
+            "name": "diff_impact",
+            "description": "Given a git ref range, return the symbols that changed plus the PageRank-impacted callers downstream. The PR-review token saver.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "from": { "type": "string", "description": "Base ref (e.g. main, origin/main, HEAD~3)" },
+                    "to": { "type": "string", "description": "Tip ref. Defaults to HEAD." },
+                    "depth": { "type": "integer", "minimum": 1, "maximum": 6 }
+                },
+                "required": ["from"]
+            }
+        },
+        {
+            "name": "imports",
+            "description": "List the imports declared in a file or directory (use, import, require, etc.).",
+            "inputSchema": {
+                "type": "object",
+                "properties": { "path": { "type": "string" } },
+                "required": ["path"]
+            }
+        },
+        {
+            "name": "imported_by",
+            "description": "List files that import a given module / source path. Inverse of `imports`.",
+            "inputSchema": {
+                "type": "object",
+                "properties": { "source": { "type": "string" } },
+                "required": ["source"]
+            }
+        },
+        {
+            "name": "signature",
+            "description": "Ultra-cheap signature lookup. For class/struct/interface/trait/enum/record/impl, also returns child member signatures (no bodies).",
+            "inputSchema": {
+                "type": "object",
+                "properties": { "symbol": { "type": "string" } },
+                "required": ["symbol"]
+            }
+        },
+        {
+            "name": "siblings",
+            "description": "Symbols that share callers with the target, ranked by overlap count. Useful for finding the cluster of related abstractions to refactor together.",
             "inputSchema": {
                 "type": "object",
                 "properties": { "symbol": { "type": "string" } },

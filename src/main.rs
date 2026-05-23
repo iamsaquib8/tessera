@@ -176,6 +176,64 @@ enum Commands {
         #[arg(long)]
         json: bool,
     },
+    /// Bundle body + dep signatures + caller signatures + tests for an agent
+    /// to "understand" a symbol in one tool call.
+    ContextPack {
+        symbol: String,
+        /// Token budget (default 1500).
+        #[arg(long, default_value_t = 1500)]
+        budget: usize,
+        #[arg(long, default_value = ".tessera/tessera.db")]
+        db: PathBuf,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Map a git range to changed symbols + their PageRank-impacted callers.
+    DiffImpact {
+        /// Base git ref (e.g. `main`, `origin/main`, `HEAD~5`).
+        from: String,
+        /// Tip ref (defaults to `HEAD`).
+        #[arg(long)]
+        to: Option<String>,
+        #[arg(long, default_value_t = 3)]
+        depth: usize,
+        #[arg(long, default_value = ".tessera/tessera.db")]
+        db: PathBuf,
+        #[arg(long)]
+        json: bool,
+    },
+    /// List the imports declared in a file or directory.
+    Imports {
+        path: String,
+        #[arg(long, default_value = ".tessera/tessera.db")]
+        db: PathBuf,
+        #[arg(long)]
+        json: bool,
+    },
+    /// List files that import a given module / source path.
+    ImportedBy {
+        source: String,
+        #[arg(long, default_value = ".tessera/tessera.db")]
+        db: PathBuf,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Return just the signature (and, for containers, member signatures) of a symbol.
+    Signature {
+        symbol: String,
+        #[arg(long, default_value = ".tessera/tessera.db")]
+        db: PathBuf,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Symbols that share callers with the target — the cluster to refactor together.
+    Siblings {
+        symbol: String,
+        #[arg(long, default_value = ".tessera/tessera.db")]
+        db: PathBuf,
+        #[arg(long)]
+        json: bool,
+    },
     /// Return the minimal set of tests whose call graph touches the symbol.
     TestsFor {
         symbol: String,
@@ -297,6 +355,35 @@ fn main() -> Result<()> {
         }
         Commands::TestsFor { symbol, db, json } => {
             print_result(query::tests_for(&db, &symbol)?, json)?;
+        }
+        Commands::ContextPack {
+            symbol,
+            budget,
+            db,
+            json,
+        } => {
+            print_result(query::context_pack(&db, &symbol, budget)?, json)?;
+        }
+        Commands::DiffImpact {
+            from,
+            to,
+            depth,
+            db,
+            json,
+        } => {
+            print_result(query::diff_impact(&db, &from, to.as_deref(), depth)?, json)?;
+        }
+        Commands::Imports { path, db, json } => {
+            print_result(query::imports(&db, &path)?, json)?;
+        }
+        Commands::ImportedBy { source, db, json } => {
+            print_result(query::imported_by(&db, &source)?, json)?;
+        }
+        Commands::Signature { symbol, db, json } => {
+            print_result(query::signature(&db, &symbol)?, json)?;
+        }
+        Commands::Siblings { symbol, db, json } => {
+            print_result(query::siblings(&db, &symbol)?, json)?;
         }
         Commands::Search {
             pattern,

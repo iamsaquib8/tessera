@@ -29,6 +29,12 @@ tessera stats
 tessera search '*Repository*' --kind class --language java
 tessera search parseFrom --language java
 tessera search 'init*' --kind method --exported
+tessera context-pack findById --budget 1500
+tessera diff-impact origin/main
+tessera imports src/users.ts
+tessera imported-by ./users
+tessera signature UserService
+tessera siblings findById
 ```
 
 Validate a snippet (stdin):

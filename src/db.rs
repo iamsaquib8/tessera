@@ -4,9 +4,11 @@ use std::path::Path;
 use anyhow::Result;
 use rusqlite::{params, Connection, OptionalExtension};
 
-use crate::types::{IndexedReference, IndexedSymbol, Language, ReferenceRecord, SymbolRecord};
+use crate::types::{
+    IndexedImport, IndexedReference, IndexedSymbol, Language, ReferenceRecord, SymbolRecord,
+};
 
-pub const SCHEMA_VERSION: i64 = 2;
+pub const SCHEMA_VERSION: i64 = 3;
 
 pub fn open(path: &Path) -> Result<Connection> {
     if let Some(parent) = path.parent() {
@@ -29,6 +31,7 @@ pub fn reset(conn: &Connection) -> Result<()> {
     // large tables; for v0.2's repo sizes the cost is irrelevant.
     conn.execute_batch(
         "
+        DELETE FROM imports;
         DELETE FROM edges;
         DELETE FROM refs;
         DELETE FROM symbols;
@@ -103,6 +106,17 @@ fn migrate(conn: &Connection) -> Result<()> {
 
         CREATE INDEX IF NOT EXISTS idx_edges_to ON edges(to_symbol_name);
         CREATE INDEX IF NOT EXISTS idx_edges_from ON edges(from_symbol_id);
+
+        CREATE TABLE IF NOT EXISTS imports (
+            id INTEGER PRIMARY KEY,
+            file_id INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,
+            source TEXT NOT NULL,
+            line INTEGER NOT NULL,
+            kind TEXT NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_imports_file ON imports(file_id);
+        CREATE INDEX IF NOT EXISTS idx_imports_source ON imports(source);
         ",
     )?;
 
@@ -265,6 +279,16 @@ pub fn find_symbol_id(
     .map_err(Into::into)
 }
 
+pub fn insert_imports(conn: &Connection, file_id: i64, imports: &[IndexedImport]) -> Result<usize> {
+    for imp in imports {
+        conn.execute(
+            "INSERT INTO imports(file_id, source, line, kind) VALUES (?1, ?2, ?3, ?4)",
+            params![file_id, imp.source, imp.line as i64, imp.kind],
+        )?;
+    }
+    Ok(imports.len())
+}
+
 pub fn insert_references(
     conn: &Connection,
     file_id: i64,
@@ -349,6 +373,14 @@ pub fn symbol_callers_count(conn: &Connection, symbol_name: &str) -> Result<usiz
         |row| row.get::<_, i64>(0),
     )
     .map(|count| count as usize)
+    .map_err(Into::into)
+}
+
+pub fn count_imports(conn: &Connection) -> Result<usize> {
+    conn.query_row("SELECT COUNT(*) FROM imports", [], |row| {
+        row.get::<_, i64>(0)
+    })
+    .map(|c| c as usize)
     .map_err(Into::into)
 }
 

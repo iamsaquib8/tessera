@@ -2,6 +2,22 @@
 
 All notable changes to Tessera will be documented here.
 
+## 0.3.0 - 2026-05-24
+
+Six new token-saver tools, all in one release. Each replaces a multi-tool-call workflow with a single bounded response — the biggest single drop in agent token usage since v0.2.
+
+### Added
+- **`context_pack(symbol, budget?)`** — bundle a symbol's body + immediate-dep signatures + top caller signatures + relevant tests into one token-budgeted response. Replaces the 3-5 round trips an agent makes to "understand" a symbol before editing it.
+- **`diff_impact(from, to?, depth?)`** — shell out to `git diff -U0`, map changed hunks to symbols, run PageRank impact, aggregate. Single tool call answers "what does this PR break?".
+- **`imports(path)`** — list imports/uses/requires declared in a file or directory.
+- **`imported_by(source)`** — inverse: list files that import a given module / source path.
+- **`signature(symbol)`** — ultra-cheap signature lookup. For class/struct/interface/trait/enum/record/impl, also returns child member signatures (no bodies).
+- **`siblings(symbol)`** — symbols that share callers with the target, ranked by overlap count. Novel signal: find the cluster of related abstractions to refactor together.
+
+### Changed
+- Schema bumped to **version 3**: new `imports` table populated during indexing. JS/TS/TSX extract both ES6 `import_statement` *and* CommonJS `require('./foo')` / dynamic `import('./foo')`. Python (`import_statement`/`import_from_statement`), Go (`import_spec`), Rust (`use_declaration`), and Java (`import_declaration`) also extract imports.
+- Existing DBs are migrated automatically on next open — the new `imports` table is added in `migrate()`. Running `tessera index .` (incremental) backfills imports for changed files; `--full` backfills the whole repo.
+
 ## 0.2.2 - 2026-05-24
 
 ### Added

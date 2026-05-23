@@ -455,6 +455,175 @@ fn search_filters_by_kind_language_path() {
 }
 
 #[test]
+fn context_pack_bundles_body_deps_callers() {
+    let temp = TempDir::new().unwrap();
+    write_sample(&temp);
+    let db = temp.path().join(".tessera/ctx.db");
+    Command::cargo_bin("tessera")
+        .unwrap()
+        .args([
+            "index",
+            temp.path().to_str().unwrap(),
+            "--db",
+            db.to_str().unwrap(),
+            "--full",
+        ])
+        .assert()
+        .success();
+
+    Command::cargo_bin("tessera")
+        .unwrap()
+        .args([
+            "context-pack",
+            "findById",
+            "--db",
+            db.to_str().unwrap(),
+            "--json",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::function(|out: &str| {
+            let v: serde_json::Value = serde_json::from_str(out).unwrap();
+            v["symbol"]["name"] == "findById"
+                && v["body"].is_string()
+                && v["caller_signatures"].is_array()
+        }));
+}
+
+#[test]
+fn imports_and_imported_by_track_module_graph() {
+    let temp = TempDir::new().unwrap();
+    fs::write(
+        temp.path().join("util.ts"),
+        "export function help() { return 1; }\n",
+    )
+    .unwrap();
+    fs::write(
+        temp.path().join("app.ts"),
+        r#"import { help } from "./util";
+
+export function run() {
+    return help();
+}
+"#,
+    )
+    .unwrap();
+
+    let db = temp.path().join(".tessera/imp.db");
+    Command::cargo_bin("tessera")
+        .unwrap()
+        .args([
+            "index",
+            temp.path().to_str().unwrap(),
+            "--db",
+            db.to_str().unwrap(),
+            "--full",
+        ])
+        .assert()
+        .success();
+
+    Command::cargo_bin("tessera")
+        .unwrap()
+        .args(["imports", "app.ts", "--db", db.to_str().unwrap()])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("./util"));
+
+    Command::cargo_bin("tessera")
+        .unwrap()
+        .args(["imported-by", "./util", "--db", db.to_str().unwrap()])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("app.ts"));
+}
+
+#[test]
+fn signature_lists_class_members() {
+    let temp = TempDir::new().unwrap();
+    write_sample(&temp);
+    let db = temp.path().join(".tessera/sig.db");
+    Command::cargo_bin("tessera")
+        .unwrap()
+        .args([
+            "index",
+            temp.path().to_str().unwrap(),
+            "--db",
+            db.to_str().unwrap(),
+            "--full",
+        ])
+        .assert()
+        .success();
+
+    Command::cargo_bin("tessera")
+        .unwrap()
+        .args([
+            "signature",
+            "UserService",
+            "--db",
+            db.to_str().unwrap(),
+            "--json",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::function(|out: &str| {
+            let v: serde_json::Value = serde_json::from_str(out).unwrap();
+            let members = v["members"].as_array().unwrap();
+            !members.is_empty()
+                && members
+                    .iter()
+                    .any(|m| m["qualified_name"].as_str() == Some("UserService.findById"))
+        }));
+}
+
+#[test]
+fn siblings_finds_shared_caller_cluster() {
+    let temp = TempDir::new().unwrap();
+    fs::write(
+        temp.path().join("lib.ts"),
+        r#"export function a() { return 1; }
+export function b() { return 2; }
+export function c() { return 3; }
+
+export function callerOne() {
+    return a() + b();
+}
+
+export function callerTwo() {
+    return a() + b() + c();
+}
+"#,
+    )
+    .unwrap();
+
+    let db = temp.path().join(".tessera/sib.db");
+    Command::cargo_bin("tessera")
+        .unwrap()
+        .args([
+            "index",
+            temp.path().to_str().unwrap(),
+            "--db",
+            db.to_str().unwrap(),
+            "--full",
+        ])
+        .assert()
+        .success();
+
+    // a and b share both callers → top sibling for a should be b.
+    Command::cargo_bin("tessera")
+        .unwrap()
+        .args(["siblings", "a", "--db", db.to_str().unwrap(), "--json"])
+        .assert()
+        .success()
+        .stdout(predicate::function(|out: &str| {
+            let v: serde_json::Value = serde_json::from_str(out).unwrap();
+            let sibs = v["siblings"].as_array().unwrap();
+            sibs.iter().any(|s| {
+                s["qualified_name"].as_str() == Some("b") && s["shared_callers"].as_u64() == Some(2)
+            })
+        }));
+}
+
+#[test]
 fn validate_snippet_detects_unresolved_calls() {
     let temp = TempDir::new().unwrap();
     write_sample(&temp);

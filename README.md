@@ -48,12 +48,13 @@ Per-query latency  ·  median of 3 runs
 cargo install tessera-codegraph
 ```
 
-## Four commands
+## Five commands to start
 
 ```sh
 tessera index .                          # index your repo into .tessera/tessera.db
+tessera context-pack findById            # body + deps + callers + tests in one budgeted bundle
+tessera diff-impact origin/main          # "what does this branch break?" — changed symbols + PageRank-impacted callers
 tessera search '*Repository*' --kind class --language java  # kill the grep spiral
-tessera impact findById                  # transitive callers, ranked by PageRank
 tessera validate findByIdd               # "did the model hallucinate this?" — yes; meant findById (0.98)
 ```
 
@@ -126,7 +127,7 @@ cd path/to/your/repo
 tessera index .
 ```
 
-**Exposed tools** (all of them, in every client below): `find_definition` · `find_references` · `get_outline` · `expand_symbol` · `impact` · `validate` · `validate_snippet` · `search` · `stats` · `tests_for`. Schemas in [docs/mcp.md](docs/mcp.md).
+**Exposed tools** (all of them, in every client below): `find_definition` · `find_references` · `get_outline` · `expand_symbol` · `impact` · `context_pack` · `diff_impact` · `imports` · `imported_by` · `signature` · `siblings` · `search` · `validate` · `validate_snippet` · `tests_for` · `stats`. Schemas in [docs/mcp.md](docs/mcp.md).
 
 ### Claude Code
 

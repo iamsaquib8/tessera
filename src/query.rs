@@ -11,9 +11,11 @@ use crate::bloom::BloomFilter;
 use crate::db;
 use crate::indexer;
 use crate::types::{
-    AlternativeQuery, CriticalityBreakdown, DefinitionResult, ExpandResult, ImpactCaller,
-    ImpactResult, KindCount, Language, LanguageCount, OutlineResult, QueryMeta, ReferenceRecord,
-    ReferencesResult, SearchHit, SearchOptions, SearchResult, SnippetReferenceCheck, StatsResult,
+    AlternativeQuery, ContextPack, CriticalityBreakdown, DefinitionResult, DiffChangedSymbol,
+    DiffImpactResult, DiffImpactedSymbol, ExpandResult, ImpactCaller, ImpactResult, ImportRecord,
+    ImportedByResult, ImportsResult, KindCount, Language, LanguageCount, OutlineResult, QueryMeta,
+    ReferenceRecord, ReferencesResult, SearchHit, SearchOptions, SearchResult, Sibling,
+    SiblingsResult, SignatureLine, SignatureResult, SnippetReferenceCheck, StatsResult,
     SymbolRecord, SymbolSuggestion, TestsForResult, TopFanout, ValidateResult,
     ValidateSnippetResult,
 };
@@ -521,6 +523,449 @@ pub fn stats_conn(conn: &Connection, db_path: &Path) -> Result<StatsResult> {
     })
 }
 
+pub fn context_pack_conn(
+    conn: &Connection,
+    symbol: &str,
+    budget_tokens: usize,
+) -> Result<ContextPack> {
+    let budget = if budget_tokens == 0 {
+        1500
+    } else {
+        budget_tokens
+    };
+    // Budget allocation: roughly 40% body, 20% deps, 25% callers, 15% tests.
+    let body_budget = budget * 4 / 10;
+    let deps_budget = budget * 2 / 10;
+    let callers_budget = budget * 25 / 100;
+    let tests_budget = budget.saturating_sub(body_budget + deps_budget + callers_budget);
+
+    let Some(target) = db::resolve_symbol(conn, symbol)? else {
+        return Ok(ContextPack {
+            symbol: None,
+            body: None,
+            dependency_signatures: Vec::new(),
+            caller_signatures: Vec::new(),
+            tests: Vec::new(),
+            budget_tokens: budget,
+            meta: meta(40, "find_definition", 120, 0.6),
+        });
+    };
+
+    // Body — clipped to body_budget tokens.
+    let raw_body = read_symbol_body(conn, &target).ok();
+    let body = raw_body.map(|b| clip_to_token_budget(&b, body_budget));
+
+    // Dependency signatures — outgoing refs from this symbol, dedup + resolve to defining symbols.
+    let mut dep_lines: Vec<SignatureLine> = Vec::new();
+    {
+        let mut stmt = conn.prepare(
+            "
+            SELECT DISTINCT r.symbol_name FROM refs r
+            WHERE r.from_symbol_id = ?1
+            LIMIT 80
+            ",
+        )?;
+        let names = stmt
+            .query_map(params![target.id], |row| row.get::<_, String>(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        for name in names {
+            if let Some(sym) = db::resolve_symbol(conn, &name)? {
+                dep_lines.push(SignatureLine {
+                    qualified_name: sym.qualified_name.clone(),
+                    kind: sym.kind.clone(),
+                    path: sym.path.clone(),
+                    line: sym.start_line,
+                    signature: sym.signature.clone(),
+                });
+            }
+        }
+    }
+    trim_signature_lines(&mut dep_lines, deps_budget);
+
+    // Caller signatures — direct callers (depth-1 of impact).
+    let mut caller_lines: Vec<SignatureLine> = Vec::new();
+    for caller in callers_for_symbol(conn, &target.qualified_name, 60)? {
+        caller_lines.push(SignatureLine {
+            qualified_name: caller.qualified_name,
+            kind: caller.kind,
+            path: caller.path,
+            line: caller.start_line,
+            signature: caller.signature,
+        });
+    }
+    if caller_lines.is_empty() && target.qualified_name != target.name {
+        for caller in callers_for_symbol(conn, &target.name, 60)? {
+            caller_lines.push(SignatureLine {
+                qualified_name: caller.qualified_name,
+                kind: caller.kind,
+                path: caller.path,
+                line: caller.start_line,
+                signature: caller.signature,
+            });
+        }
+    }
+    trim_signature_lines(&mut caller_lines, callers_budget);
+
+    // Tests that transitively touch this symbol (capped, budget-aware).
+    let mut tests = tests_for_conn(conn, &target.qualified_name)?.tests;
+    tests.truncate(8);
+    trim_records_to_budget(&mut tests, tests_budget);
+
+    let tokens = estimate_tokens(&body)
+        + estimate_tokens(&dep_lines)
+        + estimate_tokens(&caller_lines)
+        + estimate_tokens(&tests);
+
+    Ok(ContextPack {
+        symbol: Some(target),
+        body,
+        dependency_signatures: dep_lines,
+        caller_signatures: caller_lines,
+        tests,
+        budget_tokens: budget,
+        meta: meta(tokens, "expand_symbol", 800, 0.88),
+    })
+}
+
+pub fn diff_impact_conn(
+    conn: &Connection,
+    from_ref: &str,
+    to_ref: Option<&str>,
+    depth: usize,
+) -> Result<DiffImpactResult> {
+    use std::process::Command;
+    let root = db::get_meta(conn, "root")?
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| std::path::PathBuf::from("."));
+    let to = to_ref.unwrap_or("HEAD");
+    let range = format!("{from_ref}..{to}");
+
+    let out = Command::new("git")
+        .arg("-C")
+        .arg(&root)
+        .arg("diff")
+        .arg("-U0")
+        .arg(&range)
+        .output()
+        .map_err(|e| anyhow::anyhow!("git diff failed: {e}"))?;
+    if !out.status.success() {
+        anyhow::bail!(
+            "git diff exited {}: {}",
+            out.status,
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+    let diff = String::from_utf8_lossy(&out.stdout);
+
+    // Parse the unified diff: track current file + line ranges of additions
+    // and removals. We treat any hunk that touches a symbol's [start, end]
+    // range as "this symbol changed".
+    #[derive(Default)]
+    struct FileHunks {
+        path: String,
+        ranges: Vec<(usize, usize, usize, usize)>, // (old_start, old_count, new_start, new_count)
+    }
+    let mut current: Option<FileHunks> = None;
+    let mut hunks: Vec<FileHunks> = Vec::new();
+    for line in diff.lines() {
+        if let Some(rest) = line.strip_prefix("+++ ") {
+            if let Some(cur) = current.take() {
+                hunks.push(cur);
+            }
+            let path = rest
+                .trim_start_matches("b/")
+                .trim_start_matches("a/")
+                .trim()
+                .to_string();
+            if path != "/dev/null" {
+                current = Some(FileHunks {
+                    path,
+                    ranges: Vec::new(),
+                });
+            }
+        } else if let Some(hunk) = line.strip_prefix("@@ ") {
+            // @@ -old_start,old_count +new_start,new_count @@
+            if let Some(rest) = hunk.split(" @@").next() {
+                let parts: Vec<&str> = rest.split_whitespace().collect();
+                if parts.len() >= 2 {
+                    let old = parse_range(parts[0].trim_start_matches('-'));
+                    let new = parse_range(parts[1].trim_start_matches('+'));
+                    if let (Some(o), Some(n)) = (old, new) {
+                        if let Some(cur) = current.as_mut() {
+                            cur.ranges.push((o.0, o.1, n.0, n.1));
+                        }
+                    }
+                }
+            }
+        }
+    }
+    if let Some(cur) = current.take() {
+        hunks.push(cur);
+    }
+
+    let changed_files = hunks.len();
+    let mut changed_symbols: Vec<DiffChangedSymbol> = Vec::new();
+
+    for fh in &hunks {
+        // Resolve file_id by path (path is repo-relative).
+        let Some((file_id, _)) = db::file_sha(conn, &fh.path)? else {
+            continue;
+        };
+        for (_, _, new_start, new_count) in &fh.ranges {
+            let hunk_start = *new_start;
+            let hunk_end = new_start + new_count.saturating_sub(1).max(0);
+            let mut stmt = conn.prepare(
+                "
+                SELECT s.id, s.name, s.qualified_name, s.kind, s.file_id, f.path, f.language,
+                       s.start_line, s.end_line, s.signature, s.exported
+                FROM symbols s
+                JOIN files f ON f.id = s.file_id
+                WHERE s.file_id = ?1
+                  AND s.start_line <= ?2
+                  AND s.end_line >= ?3
+                ",
+            )?;
+            let rows = stmt.query_map(
+                params![file_id, hunk_end as i64, hunk_start as i64],
+                db::map_symbol,
+            )?;
+            for row in rows {
+                let sym = row?;
+                if let Some(existing) = changed_symbols.iter_mut().find(|c| c.symbol.id == sym.id) {
+                    existing.added_lines += *new_count;
+                } else {
+                    changed_symbols.push(DiffChangedSymbol {
+                        symbol: sym,
+                        added_lines: *new_count,
+                        removed_lines: 0,
+                    });
+                }
+            }
+        }
+    }
+
+    // For each changed symbol, run a shallow impact and aggregate.
+    let mut impacted: Vec<DiffImpactedSymbol> = Vec::new();
+    for changed in &changed_symbols {
+        let imp = impact_conn(conn, &changed.symbol.qualified_name, depth.max(1))?;
+        for caller in imp.callers.into_iter().take(20) {
+            if let Some(existing) = impacted
+                .iter_mut()
+                .find(|e| e.symbol.id == caller.symbol.id)
+            {
+                existing.criticality = existing.criticality.max(caller.criticality);
+            } else {
+                impacted.push(DiffImpactedSymbol {
+                    symbol: caller.symbol,
+                    via: changed.symbol.qualified_name.clone(),
+                    criticality: caller.criticality,
+                });
+            }
+        }
+    }
+    impacted.sort_by(|a, b| {
+        b.criticality
+            .partial_cmp(&a.criticality)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    impacted.truncate(50);
+
+    let tokens = estimate_tokens(&changed_symbols) + estimate_tokens(&impacted);
+    Ok(DiffImpactResult {
+        from_ref: from_ref.to_string(),
+        to_ref: to.to_string(),
+        changed_files,
+        changed_symbols,
+        impacted,
+        meta: meta(tokens, "impact", 900, 0.85),
+    })
+}
+
+fn parse_range(s: &str) -> Option<(usize, usize)> {
+    let mut parts = s.split(',');
+    let start: usize = parts.next()?.parse().ok()?;
+    let count: usize = parts.next().and_then(|n| n.parse().ok()).unwrap_or(1);
+    Some((start, count))
+}
+
+pub fn imports_conn(conn: &Connection, path: &str) -> Result<ImportsResult> {
+    let mut stmt = conn.prepare(
+        "
+        SELECT i.source, f.path, i.line, i.kind
+        FROM imports i
+        JOIN files f ON f.id = i.file_id
+        WHERE f.path = ?1 OR f.path LIKE ?2
+        ORDER BY f.path, i.line
+        LIMIT 500
+        ",
+    )?;
+    let like = if path.ends_with('/') || path.ends_with("**") {
+        format!("{}%", path.trim_end_matches("**"))
+    } else {
+        format!("{}%", path)
+    };
+    let imports: Vec<ImportRecord> = stmt
+        .query_map(params![path, like], |row| {
+            Ok(ImportRecord {
+                source: row.get(0)?,
+                from_path: row.get(1)?,
+                line: row.get::<_, i64>(2)? as usize,
+                kind: row.get(3)?,
+            })
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    let tokens = estimate_tokens(&imports).max(40);
+    Ok(ImportsResult {
+        path: path.to_string(),
+        imports,
+        meta: meta(tokens, "get_outline", 320, 0.7),
+    })
+}
+
+pub fn imported_by_conn(conn: &Connection, source: &str) -> Result<ImportedByResult> {
+    // Match exact + substring (`./users` matches `./users.ts`).
+    let mut stmt = conn.prepare(
+        "
+        SELECT i.source, f.path, i.line, i.kind
+        FROM imports i
+        JOIN files f ON f.id = i.file_id
+        WHERE i.source = ?1 OR i.source LIKE ?2
+        ORDER BY f.path, i.line
+        LIMIT 500
+        ",
+    )?;
+    let like = format!("%{source}%");
+    let importers: Vec<ImportRecord> = stmt
+        .query_map(params![source, like], |row| {
+            Ok(ImportRecord {
+                source: row.get(0)?,
+                from_path: row.get(1)?,
+                line: row.get::<_, i64>(2)? as usize,
+                kind: row.get(3)?,
+            })
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    let tokens = estimate_tokens(&importers).max(40);
+    Ok(ImportedByResult {
+        source: source.to_string(),
+        importers,
+        meta: meta(tokens, "imports", 200, 0.7),
+    })
+}
+
+pub fn signature_conn(conn: &Connection, symbol: &str) -> Result<SignatureResult> {
+    let Some(target) = db::resolve_symbol(conn, symbol)? else {
+        return Ok(SignatureResult {
+            symbol: None,
+            members: Vec::new(),
+            meta: meta(30, "find_definition", 120, 0.5),
+        });
+    };
+    // For container kinds, list child symbols defined inside this symbol's
+    // line range — same file, nested. Cheap; no body included.
+    let container = matches!(
+        target.kind.as_str(),
+        "class" | "struct" | "interface" | "trait" | "enum" | "record" | "impl" | "module"
+    );
+    let mut members: Vec<SignatureLine> = Vec::new();
+    if container {
+        let mut stmt = conn.prepare(
+            "
+            SELECT s.id, s.name, s.qualified_name, s.kind, s.file_id, f.path, f.language,
+                   s.start_line, s.end_line, s.signature, s.exported
+            FROM symbols s
+            JOIN files f ON f.id = s.file_id
+            WHERE s.file_id = ?1
+              AND s.id != ?2
+              AND s.start_line > ?3
+              AND s.end_line <= ?4
+            ORDER BY s.start_line
+            LIMIT 200
+            ",
+        )?;
+        let rows = stmt.query_map(
+            params![
+                target.file_id,
+                target.id,
+                target.start_line as i64,
+                target.end_line as i64
+            ],
+            db::map_symbol,
+        )?;
+        for row in rows {
+            let sym = row?;
+            members.push(SignatureLine {
+                qualified_name: sym.qualified_name,
+                kind: sym.kind,
+                path: sym.path,
+                line: sym.start_line,
+                signature: sym.signature,
+            });
+        }
+    }
+    let tokens = estimate_tokens(&members).max(50);
+    Ok(SignatureResult {
+        symbol: Some(target),
+        members,
+        meta: meta(tokens, "expand_symbol", 600, 0.8),
+    })
+}
+
+pub fn siblings_conn(conn: &Connection, symbol: &str) -> Result<SiblingsResult> {
+    // Symbols that share callers with `symbol`. The SQL self-join on `edges`
+    // finds, for each from_symbol that calls our target, the OTHER things it
+    // also calls — then ranks them by how many distinct callers they share.
+    let mut stmt = conn.prepare(
+        "
+        SELECT e2.to_symbol_name, COUNT(DISTINCT e1.from_symbol_id) AS shared
+        FROM edges e1
+        JOIN edges e2 ON e2.from_symbol_id = e1.from_symbol_id
+        WHERE (e1.to_symbol_name = ?1 OR e1.to_symbol_name = ?2)
+          AND e2.to_symbol_name != ?1
+          AND e2.to_symbol_name != ?2
+        GROUP BY e2.to_symbol_name
+        HAVING shared > 0
+        ORDER BY shared DESC, e2.to_symbol_name
+        LIMIT 50
+        ",
+    )?;
+    let target = db::resolve_symbol(conn, symbol)?;
+    let qualified = target
+        .as_ref()
+        .map(|t| t.qualified_name.clone())
+        .unwrap_or_default();
+    let name = target
+        .as_ref()
+        .map(|t| t.name.clone())
+        .unwrap_or_else(|| symbol.to_string());
+
+    let rows = stmt.query_map(params![name, qualified], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)? as usize))
+    })?;
+
+    let mut siblings: Vec<Sibling> = Vec::new();
+    for row in rows {
+        let (sibling_name, shared) = row?;
+        let resolved = db::resolve_symbol(conn, &sibling_name).ok().flatten();
+        siblings.push(Sibling {
+            qualified_name: resolved
+                .as_ref()
+                .map(|s| s.qualified_name.clone())
+                .unwrap_or(sibling_name),
+            shared_callers: shared,
+            path: resolved.as_ref().map(|s| s.path.clone()),
+            line: resolved.as_ref().map(|s| s.start_line),
+        });
+    }
+
+    let tokens = estimate_tokens(&siblings).max(60);
+    Ok(SiblingsResult {
+        symbol: symbol.to_string(),
+        siblings,
+        meta: meta(tokens, "impact", 700, 0.75),
+    })
+}
+
 pub fn search_conn(
     conn: &Connection,
     pattern: &str,
@@ -669,6 +1114,41 @@ pub fn tests_for(db_path: &Path, symbol: &str) -> Result<TestsForResult> {
 pub fn search(db_path: &Path, pattern: &str, options: SearchOptions) -> Result<SearchResult> {
     let conn = db::open(db_path)?;
     search_conn(&conn, pattern, options)
+}
+
+pub fn context_pack(db_path: &Path, symbol: &str, budget: usize) -> Result<ContextPack> {
+    let conn = db::open(db_path)?;
+    context_pack_conn(&conn, symbol, budget)
+}
+
+pub fn diff_impact(
+    db_path: &Path,
+    from_ref: &str,
+    to_ref: Option<&str>,
+    depth: usize,
+) -> Result<DiffImpactResult> {
+    let conn = db::open(db_path)?;
+    diff_impact_conn(&conn, from_ref, to_ref, depth)
+}
+
+pub fn imports(db_path: &Path, path: &str) -> Result<ImportsResult> {
+    let conn = db::open(db_path)?;
+    imports_conn(&conn, path)
+}
+
+pub fn imported_by(db_path: &Path, source: &str) -> Result<ImportedByResult> {
+    let conn = db::open(db_path)?;
+    imported_by_conn(&conn, source)
+}
+
+pub fn signature(db_path: &Path, symbol: &str) -> Result<SignatureResult> {
+    let conn = db::open(db_path)?;
+    signature_conn(&conn, symbol)
+}
+
+pub fn siblings(db_path: &Path, symbol: &str) -> Result<SiblingsResult> {
+    let conn = db::open(db_path)?;
+    siblings_conn(&conn, symbol)
 }
 
 pub fn shell(db_path: &Path) -> Result<()> {
@@ -887,6 +1367,28 @@ fn fuzzy_symbol_matches(
     ranked.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
     ranked.truncate(limit);
     Ok(ranked.into_iter().map(|(_, s)| s).collect())
+}
+
+fn clip_to_token_budget(text: &str, budget: usize) -> String {
+    let max_chars = budget.saturating_mul(4);
+    if text.len() <= max_chars {
+        return text.to_string();
+    }
+    let mut clipped: String = text.chars().take(max_chars).collect();
+    clipped.push_str("\n// … truncated by context budget");
+    clipped
+}
+
+fn trim_signature_lines(lines: &mut Vec<SignatureLine>, budget: usize) {
+    while estimate_tokens(lines) > budget && !lines.is_empty() {
+        lines.pop();
+    }
+}
+
+fn trim_records_to_budget(records: &mut Vec<SymbolRecord>, budget: usize) {
+    while estimate_tokens(records) > budget && !records.is_empty() {
+        records.pop();
+    }
 }
 
 fn escape_fts_term(term: &str) -> String {

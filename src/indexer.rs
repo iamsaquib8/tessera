@@ -12,7 +12,7 @@ use walkdir::{DirEntry, WalkDir};
 use crate::bloom::BloomFilter;
 use crate::db;
 use crate::snapshot;
-use crate::types::{IndexedReference, IndexedSymbol, Language};
+use crate::types::{IndexedImport, IndexedReference, IndexedSymbol, Language};
 
 #[derive(Debug, Clone)]
 pub struct IndexReport {
@@ -120,6 +120,7 @@ pub fn index_path_with(root: &Path, db_path: &Path, options: IndexOptions) -> Re
         let file_id = db::insert_file(&tx, &rel_path, language, &sha, content.lines().count())?;
         let symbol_ids = db::insert_symbols(&tx, file_id, &parsed.symbols)?;
         let ref_count = db::insert_references(&tx, file_id, &parsed.references)?;
+        let _ = db::insert_imports(&tx, file_id, &parsed.imports)?;
 
         visited_ids.push(file_id);
         report.files_indexed += 1;
@@ -204,6 +205,7 @@ fn language_for_path(path: &Path) -> Option<Language> {
 pub struct ParsedFile {
     pub symbols: Vec<IndexedSymbol>,
     pub references: Vec<IndexedReference>,
+    pub imports: Vec<IndexedImport>,
 }
 
 pub fn parse_file(language: Language, content: &str) -> Result<ParsedFile> {
@@ -229,6 +231,7 @@ pub fn parse_file(language: Language, content: &str) -> Result<ParsedFile> {
     Ok(ParsedFile {
         symbols: visitor.symbols,
         references: visitor.references,
+        imports: visitor.imports,
     })
 }
 
@@ -246,6 +249,7 @@ struct Visitor<'a> {
     scope: Vec<ScopeFrame>,
     symbols: Vec<IndexedSymbol>,
     references: Vec<IndexedReference>,
+    imports: Vec<IndexedImport>,
     skip_refs: HashSet<&'static str>,
 }
 
@@ -282,6 +286,7 @@ impl<'a> Visitor<'a> {
             scope: Vec::new(),
             symbols: Vec::new(),
             references: Vec::new(),
+            imports: Vec::new(),
             skip_refs,
         }
     }
@@ -316,6 +321,10 @@ impl<'a> Visitor<'a> {
 
         if let Some(reference) = self.reference_from_node(node) {
             self.references.push(reference);
+        }
+
+        if let Some(import) = self.import_from_node(node) {
+            self.imports.push(import);
         }
 
         let mut cursor = node.walk();
@@ -586,6 +595,109 @@ impl<'a> Visitor<'a> {
                 .unwrap_or_default(),
             kind: ref_kind.to_string(),
         })
+    }
+
+    fn import_from_node(&self, node: Node<'a>) -> Option<IndexedImport> {
+        // Per-language import / use statements. We capture the source/path
+        // string (or, for Rust `use foo::bar`, the full path text) so that
+        // `imports(path)` and `imported_by(source)` can answer module-level
+        // dependency questions without re-reading the file.
+        let (source, kind) = match (self.language, node.kind()) {
+            (Language::JavaScript | Language::TypeScript | Language::Tsx, "import_statement") => {
+                let src = node
+                    .child_by_field_name("source")
+                    .or_else(|| self.first_child_with_kinds(node, &["string"]))?;
+                (self.strip_quotes(self.node_text(src)), "import")
+            }
+            (Language::JavaScript | Language::TypeScript | Language::Tsx, "call_expression") => {
+                // CommonJS `require('./foo')` and dynamic ESM `import('./foo')`.
+                // Both look like call_expressions in the grammar; only record
+                // them when the callee is exactly `require` or `import`, with
+                // a single string argument.
+                let fn_node = node.child_by_field_name("function")?;
+                let name = self.node_text(fn_node);
+                if name != "require" && name != "import" {
+                    return None;
+                }
+                let args = node.child_by_field_name("arguments")?;
+                let string_arg = self.first_child_with_kinds(args, &["string"])?;
+                let kind = if name == "require" {
+                    "require"
+                } else {
+                    "import"
+                };
+                (self.strip_quotes(self.node_text(string_arg)), kind)
+            }
+            (Language::Python, "import_statement") => {
+                let name_node = node.child_by_field_name("name").or_else(|| {
+                    self.first_child_with_kinds(node, &["dotted_name", "aliased_import"])
+                })?;
+                (self.node_text(name_node), "import")
+            }
+            (Language::Python, "import_from_statement") => {
+                let module = node.child_by_field_name("module_name")?;
+                (self.node_text(module), "from")
+            }
+            (Language::Go, "import_spec") => {
+                let path_node = node.child_by_field_name("path").or_else(|| {
+                    self.first_child_with_kinds(node, &["interpreted_string_literal"])
+                })?;
+                (self.strip_quotes(self.node_text(path_node)), "import")
+            }
+            (Language::Rust, "use_declaration") => {
+                // tree-sitter-rust exposes the argument as a "argument" field
+                // holding a path-like node (scoped_identifier, use_list, etc.).
+                let arg = node
+                    .child_by_field_name("argument")
+                    .or_else(|| self.first_named_child(node))?;
+                (self.node_text(arg), "use")
+            }
+            (Language::Java, "import_declaration") => {
+                let target = self.first_child_with_kinds(
+                    node,
+                    &["scoped_identifier", "identifier", "asterisk"],
+                )?;
+                (self.node_text(target), "import")
+            }
+            _ => return None,
+        };
+        if source.is_empty() {
+            return None;
+        }
+        Some(IndexedImport {
+            source,
+            line: node.start_position().row + 1,
+            kind: kind.to_string(),
+        })
+    }
+
+    fn strip_quotes(&self, s: String) -> String {
+        s.trim_matches(|c: char| c == '"' || c == '\'' || c == '`')
+            .to_string()
+    }
+
+    fn first_child_with_kinds(&self, node: Node<'a>, kinds: &[&str]) -> Option<Node<'a>> {
+        let mut cursor = node.walk();
+        let mut found: Option<Node<'a>> = None;
+        for child in node.children(&mut cursor) {
+            if kinds.contains(&child.kind()) {
+                found = Some(child);
+                break;
+            }
+        }
+        found
+    }
+
+    fn first_named_child(&self, node: Node<'a>) -> Option<Node<'a>> {
+        let mut cursor = node.walk();
+        let mut found: Option<Node<'a>> = None;
+        for child in node.children(&mut cursor) {
+            if child.is_named() {
+                found = Some(child);
+                break;
+            }
+        }
+        found
     }
 
     fn jsx_component_name(&self, name_node: Node<'a>) -> Option<String> {
