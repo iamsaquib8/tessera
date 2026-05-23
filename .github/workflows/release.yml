@@ -18,14 +18,19 @@ jobs:
       - run: cargo fmt --check
       - run: cargo clippy --all-targets --all-features -- -D warnings
       - run: cargo test --all-targets --all-features
-      # Idempotent publish: if the manifest's version is already on
-      # crates.io (e.g. it was published manually before the tag was
-      # pushed), succeed quietly instead of failing the workflow.
+      # Idempotent publish:
+      #   - no token configured       → log + skip (manual publish flow)
+      #   - already on crates.io      → log + succeed
+      #   - other failure             → propagate exit status
       - name: Publish to crates.io (idempotent)
         env:
           CRATES_IO_TOKEN: ${{ secrets.CRATES_IO_TOKEN }}
         run: |
           set -uo pipefail
+          if [ -z "${CRATES_IO_TOKEN:-}" ]; then
+            echo "::notice::CRATES_IO_TOKEN not configured for this environment; skipping crates.io publish. Publish manually with \`cargo publish\` or set the secret in the 'crates-io' environment."
+            exit 0
+          fi
           output=$(cargo publish --token "$CRATES_IO_TOKEN" 2>&1)
           status=$?
           echo "$output"
