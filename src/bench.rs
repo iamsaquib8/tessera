@@ -215,7 +215,7 @@ fn estimate_mean_file_tokens(root: &Path) -> Result<usize> {
             count += 1;
         }
     }
-    Ok(if count == 0 { 1 } else { total / count })
+    Ok(total.checked_div(count).unwrap_or(1))
 }
 
 fn ratio(raw: usize, tessera: usize) -> f32 {

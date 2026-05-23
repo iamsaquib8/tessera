@@ -713,7 +713,7 @@ pub fn diff_impact_conn(
         };
         for (_, _, new_start, new_count) in &fh.ranges {
             let hunk_start = *new_start;
-            let hunk_end = new_start + new_count.saturating_sub(1).max(0);
+            let hunk_end = new_start + new_count.saturating_sub(1);
             let mut stmt = conn.prepare(
                 "
                 SELECT s.id, s.name, s.qualified_name, s.kind, s.file_id, f.path, f.language,

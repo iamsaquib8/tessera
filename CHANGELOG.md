@@ -2,6 +2,11 @@
 
 All notable changes to Tessera will be documented here.
 
+## 0.3.1 - 2026-05-24
+
+### Fixed
+- CI release workflow on stable Rust 1.95 failed v0.3.0 because two new clippy lints (`manual_checked_ops`, `unnecessary_min_or_max`) were promoted to default-warn. Switched to `checked_div` in `src/bench.rs` and dropped a redundant `.max(0)` on a `usize` in `src/query.rs`. Local toolchain bumped to 1.95.0 so CI drift surfaces locally first.
+
 ## 0.3.0 - 2026-05-24
 
 Six new token-saver tools, all in one release. Each replaces a multi-tool-call workflow with a single bounded response — the biggest single drop in agent token usage since v0.2.
