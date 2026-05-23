@@ -6,18 +6,27 @@ use rusqlite::{params, Connection, OptionalExtension};
 
 use crate::types::{IndexedReference, IndexedSymbol, Language, ReferenceRecord, SymbolRecord};
 
+pub const SCHEMA_VERSION: i64 = 2;
+
 pub fn open(path: &Path) -> Result<Connection> {
     if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)?;
+        if !parent.as_os_str().is_empty() {
+            fs::create_dir_all(parent)?;
+        }
     }
     let conn = Connection::open(path)?;
     conn.pragma_update(None, "journal_mode", "WAL")?;
     conn.pragma_update(None, "foreign_keys", "ON")?;
+    conn.pragma_update(None, "synchronous", "NORMAL")?;
     migrate(&conn)?;
     Ok(conn)
 }
 
 pub fn reset(conn: &Connection) -> Result<()> {
+    // The FTS5 virtual table is configured with external content (content='symbols')
+    // and is kept in sync via triggers. Deleting `symbols` here causes the
+    // AFTER DELETE trigger to fire for every row, which is correct but slow on
+    // large tables; for v0.2's repo sizes the cost is irrelevant.
     conn.execute_batch(
         "
         DELETE FROM edges;
@@ -26,6 +35,8 @@ pub fn reset(conn: &Connection) -> Result<()> {
         DELETE FROM files;
         ",
     )?;
+    // Ask FTS5 to drop any orphaned tombstones.
+    let _ = conn.execute_batch("INSERT INTO symbols_fts(symbols_fts) VALUES('delete-all');");
     Ok(())
 }
 
@@ -44,6 +55,11 @@ fn migrate(conn: &Connection) -> Result<()> {
         CREATE TABLE IF NOT EXISTS meta (
             key TEXT PRIMARY KEY,
             value TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS meta_blob (
+            key TEXT PRIMARY KEY,
+            value BLOB NOT NULL
         );
 
         CREATE TABLE IF NOT EXISTS symbols (
@@ -89,6 +105,30 @@ fn migrate(conn: &Connection) -> Result<()> {
         CREATE INDEX IF NOT EXISTS idx_edges_from ON edges(from_symbol_id);
         ",
     )?;
+
+    // FTS5 trigram virtual table. rusqlite's bundled SQLite ships FTS5 and the
+    // trigram tokenizer. The triggers below keep it in sync with `symbols`.
+    let fts_setup = "
+        CREATE VIRTUAL TABLE IF NOT EXISTS symbols_fts USING fts5(
+            name, qualified_name,
+            content='symbols', content_rowid='id',
+            tokenize='trigram'
+        );
+
+        CREATE TRIGGER IF NOT EXISTS symbols_ai AFTER INSERT ON symbols BEGIN
+            INSERT INTO symbols_fts(rowid, name, qualified_name)
+            VALUES (new.id, new.name, new.qualified_name);
+        END;
+
+        CREATE TRIGGER IF NOT EXISTS symbols_ad AFTER DELETE ON symbols BEGIN
+            INSERT INTO symbols_fts(symbols_fts, rowid, name, qualified_name)
+            VALUES('delete', old.id, old.name, old.qualified_name);
+        END;
+        ";
+    // FTS5 may not be available in unusual builds; if it fails, fall back silently.
+    let _ = conn.execute_batch(fts_setup);
+
+    set_meta(conn, "schema_version", &SCHEMA_VERSION.to_string())?;
     Ok(())
 }
 
@@ -111,6 +151,61 @@ pub fn get_meta(conn: &Connection, key: &str) -> Result<Option<String>> {
     )
     .optional()
     .map_err(Into::into)
+}
+
+pub fn set_meta_blob(conn: &Connection, key: &str, value: &[u8]) -> Result<()> {
+    conn.execute(
+        "
+        INSERT INTO meta_blob(key, value) VALUES (?1, ?2)
+        ON CONFLICT(key) DO UPDATE SET value = excluded.value
+        ",
+        params![key, value],
+    )?;
+    Ok(())
+}
+
+pub fn get_meta_blob(conn: &Connection, key: &str) -> Result<Option<Vec<u8>>> {
+    conn.query_row(
+        "SELECT value FROM meta_blob WHERE key = ?1",
+        params![key],
+        |row| row.get::<_, Vec<u8>>(0),
+    )
+    .optional()
+    .map_err(Into::into)
+}
+
+pub fn file_sha(conn: &Connection, path: &str) -> Result<Option<(i64, String)>> {
+    conn.query_row(
+        "SELECT id, sha256 FROM files WHERE path = ?1",
+        params![path],
+        |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?)),
+    )
+    .optional()
+    .map_err(Into::into)
+}
+
+pub fn delete_file_cascade(conn: &Connection, file_id: i64) -> Result<()> {
+    conn.execute("DELETE FROM files WHERE id = ?1", params![file_id])?;
+    Ok(())
+}
+
+pub fn delete_files_not_in(conn: &Connection, retained_ids: &[i64]) -> Result<usize> {
+    if retained_ids.is_empty() {
+        let removed = conn.execute("DELETE FROM files", [])?;
+        return Ok(removed);
+    }
+    let placeholders = retained_ids
+        .iter()
+        .map(|_| "?")
+        .collect::<Vec<_>>()
+        .join(",");
+    let sql = format!("DELETE FROM files WHERE id NOT IN ({placeholders})");
+    let params_iter: Vec<&dyn rusqlite::ToSql> = retained_ids
+        .iter()
+        .map(|id| id as &dyn rusqlite::ToSql)
+        .collect();
+    let removed = conn.execute(&sql, params_iter.as_slice())?;
+    Ok(removed)
 }
 
 pub fn insert_file(
@@ -245,6 +340,42 @@ pub fn symbol_fanout(conn: &Connection, symbol_id: i64) -> Result<usize> {
     )
     .map(|count| count as usize)
     .map_err(Into::into)
+}
+
+pub fn symbol_callers_count(conn: &Connection, symbol_name: &str) -> Result<usize> {
+    conn.query_row(
+        "SELECT COUNT(DISTINCT from_symbol_id) FROM edges WHERE to_symbol_name = ?1",
+        params![symbol_name],
+        |row| row.get::<_, i64>(0),
+    )
+    .map(|count| count as usize)
+    .map_err(Into::into)
+}
+
+pub fn count_files(conn: &Connection) -> Result<usize> {
+    conn.query_row("SELECT COUNT(*) FROM files", [], |row| row.get::<_, i64>(0))
+        .map(|c| c as usize)
+        .map_err(Into::into)
+}
+
+pub fn count_symbols(conn: &Connection) -> Result<usize> {
+    conn.query_row("SELECT COUNT(*) FROM symbols", [], |row| {
+        row.get::<_, i64>(0)
+    })
+    .map(|c| c as usize)
+    .map_err(Into::into)
+}
+
+pub fn count_refs(conn: &Connection) -> Result<usize> {
+    conn.query_row("SELECT COUNT(*) FROM refs", [], |row| row.get::<_, i64>(0))
+        .map(|c| c as usize)
+        .map_err(Into::into)
+}
+
+pub fn count_edges(conn: &Connection) -> Result<usize> {
+    conn.query_row("SELECT COUNT(*) FROM edges", [], |row| row.get::<_, i64>(0))
+        .map(|c| c as usize)
+        .map_err(Into::into)
 }
 
 pub fn map_symbol(row: &rusqlite::Row<'_>) -> rusqlite::Result<SymbolRecord> {

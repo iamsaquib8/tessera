@@ -1,12 +1,11 @@
 use std::fs;
+use std::time::Instant;
 
 use assert_cmd::Command;
 use predicates::prelude::*;
 use tempfile::TempDir;
 
-#[test]
-fn indexes_and_queries_typescript_and_python() {
-    let temp = TempDir::new().unwrap();
+fn write_sample(temp: &TempDir) {
     fs::write(
         temp.path().join("users.ts"),
         r#"
@@ -24,6 +23,7 @@ export function handler(id: string) {
 "#,
     )
     .unwrap();
+
     fs::write(
         temp.path().join("service.py"),
         r#"
@@ -36,6 +36,100 @@ def handler(user):
     )
     .unwrap();
 
+    fs::write(
+        temp.path().join("users.go"),
+        r#"
+package sample
+
+func FindByID(id string) string {
+    return loadUser(id)
+}
+
+func loadUser(id string) string {
+    return id
+}
+
+func RenderUser(id string) string {
+    return FindByID(id)
+}
+"#,
+    )
+    .unwrap();
+
+    fs::write(
+        temp.path().join("store.rs"),
+        r#"
+pub fn find_by_id(id: &str) -> String {
+    load_user(id)
+}
+
+fn load_user(id: &str) -> String {
+    id.to_string()
+}
+
+pub fn render_user(id: &str) -> String {
+    find_by_id(id)
+}
+"#,
+    )
+    .unwrap();
+
+    fs::write(
+        temp.path().join("UserService.java"),
+        r#"
+package sample;
+
+public class UserService {
+    public String findById(String id) {
+        return loadUser(id);
+    }
+
+    private String loadUser(String id) {
+        return id;
+    }
+
+    public String renderUser(String id) {
+        return findById(id);
+    }
+}
+"#,
+    )
+    .unwrap();
+
+    fs::write(
+        temp.path().join("UserList.tsx"),
+        r#"
+export function UserAvatar({ name }: { name: string }) {
+    return <div>{name}</div>;
+}
+
+export function UserCard({ name }: { name: string }) {
+    return (
+        <article>
+            <UserAvatar name={name} />
+        </article>
+    );
+}
+
+export function UserList({ names }: { names: string[] }) {
+    return (
+        <section>
+            {names.map((n) => (
+                <UserCard name={n} />
+            ))}
+        </section>
+    );
+}
+"#,
+    )
+    .unwrap();
+}
+
+#[test]
+fn indexes_and_queries_all_languages() {
+    let temp = TempDir::new().unwrap();
+    write_sample(&temp);
+
     let db = temp.path().join(".tessera/test.db");
     Command::cargo_bin("tessera")
         .unwrap()
@@ -44,10 +138,11 @@ def handler(user):
             temp.path().to_str().unwrap(),
             "--db",
             db.to_str().unwrap(),
+            "--full",
         ])
         .assert()
         .success()
-        .stdout(predicate::str::contains("Indexed 2 files"));
+        .stdout(predicate::str::contains("indexed"));
 
     Command::cargo_bin("tessera")
         .unwrap()
@@ -74,4 +169,248 @@ def handler(user):
         .assert()
         .success()
         .stdout(predicate::str::contains("handler"));
+
+    // Go: FindByID is called by RenderUser
+    Command::cargo_bin("tessera")
+        .unwrap()
+        .args(["impact", "FindByID", "--db", db.to_str().unwrap()])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("RenderUser"));
+
+    // Rust: find_by_id is called by render_user
+    Command::cargo_bin("tessera")
+        .unwrap()
+        .args(["impact", "find_by_id", "--db", db.to_str().unwrap()])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("render_user"));
+
+    // Java: findById is called by renderUser
+    Command::cargo_bin("tessera")
+        .unwrap()
+        .args(["impact", "findById", "--db", db.to_str().unwrap()])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("renderUser"));
+
+    // TSX/React: UserCard is rendered inside UserList — JSX element should
+    // register as a reference, so the impact lookup returns UserList.
+    Command::cargo_bin("tessera")
+        .unwrap()
+        .args(["impact", "UserCard", "--db", db.to_str().unwrap()])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("UserList"));
+
+    // TSX/React: UserAvatar is rendered inside UserCard.
+    Command::cargo_bin("tessera")
+        .unwrap()
+        .args(["impact", "UserAvatar", "--db", db.to_str().unwrap()])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("UserCard"));
+
+    Command::cargo_bin("tessera")
+        .unwrap()
+        .args(["stats", "--db", db.to_str().unwrap()])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("java").and(predicate::str::contains("typescript")));
+}
+
+#[test]
+fn validates_and_suggests_near_misses() {
+    let temp = TempDir::new().unwrap();
+    write_sample(&temp);
+    let db = temp.path().join(".tessera/v.db");
+    Command::cargo_bin("tessera")
+        .unwrap()
+        .args([
+            "index",
+            temp.path().to_str().unwrap(),
+            "--db",
+            db.to_str().unwrap(),
+            "--full",
+        ])
+        .assert()
+        .success();
+
+    // Exact hit.
+    Command::cargo_bin("tessera")
+        .unwrap()
+        .args([
+            "validate",
+            "findById",
+            "--db",
+            db.to_str().unwrap(),
+            "--json",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("\"exists\": true"));
+
+    // Near miss: should suggest findById.
+    Command::cargo_bin("tessera")
+        .unwrap()
+        .args([
+            "validate",
+            "findByIdd",
+            "--db",
+            db.to_str().unwrap(),
+            "--json",
+        ])
+        .assert()
+        .success()
+        .stdout(
+            predicate::str::contains("\"exists\": false").and(predicate::str::contains("findById")),
+        );
+}
+
+#[test]
+fn incremental_reindex_reuses_files() {
+    let temp = TempDir::new().unwrap();
+    write_sample(&temp);
+    let db = temp.path().join(".tessera/inc.db");
+
+    // First (full) index.
+    Command::cargo_bin("tessera")
+        .unwrap()
+        .args([
+            "index",
+            temp.path().to_str().unwrap(),
+            "--db",
+            db.to_str().unwrap(),
+            "--full",
+        ])
+        .assert()
+        .success();
+
+    let first_start = Instant::now();
+    Command::cargo_bin("tessera")
+        .unwrap()
+        .args([
+            "index",
+            temp.path().to_str().unwrap(),
+            "--db",
+            db.to_str().unwrap(),
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("[incremental]").and(predicate::str::contains("reused")));
+    let inc_duration = first_start.elapsed();
+
+    // Pure incremental rerun on unchanged files should be reasonably fast.
+    assert!(
+        inc_duration.as_secs() < 30,
+        "incremental rerun took {:?}",
+        inc_duration
+    );
+}
+
+#[test]
+fn tests_for_finds_test_callers() {
+    let temp = TempDir::new().unwrap();
+    fs::write(
+        temp.path().join("lib.ts"),
+        r#"
+export function add(a: number, b: number) {
+    return a + b;
+}
+"#,
+    )
+    .unwrap();
+    fs::create_dir(temp.path().join("tests")).unwrap();
+    fs::write(
+        temp.path().join("tests/add.test.ts"),
+        r#"
+import { add } from "../lib";
+
+export function testAdd() {
+    return add(1, 2);
+}
+"#,
+    )
+    .unwrap();
+
+    let db = temp.path().join(".tessera/t.db");
+    Command::cargo_bin("tessera")
+        .unwrap()
+        .args([
+            "index",
+            temp.path().to_str().unwrap(),
+            "--db",
+            db.to_str().unwrap(),
+            "--full",
+        ])
+        .assert()
+        .success();
+
+    Command::cargo_bin("tessera")
+        .unwrap()
+        .args(["tests-for", "add", "--db", db.to_str().unwrap()])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("testAdd"));
+}
+
+#[test]
+fn snapshot_command_writes_file() {
+    let temp = TempDir::new().unwrap();
+    write_sample(&temp);
+    let db = temp.path().join(".tessera/s.db");
+    Command::cargo_bin("tessera")
+        .unwrap()
+        .args([
+            "index",
+            temp.path().to_str().unwrap(),
+            "--db",
+            db.to_str().unwrap(),
+            "--full",
+            "--no-snapshot",
+        ])
+        .assert()
+        .success();
+    Command::cargo_bin("tessera")
+        .unwrap()
+        .args(["snapshot", "--db", db.to_str().unwrap()])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("snapshot.bin"));
+
+    assert!(temp.path().join(".tessera/snapshot.bin").exists());
+}
+
+#[test]
+fn validate_snippet_detects_unresolved_calls() {
+    let temp = TempDir::new().unwrap();
+    write_sample(&temp);
+    let db = temp.path().join(".tessera/snip.db");
+    Command::cargo_bin("tessera")
+        .unwrap()
+        .args([
+            "index",
+            temp.path().to_str().unwrap(),
+            "--db",
+            db.to_str().unwrap(),
+            "--full",
+        ])
+        .assert()
+        .success();
+
+    let snippet = "function x() { return findById(1) + findByIdd(2); }";
+    Command::cargo_bin("tessera")
+        .unwrap()
+        .args([
+            "validate-snippet",
+            "--language",
+            "typescript",
+            "--db",
+            db.to_str().unwrap(),
+            "--json",
+        ])
+        .write_stdin(snippet)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("\"unresolved_calls\""));
 }

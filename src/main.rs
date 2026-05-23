@@ -1,31 +1,85 @@
-mod db;
-mod indexer;
-mod mcp;
-mod query;
-mod types;
-
+use std::io::Read;
 use std::path::PathBuf;
 
-use anyhow::Result;
-use clap::{Parser, Subcommand};
+use anyhow::{anyhow, Result};
+use clap::{Parser, Subcommand, ValueEnum};
+
+use tessera_codegraph::bench::{self, BenchOptions};
+use tessera_codegraph::db;
+use tessera_codegraph::indexer::{self, IndexOptions};
+use tessera_codegraph::mcp;
+use tessera_codegraph::query;
+use tessera_codegraph::snapshot;
+use tessera_codegraph::types::{GraphEngineKind, Language};
 
 #[derive(Debug, Parser)]
 #[command(name = "tessera")]
+#[command(version)]
 #[command(about = "Semantic code graph and MCP server for AI coding agents")]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
 }
 
+#[derive(Debug, Clone, ValueEnum)]
+enum LangArg {
+    Typescript,
+    Tsx,
+    Javascript,
+    Python,
+    Go,
+    Rust,
+    Java,
+}
+
+impl From<LangArg> for Language {
+    fn from(value: LangArg) -> Self {
+        match value {
+            LangArg::Typescript => Language::TypeScript,
+            LangArg::Tsx => Language::Tsx,
+            LangArg::Javascript => Language::JavaScript,
+            LangArg::Python => Language::Python,
+            LangArg::Go => Language::Go,
+            LangArg::Rust => Language::Rust,
+            LangArg::Java => Language::Java,
+        }
+    }
+}
+
+#[derive(Debug, Clone, ValueEnum, Default)]
+enum EngineArg {
+    #[default]
+    Sqlite,
+    Cozo,
+}
+
+impl From<EngineArg> for GraphEngineKind {
+    fn from(value: EngineArg) -> Self {
+        match value {
+            EngineArg::Sqlite => GraphEngineKind::Sqlite,
+            EngineArg::Cozo => GraphEngineKind::Cozo,
+        }
+    }
+}
+
 #[derive(Debug, Subcommand)]
 enum Commands {
-    /// Index a repository into a SQLite semantic graph.
+    /// Index a repository into a SQLite semantic graph (incremental by default).
     Index {
         /// Repository or directory to index.
         path: PathBuf,
         /// SQLite database path.
         #[arg(long, default_value = ".tessera/tessera.db")]
         db: PathBuf,
+        /// Re-index from scratch instead of using the sha-diff incremental path.
+        #[arg(long)]
+        full: bool,
+        /// Skip writing the memory-mapped snapshot at the end of indexing.
+        #[arg(long)]
+        no_snapshot: bool,
+        /// Graph engine to use for impact queries. Cozo requires `--features cozo`.
+        #[arg(long, value_enum, default_value_t = EngineArg::Sqlite)]
+        graph_engine: EngineArg,
     },
     /// Find symbol definitions by name.
     FindDefinition {
@@ -59,7 +113,7 @@ enum Commands {
         #[arg(long)]
         json: bool,
     },
-    /// Return transitive callers ranked by simple criticality.
+    /// Return transitive callers ranked by personalised PageRank.
     Impact {
         symbol: String,
         #[arg(long, default_value = ".tessera/tessera.db")]
@@ -68,6 +122,60 @@ enum Commands {
         depth: usize,
         #[arg(long)]
         json: bool,
+    },
+    /// Check whether a symbol exists in the graph; suggest near-misses if not.
+    Validate {
+        symbol: String,
+        #[arg(long, default_value = ".tessera/tessera.db")]
+        db: PathBuf,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Parse a code snippet and validate every call against the graph.
+    ValidateSnippet {
+        #[arg(long, value_enum)]
+        language: LangArg,
+        /// Read the snippet from this file. If omitted, read from stdin.
+        #[arg(long)]
+        file: Option<PathBuf>,
+        #[arg(long, default_value = ".tessera/tessera.db")]
+        db: PathBuf,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Print index statistics.
+    Stats {
+        #[arg(long, default_value = ".tessera/tessera.db")]
+        db: PathBuf,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Return the minimal set of tests whose call graph touches the symbol.
+    TestsFor {
+        symbol: String,
+        #[arg(long, default_value = ".tessera/tessera.db")]
+        db: PathBuf,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Run a benchmark and emit the perf chart used in the README.
+    Bench {
+        #[arg(long)]
+        path: Option<PathBuf>,
+        #[arg(long)]
+        probe: Option<String>,
+        /// Synthetic-repo size when no --path is given.
+        #[arg(long, default_value_t = 50)]
+        scale: usize,
+        #[arg(long)]
+        out: Option<PathBuf>,
+        #[arg(long)]
+        json: bool,
+    },
+    /// (Re)build the memory-mapped snapshot used by the MCP server.
+    Snapshot {
+        #[arg(long, default_value = ".tessera/tessera.db")]
+        db: PathBuf,
     },
     /// Run the MCP server over stdio.
     Mcp {
@@ -85,11 +193,33 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
-        Commands::Index { path, db } => {
-            let report = indexer::index_path(&path, &db)?;
+        Commands::Index {
+            path,
+            db,
+            full,
+            no_snapshot,
+            graph_engine,
+        } => {
+            let engine: GraphEngineKind = graph_engine.into();
+            if matches!(engine, GraphEngineKind::Cozo) && !cfg!(feature = "cozo") {
+                return Err(anyhow!(
+                    "Cozo backend not compiled in. Rebuild with `cargo install --features cozo`."
+                ));
+            }
+            let options = IndexOptions {
+                full,
+                build_snapshot: !no_snapshot,
+            };
+            let report = indexer::index_path_with(&path, &db, options)?;
+            let mode = match report.mode {
+                indexer::IndexMode::Full => "full",
+                indexer::IndexMode::Incremental => "incremental",
+            };
             println!(
-                "Indexed {} files, {} symbols, {} references into {} in {}ms",
+                "[{mode}] indexed {} files (+{} reused, -{} removed), {} symbols, {} references into {} in {}ms",
                 report.files_indexed,
+                report.files_reused,
+                report.files_removed,
                 report.symbols_indexed,
                 report.references_indexed,
                 db.display(),
@@ -115,6 +245,62 @@ fn main() -> Result<()> {
             json,
         } => {
             print_result(query::impact(&db, &symbol, depth)?, json)?;
+        }
+        Commands::Validate { symbol, db, json } => {
+            print_result(query::validate(&db, &symbol)?, json)?;
+        }
+        Commands::ValidateSnippet {
+            language,
+            file,
+            db,
+            json,
+        } => {
+            let code = match file {
+                Some(path) => std::fs::read_to_string(path)?,
+                None => {
+                    let mut buf = String::new();
+                    std::io::stdin().read_to_string(&mut buf)?;
+                    buf
+                }
+            };
+            let result = query::validate_snippet(&db, &code, language.into())?;
+            print_result(result, json)?;
+        }
+        Commands::Stats { db, json } => {
+            print_result(query::stats(&db)?, json)?;
+        }
+        Commands::TestsFor { symbol, db, json } => {
+            print_result(query::tests_for(&db, &symbol)?, json)?;
+        }
+        Commands::Bench {
+            path,
+            probe,
+            scale,
+            out,
+            json,
+        } => {
+            let result = bench::run(BenchOptions {
+                path,
+                probe_symbol: probe,
+                scale: Some(scale),
+            })?;
+            if let Some(out_path) = out {
+                std::fs::write(&out_path, &result.chart)?;
+            }
+            if json {
+                println!("{}", serde_json::to_string_pretty(&result)?);
+            } else {
+                println!("{}", result.chart);
+            }
+        }
+        Commands::Snapshot { db } => {
+            let conn = db::open(&db)?;
+            let snapshot_path = db
+                .parent()
+                .map(|p| p.join("snapshot.bin"))
+                .unwrap_or_else(|| PathBuf::from("snapshot.bin"));
+            snapshot::build(&conn, &snapshot_path)?;
+            println!("snapshot written to {}", snapshot_path.display());
         }
         Commands::Mcp { db } => mcp::serve_stdio(&db)?,
         Commands::Shell { db } => query::shell(&db)?,

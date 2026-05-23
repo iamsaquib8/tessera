@@ -2,10 +2,13 @@ use std::io::{self, BufRead, Write};
 use std::path::Path;
 
 use anyhow::Result;
+use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
+use crate::db;
 use crate::query;
+use crate::types::Language;
 
 #[derive(Debug, Deserialize)]
 struct JsonRpcRequest {
@@ -33,6 +36,7 @@ struct JsonRpcError {
 }
 
 pub fn serve_stdio(db_path: &Path) -> Result<()> {
+    let conn = db::open(db_path)?;
     let stdin = io::stdin();
     let mut stdout = io::stdout();
 
@@ -42,7 +46,7 @@ pub fn serve_stdio(db_path: &Path) -> Result<()> {
             continue;
         }
         let response = match serde_json::from_str::<JsonRpcRequest>(&line) {
-            Ok(request) => handle_request(db_path, request),
+            Ok(request) => handle_request(&conn, db_path, request),
             Err(error) => JsonRpcResponse {
                 jsonrpc: "2.0",
                 id: None,
@@ -59,7 +63,7 @@ pub fn serve_stdio(db_path: &Path) -> Result<()> {
     Ok(())
 }
 
-fn handle_request(db_path: &Path, request: JsonRpcRequest) -> JsonRpcResponse {
+fn handle_request(conn: &Connection, db_path: &Path, request: JsonRpcRequest) -> JsonRpcResponse {
     let id = request.id.clone();
     let result = match request.method.as_str() {
         "initialize" => Ok(json!({
@@ -69,7 +73,7 @@ fn handle_request(db_path: &Path, request: JsonRpcRequest) -> JsonRpcResponse {
         })),
         "notifications/initialized" => Ok(json!({})),
         "tools/list" => Ok(json!({ "tools": tools() })),
-        "tools/call" => call_tool(db_path, &request.params),
+        "tools/call" => call_tool(conn, db_path, &request.params),
         _ => Err(format!("unknown method: {}", request.method)),
     };
 
@@ -92,7 +96,11 @@ fn handle_request(db_path: &Path, request: JsonRpcRequest) -> JsonRpcResponse {
     }
 }
 
-fn call_tool(db_path: &Path, params: &Value) -> std::result::Result<Value, String> {
+fn call_tool(
+    conn: &Connection,
+    db_path: &Path,
+    params: &Value,
+) -> std::result::Result<Value, String> {
     let name = params
         .get("name")
         .and_then(Value::as_str)
@@ -105,24 +113,49 @@ fn call_tool(db_path: &Path, params: &Value) -> std::result::Result<Value, Strin
     let result = match name {
         "find_definition" => {
             let symbol = arg_string(&args, "symbol")?;
-            serde_json::to_value(query::find_definition(db_path, &symbol).map_err(to_string)?)
+            serde_json::to_value(query::find_definition_conn(conn, &symbol).map_err(to_string)?)
         }
         "find_references" => {
             let symbol = arg_string(&args, "symbol")?;
-            serde_json::to_value(query::find_references(db_path, &symbol).map_err(to_string)?)
+            serde_json::to_value(query::find_references_conn(conn, &symbol).map_err(to_string)?)
         }
         "get_outline" => {
             let path = arg_string(&args, "path")?;
-            serde_json::to_value(query::get_outline(db_path, Path::new(&path)).map_err(to_string)?)
+            serde_json::to_value(
+                query::get_outline_conn(conn, Path::new(&path)).map_err(to_string)?,
+            )
         }
         "expand_symbol" => {
             let symbol = arg_string(&args, "symbol")?;
-            serde_json::to_value(query::expand_symbol(db_path, &symbol).map_err(to_string)?)
+            serde_json::to_value(query::expand_symbol_conn(conn, &symbol).map_err(to_string)?)
         }
         "impact" => {
             let symbol = arg_string(&args, "symbol")?;
             let depth = args.get("depth").and_then(Value::as_u64).unwrap_or(4) as usize;
-            serde_json::to_value(query::impact(db_path, &symbol, depth).map_err(to_string)?)
+            serde_json::to_value(query::impact_conn(conn, &symbol, depth).map_err(to_string)?)
+        }
+        "validate" => {
+            let symbol = arg_string(&args, "symbol")?;
+            serde_json::to_value(query::validate_conn(conn, &symbol).map_err(to_string)?)
+        }
+        "validate_snippet" => {
+            let code = arg_string(&args, "code")?;
+            let language = args
+                .get("language")
+                .and_then(Value::as_str)
+                .and_then(Language::from_name)
+                .ok_or_else(|| {
+                    "argument `language` is required (typescript|javascript|python|go|rust)"
+                        .to_string()
+                })?;
+            serde_json::to_value(
+                query::validate_snippet_conn(conn, &code, language).map_err(to_string)?,
+            )
+        }
+        "stats" => serde_json::to_value(query::stats_conn(conn, db_path).map_err(to_string)?),
+        "tests_for" => {
+            let symbol = arg_string(&args, "symbol")?;
+            serde_json::to_value(query::tests_for_conn(conn, &symbol).map_err(to_string)?)
         }
         _ => return Err(format!("unknown tool: {name}")),
     }
@@ -186,13 +219,51 @@ fn tools() -> Value {
         },
         {
             "name": "impact",
-            "description": "Return transitive callers ranked by criticality.",
+            "description": "Return transitive callers ranked by personalised PageRank with a criticality breakdown.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "symbol": { "type": "string" },
                     "depth": { "type": "integer", "minimum": 1, "maximum": 10 }
                 },
+                "required": ["symbol"]
+            }
+        },
+        {
+            "name": "validate",
+            "description": "Check whether a symbol exists in the graph; return near-miss candidates with confidence scores when it doesn't.",
+            "inputSchema": {
+                "type": "object",
+                "properties": { "symbol": { "type": "string" } },
+                "required": ["symbol"]
+            }
+        },
+        {
+            "name": "validate_snippet",
+            "description": "Parse a code snippet and check every call against the graph. Returns per-call resolution status plus near-miss suggestions for unresolved calls.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "code": { "type": "string" },
+                    "language": {
+                        "type": "string",
+                        "enum": ["typescript", "tsx", "javascript", "python", "go", "rust", "java"]
+                    }
+                },
+                "required": ["code", "language"]
+            }
+        },
+        {
+            "name": "stats",
+            "description": "Summary statistics about the index: counts, languages, kinds, top fan-out symbols.",
+            "inputSchema": { "type": "object", "properties": {} }
+        },
+        {
+            "name": "tests_for",
+            "description": "Return the minimal set of tests whose call graph transitively touches the given symbol.",
+            "inputSchema": {
+                "type": "object",
+                "properties": { "symbol": { "type": "string" } },
                 "required": ["symbol"]
             }
         }
