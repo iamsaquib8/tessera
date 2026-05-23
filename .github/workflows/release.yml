@@ -18,6 +18,22 @@ jobs:
       - run: cargo fmt --check
       - run: cargo clippy --all-targets --all-features -- -D warnings
       - run: cargo test --all-targets --all-features
-      - run: cargo publish --token "$CRATES_IO_TOKEN"
+      # Idempotent publish: if the manifest's version is already on
+      # crates.io (e.g. it was published manually before the tag was
+      # pushed), succeed quietly instead of failing the workflow.
+      - name: Publish to crates.io (idempotent)
         env:
           CRATES_IO_TOKEN: ${{ secrets.CRATES_IO_TOKEN }}
+        run: |
+          set -uo pipefail
+          output=$(cargo publish --token "$CRATES_IO_TOKEN" 2>&1)
+          status=$?
+          echo "$output"
+          if [ $status -eq 0 ]; then
+            exit 0
+          fi
+          if echo "$output" | grep -Eq "already (uploaded|exists)|crate version .* is already uploaded"; then
+            echo "::notice::Version already on crates.io; treating as success."
+            exit 0
+          fi
+          exit $status
