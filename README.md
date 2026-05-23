@@ -8,39 +8,71 @@
 [![CI](https://github.com/iamsaquib8/tessera/actions/workflows/ci.yml/badge.svg)](https://github.com/iamsaquib8/tessera/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 [![Rust](https://img.shields.io/badge/rust-1.82%2B-orange.svg)](rust-toolchain.toml)
+[![Sponsor](https://img.shields.io/badge/sponsor-%E2%9D%A4-ff69b4.svg)](https://github.com/sponsors/iamsaquib8)
 
 ⭐ **Star this repo** if it saves your agent from a grep spiral — it helps others find it.
+💚 **[Sponsor on GitHub](https://github.com/sponsors/iamsaquib8)** if Tessera saves you tokens at work.
 
 ---
 
-## On a real 950-file Java service
+## Measured on real production repos
 
-Measured with `tessera bench --path .` on a production observability codebase (951 files · 16,368 symbols · 129,959 references). Reproduce on any repo — the binary ships the harness.
+`tessera bench --path .` runs against any repo and prints the chart below. The harness ships in the binary — every number here is reproducible.
+
+### 951-file Java service (browserstack/observability-pipeline)
 
 ```
-Tessera v0.2.0 bench
+Tessera v0.3.1 bench
 ─────────────────────
   951 files · 16,368 symbols · 129,959 references
 
 Index time
-  full         ████████████████████████████████    4,581 ms
-  incremental  █                                      64 ms   ·  72× faster
+  full         ████████████████████████████████    2,981 ms
+  incremental  █                                      40 ms   ·  75× faster
 
 "who calls parseFrom?"
   raw grep + read   ████████████████████████████████   394,140 tokens
   tessera           █                                    6,530 tokens   ·  60× cheaper
 
 Per-query latency  ·  median of 3 runs
-  find_definition      2 ms     ~1,781 tokens
-  find_references     16 ms     ~16,144 tokens
-  get_outline          9 ms     ~78,276 tokens
-  impact              611 ms     ~6,530 tokens
-  validate             2 ms     ~   48 tokens
+  find_definition      1 ms     ~ 1,781 tokens
+  find_references      8 ms     ~16,144 tokens
+  impact             371 ms     ~ 6,530 tokens
+  validate             1 ms     ~    48 tokens
 ```
 
-- **60× fewer tokens** to answer "who calls this?" — the work your agent spends most of its context window on.
-- **64 ms incremental re-index** on a 950-file repo — fast enough to run on every file save.
-- **Sub-20 ms** for definition/reference/outline/validation queries on real code.
+### 1,063-file Node.js service (browserstack/testhub, CommonJS)
+
+```
+Tessera v0.3.1 bench
+─────────────────────
+  1,063 files · 3,067 symbols · 142,337 references
+
+Index time
+  full         ████████████████████████████████    1,557 ms
+  incremental  █                                      38 ms   ·  41× faster
+
+"who calls BaseWorker?"
+  raw grep + read   ████████████████████████████████    36,311 tokens
+  tessera           █                                       41 tokens   ·  886× cheaper
+
+"where is BaseWorker defined?"
+  raw grep + read   ████████████████████████████████     1,790 tokens
+  tessera           ██                                      90 tokens   ·  20× cheaper
+
+Per-query latency  ·  median of 3 runs
+  find_definition      0 ms     ~    90 tokens
+  find_references      8 ms     ~    33 tokens
+  impact               1 ms     ~    41 tokens
+  validate             0 ms     ~    49 tokens
+```
+
+### Headlines
+
+- **60–900× fewer tokens** to answer "who calls this?" — the work your agent spends most of its context window on.
+- **38–40 ms incremental re-index** on near-million-LOC repos — fast enough to run on every file save.
+- **Sub-20 ms** for definition / reference / validation queries.
+- **CommonJS-aware**: `require('./foo')` is indexed alongside ES6 `import`, so `imports` / `imported_by` work on legacy Node code too.
 
 ## Install
 
@@ -120,28 +152,15 @@ tessera impact findById --json | jq '.callers[0] | {symbol: .symbol.qualified_na
 
 ## Wire it up to your coding agent
 
-Tessera speaks **MCP** (Model Context Protocol). Any agent that supports MCP can call its tools. Index once per repo (or via a post-clone hook), then point your agent at the binary.
+Tessera speaks **MCP**. Index your repo, point your agent at the binary.
 
-```sh
-cd path/to/your/repo
-tessera index .
-```
-
-**Exposed tools** (all of them, in every client below): `find_definition` · `find_references` · `get_outline` · `expand_symbol` · `impact` · `context_pack` · `diff_impact` · `imports` · `imported_by` · `signature` · `siblings` · `search` · `validate` · `validate_snippet` · `tests_for` · `stats`. Schemas in [docs/mcp.md](docs/mcp.md).
-
-### Claude Code
-
-Either edit `~/.claude.json` directly, or run from your repo root:
+**Claude Code:**
 
 ```sh
 claude mcp add tessera tessera -- mcp --db .tessera/tessera.db
 ```
 
-Restart Claude Code; the tools appear as `mcp__tessera__*`. Confirm with `/mcp` in the session.
-
-### Cursor
-
-Add to `~/.cursor/mcp.json` (global) or `.cursor/mcp.json` (per-project):
+**Cursor** — add to `~/.cursor/mcp.json` (global) or `.cursor/mcp.json` (per-project):
 
 ```json
 {
@@ -154,103 +173,11 @@ Add to `~/.cursor/mcp.json` (global) or `.cursor/mcp.json` (per-project):
 }
 ```
 
-Reload the window. Tessera shows up under **Settings → MCP**.
+Configs for **Cline, Continue.dev, Codex CLI, Zed, Aider, and custom GPTs** live in [docs/integrations.md](docs/integrations.md). Tool schemas in [docs/mcp.md](docs/mcp.md).
 
-### Cline (VS Code)
+**Exposed tools:** `find_definition` · `find_references` · `get_outline` · `expand_symbol` · `impact` · `context_pack` · `diff_impact` · `imports` · `imported_by` · `signature` · `siblings` · `search` · `validate` · `validate_snippet` · `tests_for` · `stats`.
 
-Open the Cline panel → `…` menu → **MCP Servers** → **Configure MCP Servers**, then add:
-
-```json
-{
-  "mcpServers": {
-    "tessera": {
-      "command": "tessera",
-      "args": ["mcp", "--db", ".tessera/tessera.db"],
-      "disabled": false,
-      "autoApprove": ["find_definition", "find_references", "get_outline", "search", "validate"]
-    }
-  }
-}
-```
-
-The `autoApprove` list is optional — those are the read-only queries safe to run without a prompt.
-
-### Continue.dev (VS Code / JetBrains)
-
-In your `~/.continue/config.json` (or workspace `.continue/config.json`):
-
-```json
-{
-  "experimental": {
-    "modelContextProtocolServers": [
-      {
-        "transport": {
-          "type": "stdio",
-          "command": "tessera",
-          "args": ["mcp", "--db", ".tessera/tessera.db"]
-        }
-      }
-    ]
-  }
-}
-```
-
-### Codex CLI (OpenAI)
-
-In `~/.codex/config.toml`:
-
-```toml
-[[mcp_servers]]
-name = "tessera"
-command = "tessera"
-args = ["mcp", "--db", ".tessera/tessera.db"]
-```
-
-### Zed
-
-In `~/.config/zed/settings.json`:
-
-```json
-{
-  "context_servers": {
-    "tessera": {
-      "command": {
-        "path": "tessera",
-        "args": ["mcp", "--db", ".tessera/tessera.db"]
-      }
-    }
-  }
-}
-```
-
-### Aider
-
-Aider doesn't speak MCP yet, but you can drop Tessera into its shell-out workflow:
-
-```sh
-aider --read-only-cmd "tessera get-outline {file}" \
-      --pre-prompt "Use \`tessera impact {symbol}\` before editing any function."
-```
-
-For richer integration, point Aider at `tessera search` and `tessera impact` from its `/run` hook.
-
-### GPT / ChatGPT (custom GPTs, no MCP)
-
-Build a simple wrapper that exposes the CLI as HTTP — e.g. `tessera mcp` behind a stdio→HTTP shim like [`mcp-proxy`](https://github.com/sparfenyuk/mcp-proxy) — and register it as a custom GPT action. The tool schemas in [docs/mcp.md](docs/mcp.md) map 1:1 to OpenAPI function specs.
-
-### Custom / library
-
-Any process can spawn `tessera mcp --db <path>` and talk JSON-RPC over stdio. Or skip MCP entirely and use the [Rust library](#use-as-a-rust-library) — `Index::open(...).impact(...)` is exactly the same query path the MCP server uses.
-
-### Tip: re-index after pulls
-
-Add this to a git hook (`.git/hooks/post-merge`, `post-checkout`) or pre-commit:
-
-```sh
-tessera index .   # incremental by default — sha-diff skips unchanged files
-```
-
-A 950-file Java repo with one changed file re-indexes in ~70 ms.
+**Tip:** add `tessera index .` to a git `post-merge` hook so the graph stays fresh on every pull (incremental re-index is 38–66 ms on real repos).
 
 ## Use as a Rust library
 
@@ -327,6 +254,10 @@ cargo test --all-targets --all-features
 ## Contributing
 
 PRs welcome — parsers, graph accuracy, and query quality have the highest leverage. See [CONTRIBUTING.md](CONTRIBUTING.md).
+
+## Sponsor
+
+Tessera is Apache-2.0 and built in public. If it saves you or your team tokens, **[sponsor on GitHub](https://github.com/sponsors/iamsaquib8)** to keep new languages, queries, and benchmarks shipping. Sponsors get early access to v0.4 features (runtime trace fusion, ADR memory, semantic git) and a say in the roadmap.
 
 ## License
 
