@@ -222,6 +222,13 @@ pub fn parse_file(language: Language, content: &str) -> Result<ParsedFile> {
         Language::Go => parser.set_language(tree_sitter_go::language())?,
         Language::Rust => parser.set_language(tree_sitter_rust::language())?,
         Language::Java => parser.set_language(tree_sitter_java::language())?,
+        Language::C => parser.set_language(tree_sitter_c::language())?,
+        // The C++ grammar is a superset of C, so `.h`/C files routed here parse
+        // cleanly too.
+        Language::Cpp => parser.set_language(tree_sitter_cpp::language())?,
+        Language::CSharp => parser.set_language(tree_sitter_c_sharp::language())?,
+        Language::Ruby => parser.set_language(tree_sitter_ruby::language())?,
+        Language::Php => parser.set_language(tree_sitter_php::language())?,
     }
     let tree = parser
         .parse(content, None)
@@ -278,6 +285,49 @@ impl<'a> Visitor<'a> {
             .into_iter()
             .collect(),
             Language::Java => ["super", "this"].into_iter().collect(),
+            // C / C++: the noisiest "calls" are libc / control macros that
+            // would never resolve to an indexed symbol.
+            Language::C | Language::Cpp => [
+                "sizeof",
+                "printf",
+                "fprintf",
+                "sprintf",
+                "malloc",
+                "free",
+                "memcpy",
+                "memset",
+                "strlen",
+                "strcmp",
+                "assert",
+                "static_cast",
+                "reinterpret_cast",
+                "dynamic_cast",
+                "const_cast",
+            ]
+            .into_iter()
+            .collect(),
+            Language::CSharp => ["base", "this", "nameof", "typeof"].into_iter().collect(),
+            Language::Ruby => [
+                "require",
+                "require_relative",
+                "load",
+                "puts",
+                "print",
+                "p",
+                "raise",
+            ]
+            .into_iter()
+            .collect(),
+            Language::Php => [
+                "require",
+                "require_once",
+                "include",
+                "include_once",
+                "echo",
+                "isset",
+            ]
+            .into_iter()
+            .collect(),
         };
         Self {
             language,
@@ -342,6 +392,11 @@ impl<'a> Visitor<'a> {
             Language::Go => self.go_symbol_from_node(node),
             Language::Rust => self.rust_symbol_from_node(node),
             Language::Java => self.java_symbol_from_node(node),
+            Language::C => self.c_family_symbol_from_node(node, false),
+            Language::Cpp => self.c_family_symbol_from_node(node, true),
+            Language::CSharp => self.csharp_symbol_from_node(node),
+            Language::Ruby => self.ruby_symbol_from_node(node),
+            Language::Php => self.php_symbol_from_node(node),
         }
     }
 
@@ -515,6 +570,178 @@ impl<'a> Visitor<'a> {
         Some(self.make_symbol(name, kind, node, signature, exported))
     }
 
+    /// C and C++ share one extractor; `cpp` enables the C++-only kinds
+    /// (`class_specifier`, `namespace_definition`). The C++ grammar is a
+    /// superset of C, so this also covers `.h` headers.
+    fn c_family_symbol_from_node(&self, node: Node<'a>, cpp: bool) -> Option<IndexedSymbol> {
+        match node.kind() {
+            "function_definition" => {
+                let decl = node.child_by_field_name("declarator")?;
+                let name = self.c_declarator_name(decl)?;
+                if name.is_empty() {
+                    return None;
+                }
+                let signature = self.signature_until_body(node);
+                let exported = !self.c_has_static(node);
+                Some(self.make_symbol(name, "function", node, signature, exported))
+            }
+            "struct_specifier" if node.child_by_field_name("body").is_some() => {
+                let name = self.node_text(node.child_by_field_name("name")?);
+                let signature = self.signature_until_body(node);
+                Some(self.make_symbol(name, "struct", node, signature, true))
+            }
+            "enum_specifier" if node.child_by_field_name("body").is_some() => {
+                let name = self.node_text(node.child_by_field_name("name")?);
+                let signature = self.signature_until_body(node);
+                Some(self.make_symbol(name, "enum", node, signature, true))
+            }
+            "union_specifier" if node.child_by_field_name("body").is_some() => {
+                let name = self.node_text(node.child_by_field_name("name")?);
+                let signature = self.signature_until_body(node);
+                Some(self.make_symbol(name, "union", node, signature, true))
+            }
+            "class_specifier" if cpp && node.child_by_field_name("body").is_some() => {
+                let name = self.node_text(node.child_by_field_name("name")?);
+                let signature = self.signature_until_body(node);
+                Some(self.make_symbol(name, "class", node, signature, true))
+            }
+            "namespace_definition" if cpp => {
+                let name = self.node_text(node.child_by_field_name("name")?);
+                let signature = self.signature_until_body(node);
+                Some(self.make_symbol(name, "namespace", node, signature, true))
+            }
+            _ => None,
+        }
+    }
+
+    /// Unwrap a C/C++ declarator (pointer/reference/array/function wrappers)
+    /// down to the innermost identifier or qualified name.
+    fn c_declarator_name(&self, node: Node<'a>) -> Option<String> {
+        match node.kind() {
+            "identifier" | "field_identifier" | "type_identifier" | "destructor_name"
+            | "operator_name" => Some(self.node_text(node)),
+            "qualified_identifier" => node
+                .child_by_field_name("name")
+                .map(|n| self.node_text(n))
+                .or_else(|| Some(last_identifier(self.node_text(node)))),
+            "function_declarator"
+            | "pointer_declarator"
+            | "reference_declarator"
+            | "parenthesized_declarator"
+            | "array_declarator"
+            | "init_declarator" => {
+                let inner = node.child_by_field_name("declarator")?;
+                self.c_declarator_name(inner)
+            }
+            _ => {
+                let mut cursor = node.walk();
+                for child in node.children(&mut cursor) {
+                    if let Some(name) = self.c_declarator_name(child) {
+                        return Some(name);
+                    }
+                }
+                None
+            }
+        }
+    }
+
+    fn c_has_static(&self, node: Node<'a>) -> bool {
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            if child.kind() == "storage_class_specifier" && self.node_text(child) == "static" {
+                return true;
+            }
+        }
+        false
+    }
+
+    fn csharp_symbol_from_node(&self, node: Node<'a>) -> Option<IndexedSymbol> {
+        let (name, kind) = match node.kind() {
+            "class_declaration" => (self.node_text(node.child_by_field_name("name")?), "class"),
+            "interface_declaration" => (
+                self.node_text(node.child_by_field_name("name")?),
+                "interface",
+            ),
+            "struct_declaration" => (self.node_text(node.child_by_field_name("name")?), "struct"),
+            "enum_declaration" => (self.node_text(node.child_by_field_name("name")?), "enum"),
+            "record_declaration" => (self.node_text(node.child_by_field_name("name")?), "record"),
+            "method_declaration" => (self.node_text(node.child_by_field_name("name")?), "method"),
+            "constructor_declaration" => (
+                self.node_text(node.child_by_field_name("name")?),
+                "constructor",
+            ),
+            _ => return None,
+        };
+        let signature = self.signature_until_body(node);
+        let exported = self.csharp_is_public(node);
+        Some(self.make_symbol(name, kind, node, signature, exported))
+    }
+
+    fn csharp_is_public(&self, node: Node<'a>) -> bool {
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            if child.kind() == "modifier" && self.node_text(child) == "public" {
+                return true;
+            }
+        }
+        false
+    }
+
+    fn ruby_symbol_from_node(&self, node: Node<'a>) -> Option<IndexedSymbol> {
+        let (name, kind) = match node.kind() {
+            "method" | "singleton_method" => {
+                (self.node_text(node.child_by_field_name("name")?), "method")
+            }
+            "class" => (self.node_text(node.child_by_field_name("name")?), "class"),
+            "module" => (self.node_text(node.child_by_field_name("name")?), "module"),
+            _ => return None,
+        };
+        // Ruby methods are public by default.
+        let signature = self.signature_until_body(node);
+        Some(self.make_symbol(name, kind, node, signature, true))
+    }
+
+    fn php_symbol_from_node(&self, node: Node<'a>) -> Option<IndexedSymbol> {
+        let (name, kind) = match node.kind() {
+            "function_definition" => (
+                self.node_text(node.child_by_field_name("name")?),
+                "function",
+            ),
+            "method_declaration" => (self.node_text(node.child_by_field_name("name")?), "method"),
+            "class_declaration" => (self.node_text(node.child_by_field_name("name")?), "class"),
+            "interface_declaration" => (
+                self.node_text(node.child_by_field_name("name")?),
+                "interface",
+            ),
+            "trait_declaration" => (self.node_text(node.child_by_field_name("name")?), "trait"),
+            "enum_declaration" => (self.node_text(node.child_by_field_name("name")?), "enum"),
+            _ => return None,
+        };
+        let signature = self.signature_until_body(node);
+        let exported = self.php_is_public(node);
+        Some(self.make_symbol(name, kind, node, signature, exported))
+    }
+
+    fn php_is_public(&self, node: Node<'a>) -> bool {
+        // Top-level functions are global; methods default to public unless a
+        // `visibility_modifier` says private/protected.
+        if node.kind() != "method_declaration" {
+            return true;
+        }
+        let mut cursor = node.walk();
+        let mut saw = false;
+        let mut public = false;
+        for child in node.children(&mut cursor) {
+            if child.kind() == "visibility_modifier" {
+                saw = true;
+                if self.node_text(child).eq_ignore_ascii_case("public") {
+                    public = true;
+                }
+            }
+        }
+        !saw || public
+    }
+
     fn make_symbol(
         &self,
         name: String,
@@ -577,6 +804,36 @@ impl<'a> Visitor<'a> {
             (Language::Java, "object_creation_expression") => {
                 (node.child_by_field_name("type")?, "new")
             }
+            (Language::C | Language::Cpp, "call_expression") => {
+                (node.child_by_field_name("function")?, "call")
+            }
+            (Language::Cpp, "new_expression") => (
+                node.child_by_field_name("type").or_else(|| {
+                    self.first_child_with_kinds(node, &["type_identifier", "qualified_identifier"])
+                })?,
+                "new",
+            ),
+            (Language::CSharp, "invocation_expression") => {
+                (node.child_by_field_name("function")?, "call")
+            }
+            (Language::CSharp, "object_creation_expression") => {
+                (node.child_by_field_name("type")?, "new")
+            }
+            (Language::Ruby, "call") => (node.child_by_field_name("method")?, "call"),
+            (Language::Ruby, "method_call") => (node.child_by_field_name("method")?, "call"),
+            (Language::Php, "function_call_expression") => {
+                (node.child_by_field_name("function")?, "call")
+            }
+            (Language::Php, "member_call_expression") => {
+                (node.child_by_field_name("name")?, "call")
+            }
+            (Language::Php, "scoped_call_expression") => {
+                (node.child_by_field_name("name")?, "call")
+            }
+            (Language::Php, "object_creation_expression") => (
+                self.first_child_with_kinds(node, &["name", "qualified_name"])?,
+                "new",
+            ),
             _ => return None,
         };
         let symbol_name = self.called_name(function_node)?;
@@ -659,6 +916,44 @@ impl<'a> Visitor<'a> {
                 )?;
                 (self.node_text(target), "import")
             }
+            (Language::C | Language::Cpp, "preproc_include") => {
+                let path = node.child_by_field_name("path").or_else(|| {
+                    self.first_child_with_kinds(node, &["string_literal", "system_lib_string"])
+                })?;
+                let cleaned = self
+                    .node_text(path)
+                    .trim_matches(|c: char| matches!(c, '"' | '<' | '>' | ' '))
+                    .to_string();
+                (cleaned, "include")
+            }
+            (Language::CSharp, "using_directive") => {
+                let name = node
+                    .child_by_field_name("name")
+                    .or_else(|| self.first_named_child(node))?;
+                (self.node_text(name), "using")
+            }
+            (Language::Ruby, "call") => {
+                // require / require_relative / load 'path'
+                let method = node.child_by_field_name("method")?;
+                let mname = self.node_text(method);
+                if mname != "require" && mname != "require_relative" && mname != "load" {
+                    return None;
+                }
+                let args = node.child_by_field_name("arguments")?;
+                let string_arg =
+                    self.first_child_with_kinds(args, &["string", "string_content"])?;
+                (self.strip_quotes(self.node_text(string_arg)), "require")
+            }
+            (Language::Php, "namespace_use_declaration") => {
+                let clause = self
+                    .first_child_with_kinds(node, &["namespace_use_clause"])
+                    .unwrap_or(node);
+                let name = self.first_child_with_kinds(
+                    clause,
+                    &["qualified_name", "namespace_name", "name"],
+                )?;
+                (self.node_text(name), "use")
+            }
             _ => return None,
         };
         if source.is_empty() {
@@ -740,9 +1035,14 @@ impl<'a> Visitor<'a> {
                 .child_by_field_name("attribute")
                 .map(|child| self.node_text(child))
                 .or_else(|| Some(last_identifier(self.node_text(node)))),
-            "member_expression" | "selector_expression" => node
+            "member_expression" | "selector_expression" | "member_access_expression" => node
                 .child_by_field_name("property")
                 .or_else(|| node.child_by_field_name("field"))
+                .or_else(|| node.child_by_field_name("name"))
+                .map(|child| self.node_text(child))
+                .or_else(|| Some(last_identifier(self.node_text(node)))),
+            "qualified_identifier" => node
+                .child_by_field_name("name")
                 .map(|child| self.node_text(child))
                 .or_else(|| Some(last_identifier(self.node_text(node)))),
             "field_expression" => node

@@ -145,7 +145,7 @@ fn call_tool(
                 .and_then(Value::as_str)
                 .and_then(Language::from_name)
                 .ok_or_else(|| {
-                    "argument `language` is required (typescript|javascript|python|go|rust)"
+                    "argument `language` is required (typescript|tsx|javascript|python|go|rust|java|c|cpp|csharp|ruby|php)"
                         .to_string()
                 })?;
             serde_json::to_value(
@@ -156,6 +156,24 @@ fn call_tool(
         "tests_for" => {
             let symbol = arg_string(&args, "symbol")?;
             serde_json::to_value(query::tests_for_conn(conn, &symbol).map_err(to_string)?)
+        }
+        "connect" => {
+            let from = arg_string(&args, "from")?;
+            let to = arg_string(&args, "to")?;
+            let depth = args.get("depth").and_then(Value::as_u64).unwrap_or(8) as usize;
+            serde_json::to_value(query::connect_conn(conn, &from, &to, depth).map_err(to_string)?)
+        }
+        "export" => {
+            let format = args
+                .get("format")
+                .and_then(Value::as_str)
+                .unwrap_or("mermaid");
+            let from = args.get("from").and_then(Value::as_str);
+            let depth = args.get("depth").and_then(Value::as_u64).unwrap_or(3) as usize;
+            let limit = args.get("limit").and_then(Value::as_u64).unwrap_or(800) as usize;
+            serde_json::to_value(
+                query::export_conn(conn, format, from, depth, limit).map_err(to_string)?,
+            )
         }
         "context_pack" => {
             let symbol = arg_string(&args, "symbol")?;
@@ -323,7 +341,7 @@ fn tools() -> Value {
                     "code": { "type": "string" },
                     "language": {
                         "type": "string",
-                        "enum": ["typescript", "tsx", "javascript", "python", "go", "rust", "java"]
+                        "enum": ["typescript", "tsx", "javascript", "python", "go", "rust", "java", "c", "cpp", "csharp", "ruby", "php"]
                     }
                 },
                 "required": ["code", "language"]
@@ -418,6 +436,32 @@ fn tools() -> Value {
                     "limit": { "type": "integer", "minimum": 1, "maximum": 500 }
                 },
                 "required": ["pattern"]
+            }
+        },
+        {
+            "name": "connect",
+            "description": "Find the shortest call path from one symbol to another (does A transitively call B, and how?). Deterministic graph traversal — returns the ordered chain of calls or reports no path.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "from": { "type": "string", "description": "Source symbol (the caller side)." },
+                    "to": { "type": "string", "description": "Target symbol to reach." },
+                    "depth": { "type": "integer", "minimum": 1, "maximum": 12, "description": "Max hops to search. Default 8." }
+                },
+                "required": ["from", "to"]
+            }
+        },
+        {
+            "name": "export",
+            "description": "Export the call graph as Graphviz DOT or Mermaid. Whole graph by default, or the forward call subgraph rooted at `from`. Useful for visualising structure or embedding a diagram.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "format": { "type": "string", "enum": ["mermaid", "dot"] },
+                    "from": { "type": "string", "description": "Root the export at this symbol's forward call subgraph." },
+                    "depth": { "type": "integer", "minimum": 1, "maximum": 12, "description": "Traversal depth when `from` is set. Default 3." },
+                    "limit": { "type": "integer", "minimum": 1, "maximum": 5000, "description": "Max edges to emit. Default 800." }
+                }
             }
         }
     ])

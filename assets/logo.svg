@@ -1,0 +1,44 @@
+<svg width="640" height="160" viewBox="0 0 640 160" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Tessera">
+  <defs>
+    <linearGradient id="t1" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#2dd4bf"/>
+      <stop offset="1" stop-color="#0ea5e9"/>
+    </linearGradient>
+    <linearGradient id="t2" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#818cf8"/>
+      <stop offset="1" stop-color="#6366f1"/>
+    </linearGradient>
+    <linearGradient id="t3" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#f472b6"/>
+      <stop offset="1" stop-color="#c026d3"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Mark: a mosaic of tesserae wired into a graph -->
+  <g transform="translate(20,20)">
+    <!-- edges -->
+    <g stroke="#94a3b8" stroke-width="3" stroke-linecap="round" opacity="0.7">
+      <line x1="34" y1="34" x2="86" y2="34"/>
+      <line x1="34" y1="34" x2="34" y2="86"/>
+      <line x1="86" y1="34" x2="86" y2="86"/>
+      <line x1="34" y1="86" x2="86" y2="86"/>
+      <line x1="86" y1="86" x2="34" y2="34"/>
+    </g>
+    <!-- tiles -->
+    <rect x="14" y="14" width="40" height="40" rx="9" fill="url(#t1)"/>
+    <rect x="66" y="14" width="40" height="40" rx="9" fill="url(#t2)"/>
+    <rect x="14" y="66" width="40" height="40" rx="9" fill="url(#t2)"/>
+    <rect x="66" y="66" width="40" height="40" rx="9" fill="url(#t3)"/>
+    <!-- nodes -->
+    <g fill="#0f172a">
+      <circle cx="34" cy="34" r="5"/>
+      <circle cx="86" cy="34" r="5"/>
+      <circle cx="34" cy="86" r="5"/>
+      <circle cx="86" cy="86" r="5"/>
+    </g>
+  </g>
+
+  <!-- Wordmark + tagline -->
+  <text x="170" y="78" font-family="ui-monospace, 'SF Mono', Menlo, Consolas, monospace" font-size="52" font-weight="700" fill="#4f46e5" letter-spacing="-1">tessera</text>
+  <text x="172" y="108" font-family="ui-sans-serif, system-ui, -apple-system, Segoe UI, sans-serif" font-size="17" font-weight="500" fill="#64748b">deterministic code graph for AI agents</text>
+</svg>

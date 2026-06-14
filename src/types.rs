@@ -14,6 +14,13 @@ pub enum Language {
     Go,
     Rust,
     Java,
+    C,
+    /// C++. `.h` headers are parsed by the C++ grammar too — it is a strict
+    /// superset of C, so it extracts both C and C++ headers correctly.
+    Cpp,
+    CSharp,
+    Ruby,
+    Php,
 }
 
 impl Language {
@@ -26,6 +33,13 @@ impl Language {
             "go" => Some(Self::Go),
             "rs" => Some(Self::Rust),
             "java" => Some(Self::Java),
+            "c" => Some(Self::C),
+            // `.h` is parsed with the C++ grammar (a C superset) so headers
+            // from both C and C++ projects extract cleanly.
+            "cpp" | "cc" | "cxx" | "hpp" | "hh" | "hxx" | "h" => Some(Self::Cpp),
+            "cs" => Some(Self::CSharp),
+            "rb" => Some(Self::Ruby),
+            "php" | "phtml" => Some(Self::Php),
             _ => None,
         }
     }
@@ -39,6 +53,11 @@ impl Language {
             "go" => Some(Self::Go),
             "rust" | "rs" => Some(Self::Rust),
             "java" => Some(Self::Java),
+            "c" => Some(Self::C),
+            "cpp" | "c++" | "cxx" | "cc" => Some(Self::Cpp),
+            "csharp" | "c#" | "cs" => Some(Self::CSharp),
+            "ruby" | "rb" => Some(Self::Ruby),
+            "php" => Some(Self::Php),
             _ => None,
         }
     }
@@ -53,6 +72,11 @@ impl Language {
             Self::Go => "go",
             Self::Rust => "rust",
             Self::Java => "java",
+            Self::C => "c",
+            Self::Cpp => "cpp",
+            Self::CSharp => "csharp",
+            Self::Ruby => "ruby",
+            Self::Php => "php",
         }
     }
 }
@@ -817,6 +841,73 @@ pub struct BenchSavings {
     pub raw_tokens: usize,
     pub tessera_tokens: usize,
     pub ratio: f32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PathNode {
+    pub qualified_name: String,
+    pub kind: String,
+    pub path: String,
+    pub line: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConnectResult {
+    pub from: String,
+    pub to: String,
+    pub found: bool,
+    /// Ordered call path from `from` to `to` (inclusive of both endpoints).
+    pub path: Vec<PathNode>,
+    pub meta: QueryMeta,
+}
+
+impl Display for ConnectResult {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if !self.found {
+            writeln!(
+                f,
+                "No call path from {} to {} (within search depth).",
+                self.from, self.to
+            )?;
+            return write_meta(f, &self.meta);
+        }
+        writeln!(
+            f,
+            "Call path {} → {} ({} hops)",
+            self.from,
+            self.to,
+            self.path.len().saturating_sub(1)
+        )?;
+        for (i, node) in self.path.iter().enumerate() {
+            let arrow = if i == 0 { "  " } else { "  ↳ " };
+            writeln!(
+                f,
+                "{}{} @ {}:{}",
+                arrow, node.qualified_name, node.path, node.line
+            )?;
+        }
+        write_meta(f, &self.meta)
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExportResult {
+    pub format: String,
+    pub scope: String,
+    pub nodes: usize,
+    pub edges: usize,
+    pub truncated: bool,
+    /// The rendered graph in the requested format (DOT or Mermaid).
+    pub diagram: String,
+    pub meta: QueryMeta,
+}
+
+impl Display for ExportResult {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // The diagram itself IS the output so it pipes cleanly into
+        // `dot`/mermaid. Counts + truncation go to the meta line as a comment.
+        write!(f, "{}", self.diagram)
+    }
 }
 
 fn write_meta(f: &mut fmt::Formatter<'_>, meta: &QueryMeta) -> fmt::Result {

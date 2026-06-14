@@ -25,18 +25,28 @@ Tessera is built in layers. The first releases focus on local deterministic navi
 - Library API (`tessera_codegraph::Index`)
 - Optional Cozo (Datalog) graph engine behind `--features cozo`
 
-## v0.3
+## v0.4 (released)
 
-- HTTP/SSE MCP transport
+- Five new languages — C, C++, C#, Ruby, PHP (11 total)
+- `connect` — shortest call path between two symbols
+- `export` — call graph to Graphviz DOT / Mermaid
+- Drop-in `/tessera` Agent Skill
+- Install via npm, Homebrew, curl, Docker, prebuilt binaries (+ cross-platform CI)
+- Logo, terminal demo, social-preview branding
+
+## v0.5 (fast-follow)
+
+- More languages — Kotlin, Swift, Scala, Lua, Zig (→ 16)
+- `watch` — daemon mode: auto incremental re-index on file change
+- `unused` — dead-code / zero-inbound-reference detection
+- HTTP/SSE MCP transport — Tessera as a shared team service
+
+## Later
+
 - More precise TypeScript import/export resolution
 - More precise method and class member qualification
 - Semantic git history (DuckDB layer)
 - Architecture Decision Memory: ADR ingestion + retrieval at point of edit
-- Repository benchmark series (Tuesday post)
-
-## Later
-
-- Runtime trace ingestion (test instrumentation libraries, OpenTelemetry, Sentry)
+- Runtime trace ingestion (test instrumentation libraries, OpenTelemetry)
 - Token-budgeted query planner
 - Team Server (shared cloud-hosted index, SSO, audit log)
-- Kotlin, Scala, and C# extraction
