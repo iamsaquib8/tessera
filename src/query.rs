@@ -4,20 +4,20 @@ use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
 use anyhow::Result;
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OptionalExtension};
 use strsim::jaro_winkler;
 
 use crate::bloom::BloomFilter;
 use crate::db;
 use crate::indexer;
 use crate::types::{
-    AlternativeQuery, ContextPack, CriticalityBreakdown, DefinitionResult, DiffChangedSymbol,
-    DiffImpactResult, DiffImpactedSymbol, ExpandResult, ImpactCaller, ImpactResult, ImportRecord,
-    ImportedByResult, ImportsResult, KindCount, Language, LanguageCount, OutlineResult, QueryMeta,
-    ReferenceRecord, ReferencesResult, SearchHit, SearchOptions, SearchResult, Sibling,
-    SiblingsResult, SignatureLine, SignatureResult, SnippetReferenceCheck, StatsResult,
-    SymbolRecord, SymbolSuggestion, TestsForResult, TopFanout, ValidateResult,
-    ValidateSnippetResult,
+    AlternativeQuery, ConnectResult, ContextPack, CriticalityBreakdown, DefinitionResult,
+    DiffChangedSymbol, DiffImpactResult, DiffImpactedSymbol, ExpandResult, ExportResult,
+    ImpactCaller, ImpactResult, ImportRecord, ImportedByResult, ImportsResult, KindCount, Language,
+    LanguageCount, OutlineResult, PathNode, QueryMeta, ReferenceRecord, ReferencesResult,
+    SearchHit, SearchOptions, SearchResult, Sibling, SiblingsResult, SignatureLine,
+    SignatureResult, SnippetReferenceCheck, StatsResult, SymbolRecord, SymbolSuggestion,
+    TestsForResult, TopFanout, ValidateResult, ValidateSnippetResult,
 };
 
 // ─── Connection-based public API ─────────────────────────────────────────────
@@ -1060,6 +1060,211 @@ pub fn tests_for_conn(conn: &Connection, symbol: &str) -> Result<TestsForResult>
     })
 }
 
+pub fn connect_conn(
+    conn: &Connection,
+    from: &str,
+    to: &str,
+    max_depth: usize,
+) -> Result<ConnectResult> {
+    let max_depth = max_depth.clamp(1, 12);
+
+    let to_node = |s: &SymbolRecord| PathNode {
+        qualified_name: s.qualified_name.clone(),
+        kind: s.kind.clone(),
+        path: s.path.clone(),
+        line: s.start_line,
+    };
+
+    let starts = exact_symbols(conn, from, 25)?;
+    let targets = exact_symbols(conn, to, 50)?;
+    if starts.is_empty() || targets.is_empty() {
+        return Ok(ConnectResult {
+            from: from.to_string(),
+            to: to.to_string(),
+            found: false,
+            path: Vec::new(),
+            meta: meta(40, "find_definition", 120, 0.6),
+        });
+    }
+    let target_ids: HashSet<i64> = targets.iter().map(|s| s.id).collect();
+
+    // Trivial: `from` already resolves to a target symbol.
+    if let Some(s) = starts.iter().find(|s| target_ids.contains(&s.id)) {
+        return Ok(ConnectResult {
+            from: from.to_string(),
+            to: to.to_string(),
+            found: true,
+            path: vec![to_node(s)],
+            meta: meta(40, "signature", 120, 0.7),
+        });
+    }
+
+    // BFS forward over the call graph (caller -> callee), tracking a predecessor
+    // by symbol id so the path can be reconstructed. `prev` absent ⇒ a start node.
+    const MAX_VISITED: usize = 5000;
+    let mut visited: HashSet<i64> = HashSet::new();
+    let mut prev: HashMap<i64, i64> = HashMap::new();
+    let mut record: HashMap<i64, SymbolRecord> = HashMap::new();
+    let mut queue: VecDeque<(SymbolRecord, usize)> = VecDeque::new();
+
+    for s in &starts {
+        if visited.insert(s.id) {
+            record.insert(s.id, s.clone());
+            queue.push_back((s.clone(), 0));
+        }
+    }
+
+    let mut hit: Option<i64> = None;
+    'bfs: while let Some((node, depth)) = queue.pop_front() {
+        if depth >= max_depth {
+            continue;
+        }
+        for callee in callees_for_symbol(conn, &node, 200)? {
+            if !visited.insert(callee.id) {
+                continue;
+            }
+            prev.insert(callee.id, node.id);
+            record.insert(callee.id, callee.clone());
+            if target_ids.contains(&callee.id) {
+                hit = Some(callee.id);
+                break 'bfs;
+            }
+            queue.push_back((callee.clone(), depth + 1));
+            if visited.len() >= MAX_VISITED {
+                break 'bfs;
+            }
+        }
+    }
+
+    let mut path_nodes = Vec::new();
+    if let Some(target_id) = hit {
+        let mut chain = vec![target_id];
+        let mut cur = target_id;
+        while let Some(&p) = prev.get(&cur) {
+            chain.push(p);
+            cur = p;
+        }
+        chain.reverse();
+        for id in chain {
+            if let Some(rec) = record.get(&id) {
+                path_nodes.push(to_node(rec));
+            }
+        }
+    }
+
+    let tokens = estimate_tokens(&path_nodes).max(40);
+    Ok(ConnectResult {
+        from: from.to_string(),
+        to: to.to_string(),
+        found: hit.is_some(),
+        path: path_nodes,
+        meta: meta(tokens, "impact", 700, 0.8),
+    })
+}
+
+pub fn export_conn(
+    conn: &Connection,
+    format: &str,
+    from: Option<&str>,
+    depth: usize,
+    limit: usize,
+) -> Result<ExportResult> {
+    let fmt = if format.eq_ignore_ascii_case("dot") {
+        "dot"
+    } else {
+        "mermaid"
+    };
+    let limit = limit.clamp(1, 5000);
+    let depth = depth.clamp(1, 12);
+    let mut edges: Vec<(String, String)> = Vec::new();
+    let mut truncated = false;
+    let scope;
+
+    if let Some(sym) = from {
+        scope = format!("from:{sym}");
+        let starts = exact_symbols(conn, sym, 25)?;
+        let mut visited: HashSet<i64> = HashSet::new();
+        let mut queue: VecDeque<(SymbolRecord, usize)> = VecDeque::new();
+        for s in &starts {
+            if visited.insert(s.id) {
+                queue.push_back((s.clone(), 0));
+            }
+        }
+        'bfs: while let Some((node, d)) = queue.pop_front() {
+            if d >= depth {
+                continue;
+            }
+            for callee in callees_for_symbol(conn, &node, 200)? {
+                edges.push((node.qualified_name.clone(), callee.qualified_name.clone()));
+                if edges.len() >= limit {
+                    truncated = true;
+                    break 'bfs;
+                }
+                if visited.insert(callee.id) {
+                    queue.push_back((callee, d + 1));
+                }
+            }
+        }
+    } else {
+        scope = "all".to_string();
+        let mut stmt = conn.prepare(
+            "
+            SELECT DISTINCT s1.qualified_name, s2.qualified_name
+            FROM edges e
+            JOIN symbols s1 ON s1.id = e.from_symbol_id
+            JOIN symbols s2 ON (s2.name = e.to_symbol_name OR s2.qualified_name = e.to_symbol_name)
+            WHERE s1.id != s2.id
+            ORDER BY s1.qualified_name, s2.qualified_name
+            LIMIT ?1
+            ",
+        )?;
+        let rows = stmt.query_map(params![(limit + 1) as i64], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?;
+        for row in rows {
+            edges.push(row?);
+        }
+        if edges.len() > limit {
+            truncated = true;
+            edges.truncate(limit);
+        }
+    }
+
+    edges.sort();
+    edges.dedup();
+
+    // Node set in deterministic order.
+    let mut nodes: Vec<String> = Vec::new();
+    {
+        let mut seen: HashSet<String> = HashSet::new();
+        for (a, b) in &edges {
+            for n in [a, b] {
+                if seen.insert(n.clone()) {
+                    nodes.push(n.clone());
+                }
+            }
+        }
+        nodes.sort();
+    }
+
+    let diagram = if fmt == "dot" {
+        render_dot(&edges)
+    } else {
+        render_mermaid(&nodes, &edges)
+    };
+
+    let tokens = estimate_tokens(&diagram).max(40);
+    Ok(ExportResult {
+        format: fmt.to_string(),
+        scope,
+        nodes: nodes.len(),
+        edges: edges.len(),
+        truncated,
+        diagram,
+        meta: meta(tokens, "impact", 900, 0.7),
+    })
+}
+
 // ─── Path-based wrappers used by the CLI ─────────────────────────────────────
 
 pub fn find_definition(db_path: &Path, symbol: &str) -> Result<DefinitionResult> {
@@ -1109,6 +1314,22 @@ pub fn stats(db_path: &Path) -> Result<StatsResult> {
 pub fn tests_for(db_path: &Path, symbol: &str) -> Result<TestsForResult> {
     let conn = db::open(db_path)?;
     tests_for_conn(&conn, symbol)
+}
+
+pub fn connect(db_path: &Path, from: &str, to: &str, max_depth: usize) -> Result<ConnectResult> {
+    let conn = db::open(db_path)?;
+    connect_conn(&conn, from, to, max_depth)
+}
+
+pub fn export(
+    db_path: &Path,
+    format: &str,
+    from: Option<&str>,
+    depth: usize,
+    limit: usize,
+) -> Result<ExportResult> {
+    let conn = db::open(db_path)?;
+    export_conn(&conn, format, from, depth, limit)
 }
 
 pub fn search(db_path: &Path, pattern: &str, options: SearchOptions) -> Result<SearchResult> {
@@ -1254,6 +1475,125 @@ fn callers_for_symbol(conn: &Connection, symbol: &str, limit: usize) -> Result<V
     )?;
     let symbols = rows.collect::<rusqlite::Result<Vec<_>>>()?;
     Ok(symbols)
+}
+
+/// Symbols that `caller` calls — the forward direction of the call graph (the
+/// inverse of `callers_for_symbol`). Used by `connect` / `export`.
+///
+/// Each distinct callee *name* is resolved to a single best symbol, preferring
+/// a definition in the caller's own file. Without this, a call to a common name
+/// like `loadUser` would fan out to every `loadUser` across the index and the
+/// forward subgraph would explode across unrelated files — defeating the point
+/// of a precise graph.
+fn callees_for_symbol(
+    conn: &Connection,
+    caller: &SymbolRecord,
+    limit: usize,
+) -> Result<Vec<SymbolRecord>> {
+    let mut name_stmt = conn
+        .prepare("SELECT DISTINCT to_symbol_name FROM edges WHERE from_symbol_id = ?1 LIMIT ?2")?;
+    let names = name_stmt
+        .query_map(params![caller.id, limit as i64], |row| {
+            row.get::<_, String>(0)
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+
+    let mut out = Vec::new();
+    let mut seen: HashSet<i64> = HashSet::new();
+    for name in names {
+        if let Some(sym) = resolve_callee(conn, &name, caller.file_id)? {
+            if sym.id != caller.id && seen.insert(sym.id) {
+                out.push(sym);
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// Resolve a referenced name to a single best-matching symbol, preferring a
+/// definition in `prefer_file_id`, then exact-qualified, then exact-name.
+fn resolve_callee(
+    conn: &Connection,
+    name: &str,
+    prefer_file_id: i64,
+) -> Result<Option<SymbolRecord>> {
+    conn.query_row(
+        "
+        SELECT s.id, s.name, s.qualified_name, s.kind, s.file_id, f.path, f.language,
+               s.start_line, s.end_line, s.signature, s.exported
+        FROM symbols s
+        JOIN files f ON f.id = s.file_id
+        WHERE s.qualified_name = ?1 OR s.name = ?1
+        ORDER BY
+            CASE WHEN s.file_id = ?2 THEN 0 ELSE 1 END,
+            CASE WHEN s.qualified_name = ?1 THEN 0 ELSE 1 END,
+            length(s.qualified_name),
+            f.path
+        LIMIT 1
+        ",
+        params![name, prefer_file_id],
+        db::map_symbol,
+    )
+    .optional()
+    .map_err(Into::into)
+}
+
+/// Exact, case-sensitive symbol matches by name or qualified name. Unlike
+/// `find_definition_conn` this never falls back to fuzzy matching, and unlike a
+/// `LIKE` clause it is case-sensitive — `connect` and `export` need precise
+/// endpoints. (SQLite `LIKE` is case-insensitive by default, which would cross
+/// `FindByID` with `findById`; `=` uses the BINARY collation, which does not.)
+fn exact_symbols(conn: &Connection, symbol: &str, limit: usize) -> Result<Vec<SymbolRecord>> {
+    let mut stmt = conn.prepare(
+        "
+        SELECT s.id, s.name, s.qualified_name, s.kind, s.file_id, f.path, f.language,
+               s.start_line, s.end_line, s.signature, s.exported
+        FROM symbols s
+        JOIN files f ON f.id = s.file_id
+        WHERE s.qualified_name = ?1 OR s.name = ?1
+        ORDER BY
+            CASE WHEN s.qualified_name = ?1 THEN 0 ELSE 1 END,
+            length(s.qualified_name),
+            f.path
+        LIMIT ?2
+        ",
+    )?;
+    let rows = stmt.query_map(params![symbol, limit as i64], db::map_symbol)?;
+    Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+}
+
+fn render_dot(edges: &[(String, String)]) -> String {
+    let mut out = String::from(
+        "digraph tessera {\n  rankdir=LR;\n  node [shape=box, fontname=\"monospace\"];\n",
+    );
+    for (a, b) in edges {
+        out.push_str(&format!("  {} -> {};\n", dot_quote(a), dot_quote(b)));
+    }
+    out.push_str("}\n");
+    out
+}
+
+fn dot_quote(s: &str) -> String {
+    format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\""))
+}
+
+fn render_mermaid(nodes: &[String], edges: &[(String, String)]) -> String {
+    let id_of: HashMap<&String, usize> = nodes.iter().enumerate().map(|(i, n)| (n, i)).collect();
+    let mut out = String::from("graph TD\n");
+    for (i, n) in nodes.iter().enumerate() {
+        out.push_str(&format!("  n{}[\"{}\"]\n", i, mermaid_label(n)));
+    }
+    for (a, b) in edges {
+        if let (Some(&ai), Some(&bi)) = (id_of.get(a), id_of.get(b)) {
+            out.push_str(&format!("  n{ai} --> n{bi}\n"));
+        }
+    }
+    out
+}
+
+fn mermaid_label(s: &str) -> String {
+    // Mermaid node labels are quoted; quotes and brackets break the parser.
+    s.replace('"', "'").replace('[', "(").replace(']', ")")
 }
 
 fn read_symbol_body(conn: &Connection, symbol: &SymbolRecord) -> Result<String> {

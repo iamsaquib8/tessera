@@ -30,6 +30,11 @@ enum LangArg {
     Go,
     Rust,
     Java,
+    C,
+    Cpp,
+    Csharp,
+    Ruby,
+    Php,
 }
 
 impl From<LangArg> for Language {
@@ -42,6 +47,27 @@ impl From<LangArg> for Language {
             LangArg::Go => Language::Go,
             LangArg::Rust => Language::Rust,
             LangArg::Java => Language::Java,
+            LangArg::C => Language::C,
+            LangArg::Cpp => Language::Cpp,
+            LangArg::Csharp => Language::CSharp,
+            LangArg::Ruby => Language::Ruby,
+            LangArg::Php => Language::Php,
+        }
+    }
+}
+
+#[derive(Debug, Clone, ValueEnum, Default)]
+enum GraphFormat {
+    #[default]
+    Mermaid,
+    Dot,
+}
+
+impl GraphFormat {
+    fn as_str(&self) -> &'static str {
+        match self {
+            GraphFormat::Mermaid => "mermaid",
+            GraphFormat::Dot => "dot",
         }
     }
 }
@@ -242,6 +268,37 @@ enum Commands {
         #[arg(long)]
         json: bool,
     },
+    /// Find the shortest call path from one symbol to another (A calls … calls B).
+    Connect {
+        from: String,
+        to: String,
+        #[arg(long, default_value_t = 8)]
+        depth: usize,
+        #[arg(long, default_value = ".tessera/tessera.db")]
+        db: PathBuf,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Export the call graph as Graphviz DOT or Mermaid (whole graph, or a
+    /// neighbourhood with `--from`).
+    Export {
+        /// Output format.
+        #[arg(long, value_enum, default_value_t = GraphFormat::Mermaid)]
+        format: GraphFormat,
+        /// Restrict to the forward call subgraph rooted at this symbol.
+        #[arg(long)]
+        from: Option<String>,
+        /// Traversal depth when `--from` is given.
+        #[arg(long, default_value_t = 3)]
+        depth: usize,
+        /// Maximum number of edges to emit.
+        #[arg(long, default_value_t = 800)]
+        limit: usize,
+        #[arg(long, default_value = ".tessera/tessera.db")]
+        db: PathBuf,
+        #[arg(long)]
+        json: bool,
+    },
     /// Run a benchmark and emit the perf chart used in the README.
     Bench {
         #[arg(long)]
@@ -355,6 +412,28 @@ fn main() -> Result<()> {
         }
         Commands::TestsFor { symbol, db, json } => {
             print_result(query::tests_for(&db, &symbol)?, json)?;
+        }
+        Commands::Connect {
+            from,
+            to,
+            depth,
+            db,
+            json,
+        } => {
+            print_result(query::connect(&db, &from, &to, depth)?, json)?;
+        }
+        Commands::Export {
+            format,
+            from,
+            depth,
+            limit,
+            db,
+            json,
+        } => {
+            print_result(
+                query::export(&db, format.as_str(), from.as_deref(), depth, limit)?,
+                json,
+            )?;
         }
         Commands::ContextPack {
             symbol,

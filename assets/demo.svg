@@ -1,0 +1,45 @@
+<svg width="840" height="500" viewBox="0 0 840 500" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Tessera terminal demo">
+  <style>
+    .bg    { fill:#0d1117; }
+    .bar   { fill:#161b22; }
+    .t     { font-family: ui-monospace,'SF Mono',Menlo,Consolas,monospace; font-size:15px; }
+    .prompt{ fill:#2dd4bf; }
+    .cmd   { fill:#e6edf3; }
+    .out   { fill:#9aa5b1; }
+    .ok    { fill:#4ade80; }
+    .bad   { fill:#f87171; }
+    .num   { fill:#7dd3fc; }
+    .amber { fill:#fbbf24; }
+    .dim   { fill:#586069; }
+  </style>
+  <rect class="bg" x="0" y="0" width="840" height="500" rx="12"/>
+  <rect class="bar" x="0" y="0" width="840" height="34" rx="12"/>
+  <rect class="bar" x="0" y="18" width="840" height="16"/>
+  <circle cx="22" cy="17" r="6" fill="#ff5f56"/>
+  <circle cx="44" cy="17" r="6" fill="#ffbd2e"/>
+  <circle cx="66" cy="17" r="6" fill="#27c93f"/>
+  <text x="420" y="22" text-anchor="middle" class="t dim">tessera — 11 languages · deterministic · milliseconds</text>
+
+  <g class="t">
+    <text x="20" y="68"><tspan class="prompt">$ </tspan><tspan class="cmd">tessera index .</tspan></text>
+    <text x="20" y="92" class="out">[full] indexed <tspan class="num">1063</tspan> files, <tspan class="num">3067</tspan> symbols, <tspan class="num">142337</tspan> refs in <tspan class="num">1557</tspan>ms</text>
+
+    <text x="20" y="128"><tspan class="prompt">$ </tspan><tspan class="cmd">tessera impact BaseWorker</tspan></text>
+    <text x="20" y="152" class="out">Impact for BaseWorker</text>
+    <text x="20" y="174" class="out">  score <tspan class="num">100.0</tspan> depth 1 fanout 12  JobRunner.start @ runner.ts:42</text>
+    <text x="20" y="196" class="out">  score <tspan class="num"> 58.7</tspan> depth 2 fanout  4  Scheduler.tick @ sched.ts:88</text>
+    <text x="20" y="218" class="amber">  _meta: ~41 tokens   vs raw grep+read ~36,311  ·  886× cheaper</text>
+
+    <text x="20" y="254"><tspan class="prompt">$ </tspan><tspan class="cmd">tessera validate findByid</tspan></text>
+    <text x="20" y="278"><tspan class="bad">  ✗ findByid not found</tspan><tspan class="out"> (the model hallucinated it)</tspan></text>
+    <text x="20" y="300" class="out">  nearest:  <tspan class="ok">0.97</tspan>  findById  @ users.ts:12</text>
+
+    <text x="20" y="336"><tspan class="prompt">$ </tspan><tspan class="cmd">tessera connect handler loadUser</tspan></text>
+    <text x="20" y="360" class="out">Call path handler → loadUser (2 hops)</text>
+    <text x="20" y="382" class="out">  handler        @ users.ts:20</text>
+    <text x="20" y="404" class="out">  ↳ findById     @ users.ts:12</text>
+    <text x="20" y="426" class="out">  ↳ loadUser     @ users.ts:16</text>
+
+    <text x="20" y="462"><tspan class="prompt">$ </tspan><tspan class="cmd">tessera export --from handler --format mermaid</tspan><tspan class="dim">  # → paste into any .md</tspan></text>
+  </g>
+</svg>

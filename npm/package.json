@@ -1,0 +1,34 @@
+{
+  "name": "tessera-codegraph",
+  "version": "0.4.0",
+  "description": "A local, deterministic semantic code graph and MCP server for AI coding agents. Installs the prebuilt `tessera` binary — no Rust toolchain required.",
+  "bin": {
+    "tessera": "bin/tessera.js"
+  },
+  "scripts": {
+    "postinstall": "node install.js"
+  },
+  "files": [
+    "bin/tessera.js",
+    "install.js"
+  ],
+  "keywords": [
+    "mcp",
+    "code-graph",
+    "tree-sitter",
+    "ai-agents",
+    "claude-code",
+    "cursor",
+    "llm",
+    "codegraph"
+  ],
+  "homepage": "https://github.com/iamsaquib8/tessera",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/iamsaquib8/tessera.git"
+  },
+  "license": "Apache-2.0",
+  "engines": {
+    "node": ">=18"
+  }
+}

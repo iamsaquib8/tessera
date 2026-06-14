@@ -5,8 +5,48 @@ on:
     tags:
       - "v*.*.*"
 
+permissions:
+  contents: write # required to create GitHub Releases and upload assets
+
 jobs:
-  publish:
+  # ── Prebuilt binaries for every supported platform ──────────────────────────
+  # Attaches `tessera-<target>.tar.gz` (or `.zip` on Windows) to the GitHub
+  # Release for the tag. These archives back the curl|sh installer, the Homebrew
+  # formula, and the npm wrapper. aarch64-linux cross-compiles via `cross`,
+  # which the action installs automatically.
+  binaries:
+    name: binary (${{ matrix.target }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-latest
+          - target: x86_64-apple-darwin
+            os: macos-13
+          - target: aarch64-apple-darwin
+            os: macos-latest
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: taiki-e/upload-rust-binary-action@v1
+        with:
+          bin: tessera
+          target: ${{ matrix.target }}
+          archive: tessera-$target
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+  # ── crates.io ───────────────────────────────────────────────────────────────
+  # Idempotent: skips cleanly if no token, succeeds if the version already exists.
+  crates:
+    name: publish crates.io
     runs-on: ubuntu-latest
     environment: crates-io
     steps:
@@ -18,10 +58,6 @@ jobs:
       - run: cargo fmt --check
       - run: cargo clippy --all-targets --all-features -- -D warnings
       - run: cargo test --all-targets --all-features
-      # Idempotent publish:
-      #   - no token configured       → log + skip (manual publish flow)
-      #   - already on crates.io      → log + succeed
-      #   - other failure             → propagate exit status
       - name: Publish to crates.io (idempotent)
         env:
           CRATES_IO_TOKEN: ${{ secrets.CRATES_IO_TOKEN }}
@@ -42,3 +78,34 @@ jobs:
             exit 0
           fi
           exit $status
+
+  # ── npm wrapper ─────────────────────────────────────────────────────────────
+  # Publishes the thin npm package that downloads the matching prebuilt binary
+  # on install (so `npm i -g` / `npx` work without a Rust toolchain). Runs after
+  # the release assets exist; skips cleanly when NPM_TOKEN is unset.
+  npm:
+    name: publish npm
+    needs: binaries
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          registry-url: https://registry.npmjs.org
+      - name: Publish wrapper
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          set -uo pipefail
+          if [ -z "${NODE_AUTH_TOKEN:-}" ]; then
+            echo "::notice::NPM_TOKEN not set; skipping npm publish."
+            exit 0
+          fi
+          VERSION="${GITHUB_REF_NAME#v}"
+          cd npm
+          npm version "$VERSION" --no-git-tag-version --allow-same-version
+          npm publish --access public || {
+            echo "::warning::npm publish failed (name may be taken or version exists). See npm/README.md.";
+            exit 0;
+          }

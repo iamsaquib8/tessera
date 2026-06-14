@@ -1,9 +1,9 @@
 [package]
 name = "tessera-codegraph"
-version = "0.3.1"
+version = "0.4.0"
 edition = "2021"
 authors = ["Saquib <saquibulhassan6@gmail.com>"]
-description = "A local semantic code graph and MCP server for AI coding agents. Personalized PageRank impact, hallucination validator, incremental indexing."
+description = "A local, deterministic semantic code graph and MCP server for AI coding agents. 11 languages, personalized PageRank impact, hallucination validator, call-path tracing, graph export, incremental indexing."
 license = "Apache-2.0"
 repository = "https://github.com/iamsaquib8/tessera"
 homepage = "https://github.com/iamsaquib8/tessera"
@@ -48,10 +48,15 @@ tempfile = "3.13"
 # `tree-sitter = "0.20"`) to keep the workspace on a single tree-sitter
 # major. Same idea for the other grammars — bounded majors only.
 tree-sitter = ">=0.20, <0.21"
+tree-sitter-c = ">=0.20, <0.21"
+tree-sitter-c-sharp = ">=0.20, <0.21"
+tree-sitter-cpp = ">=0.20, <0.21"
 tree-sitter-go = ">=0.20, <0.21"
 tree-sitter-java = ">=0.20, <0.21"
 tree-sitter-javascript = ">=0.20, <0.21"
+tree-sitter-php = ">=0.20, <0.21"
 tree-sitter-python = ">=0.20, <0.21"
+tree-sitter-ruby = ">=0.20, <0.21"
 tree-sitter-rust = "=0.20.0"
 tree-sitter-typescript = ">=0.20, <0.21"
 walkdir = "2.5"

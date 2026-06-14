@@ -1,0 +1,12 @@
+target
+.git
+.github
+.tessera
+**/.tessera
+**/snapshot.bin
+docs
+launch
+assets
+npm/bin/tessera
+npm/bin/tessera.exe
+*.md

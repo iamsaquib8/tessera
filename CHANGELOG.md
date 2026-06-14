@@ -2,6 +2,24 @@
 
 All notable changes to Tessera will be documented here.
 
+## 0.4.0 - 2026-06-14
+
+The biggest release since launch: five new languages, two new graph queries, a
+zero-install agent skill, and install paths for everyone who isn't a Rust dev.
+
+### Added
+- **Five new languages**, each with real AST-level extraction (definitions, references, imports) — bringing the total to **11**: **C**, **C++**, **C#**, **Ruby**, **PHP**. C++ also covers `.h` headers (the grammar is a C superset). All exercised end-to-end (index → impact) in the test suite.
+- **`connect <from> <to>`** (CLI + MCP + library) — the shortest call path between two symbols. Deterministic BFS over the call graph; returns the ordered chain or reports no path.
+- **`export [--from SYM] [--format dot|mermaid]`** (CLI + MCP + library) — render the call graph as Graphviz DOT or Mermaid. Whole graph, or the precise forward subgraph rooted at a symbol. Paste the Mermaid into a PR or a Markdown doc.
+- **Drop-in `/tessera` Agent Skill** (`skills/tessera/`) — teaches Claude Code (and other skill-aware agents) to use Tessera for navigation, installing the binary on first use. No Rust toolchain required.
+- **Install everywhere**: `npm i -g tessera-codegraph` / `npx`, `brew install`, `curl | sh`, Docker (`ghcr.io/iamsaquib8/tessera`), plus prebuilt binaries for macOS (arm64/x64), Linux (x64/arm64), and Windows attached to each release.
+- **Branding + visual hero**: logo, terminal demo, and a social-preview card (`assets/`).
+
+### Changed
+- Callee resolution for `connect`/`export` resolves each call to a single best symbol, **preferring a same-file definition** and matching case-sensitively — so a common name like `loadUser` no longer fans out across every file/language that happens to share it.
+- CI now runs the test suite on **Linux, macOS, and Windows**; the release pipeline builds cross-platform binaries and publishes the npm wrapper and Docker image.
+- `validate-snippet` / the `validate_snippet` MCP tool accept the five new languages.
+
 ## 0.3.1 - 2026-05-24
 
 ### Fixed

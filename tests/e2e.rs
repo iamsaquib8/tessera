@@ -123,6 +123,80 @@ export function UserList({ names }: { names: string[] }) {
 "#,
     )
     .unwrap();
+
+    fs::write(
+        temp.path().join("store.c"),
+        r#"#include <stdio.h>
+
+int c_load_user(int id) { return id; }
+
+int c_find_by_id(int id) { return c_load_user(id); }
+
+int c_render_user(int id) { return c_find_by_id(id); }
+"#,
+    )
+    .unwrap();
+
+    fs::write(
+        temp.path().join("store.cpp"),
+        r#"#include <string>
+
+class CppStore {
+public:
+    int cppLoad(int id) { return id; }
+    int cppFind(int id) { return cppLoad(id); }
+    int cppRender(int id) { return cppFind(id); }
+};
+"#,
+    )
+    .unwrap();
+
+    fs::write(
+        temp.path().join("UserService.cs"),
+        r#"using System;
+
+public class CsService {
+    public int CsLoad(int id) { return id; }
+    public int CsFind(int id) { return CsLoad(id); }
+    public int CsRender(int id) { return CsFind(id); }
+}
+"#,
+    )
+    .unwrap();
+
+    fs::write(
+        temp.path().join("user_service.rb"),
+        r#"require 'set'
+
+class RbService
+  def rb_load_user(id)
+    id
+  end
+
+  def rb_find_by_id(id)
+    rb_load_user(id)
+  end
+
+  def rb_render_user(id)
+    rb_find_by_id(id)
+  end
+end
+"#,
+    )
+    .unwrap();
+
+    fs::write(
+        temp.path().join("UserService.php"),
+        r#"<?php
+
+function php_load_user($id) { return $id; }
+
+function php_find_by_id($id) { return php_load_user($id); }
+
+function php_render_user($id) { return php_find_by_id($id); }
+"#,
+    )
+    .unwrap();
 }
 
 #[test]
@@ -211,12 +285,142 @@ fn indexes_and_queries_all_languages() {
         .success()
         .stdout(predicate::str::contains("UserCard"));
 
+    // C: c_find_by_id is called by c_render_user.
+    Command::cargo_bin("tessera")
+        .unwrap()
+        .args(["impact", "c_find_by_id", "--db", db.to_str().unwrap()])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("c_render_user"));
+
+    // C++: cppFind (a method on CppStore) is called by cppRender.
+    Command::cargo_bin("tessera")
+        .unwrap()
+        .args(["impact", "cppFind", "--db", db.to_str().unwrap()])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("cppRender"));
+
+    // C#: CsFind is called by CsRender.
+    Command::cargo_bin("tessera")
+        .unwrap()
+        .args(["impact", "CsFind", "--db", db.to_str().unwrap()])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("CsRender"));
+
+    // Ruby: rb_find_by_id is called by rb_render_user.
+    Command::cargo_bin("tessera")
+        .unwrap()
+        .args(["impact", "rb_find_by_id", "--db", db.to_str().unwrap()])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("rb_render_user"));
+
+    // PHP: php_find_by_id is called by php_render_user.
+    Command::cargo_bin("tessera")
+        .unwrap()
+        .args(["impact", "php_find_by_id", "--db", db.to_str().unwrap()])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("php_render_user"));
+
     Command::cargo_bin("tessera")
         .unwrap()
         .args(["stats", "--db", db.to_str().unwrap()])
         .assert()
         .success()
-        .stdout(predicate::str::contains("java").and(predicate::str::contains("typescript")));
+        .stdout(
+            predicate::str::contains("java")
+                .and(predicate::str::contains("typescript"))
+                .and(predicate::str::contains("csharp"))
+                .and(predicate::str::contains("ruby"))
+                .and(predicate::str::contains("php")),
+        );
+}
+
+#[test]
+fn connect_finds_call_paths_and_export_renders_graph() {
+    let temp = TempDir::new().unwrap();
+    write_sample(&temp);
+    let db = temp.path().join(".tessera/c.db");
+    Command::cargo_bin("tessera")
+        .unwrap()
+        .args([
+            "index",
+            temp.path().to_str().unwrap(),
+            "--db",
+            db.to_str().unwrap(),
+            "--full",
+        ])
+        .assert()
+        .success();
+
+    // handler -> findById -> loadUser : a path exists.
+    Command::cargo_bin("tessera")
+        .unwrap()
+        .args([
+            "connect",
+            "handler",
+            "loadUser",
+            "--db",
+            db.to_str().unwrap(),
+        ])
+        .assert()
+        .success()
+        .stdout(
+            predicate::str::contains("Call path")
+                .and(predicate::str::contains("findById"))
+                .and(predicate::str::contains("loadUser")),
+        );
+
+    // No reverse path: loadUser does not call handler.
+    Command::cargo_bin("tessera")
+        .unwrap()
+        .args([
+            "connect",
+            "loadUser",
+            "handler",
+            "--db",
+            db.to_str().unwrap(),
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("No call path"));
+
+    // Mermaid export of the whole graph.
+    Command::cargo_bin("tessera")
+        .unwrap()
+        .args([
+            "export",
+            "--format",
+            "mermaid",
+            "--db",
+            db.to_str().unwrap(),
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("graph TD").and(predicate::str::contains("-->")));
+
+    // DOT export rooted at a symbol.
+    Command::cargo_bin("tessera")
+        .unwrap()
+        .args([
+            "export",
+            "--format",
+            "dot",
+            "--from",
+            "findById",
+            "--db",
+            db.to_str().unwrap(),
+        ])
+        .assert()
+        .success()
+        .stdout(
+            predicate::str::contains("digraph tessera")
+                .and(predicate::str::contains("loadUser"))
+                .and(predicate::str::contains("->")),
+        );
 }
 
 #[test]
