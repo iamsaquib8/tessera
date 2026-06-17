@@ -742,6 +742,92 @@ export function run() {
 }
 
 #[test]
+fn unused_reports_zero_inbound_symbols_with_filters() {
+    let temp = TempDir::new().unwrap();
+    fs::create_dir(temp.path().join("src")).unwrap();
+    fs::create_dir(temp.path().join("tests")).unwrap();
+    fs::write(
+        temp.path().join("src/app.ts"),
+        r#"
+export function entry() {
+    return used();
+}
+
+function used() {
+    return 1;
+}
+
+function orphan() {
+    return 2;
+}
+
+export function publicUnused() {
+    return 3;
+}
+"#,
+    )
+    .unwrap();
+    fs::write(
+        temp.path().join("tests/app.test.ts"),
+        r#"
+export function testOnlyHelper() {
+    return 4;
+}
+"#,
+    )
+    .unwrap();
+
+    let db = temp.path().join(".tessera/unused.db");
+    Command::cargo_bin("tessera")
+        .unwrap()
+        .args([
+            "index",
+            temp.path().to_str().unwrap(),
+            "--db",
+            db.to_str().unwrap(),
+            "--full",
+        ])
+        .assert()
+        .success();
+
+    Command::cargo_bin("tessera")
+        .unwrap()
+        .args(["unused", "--db", db.to_str().unwrap()])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("orphan"))
+        .stdout(predicate::str::contains("publicUnused"))
+        .stdout(predicate::str::contains("testOnlyHelper").not());
+
+    Command::cargo_bin("tessera")
+        .unwrap()
+        .args([
+            "unused",
+            "--db",
+            db.to_str().unwrap(),
+            "--kind",
+            "function",
+            "--language",
+            "typescript",
+            "--path",
+            "src/",
+            "--exported=false",
+            "--limit",
+            "1",
+            "--json",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::function(|out: &str| {
+            let v: serde_json::Value = serde_json::from_str(out).unwrap();
+            v["symbols"].as_array().unwrap().len() == 1
+                && v["symbols"][0]["symbol"]["name"] == "orphan"
+                && v["symbols"][0]["inbound_refs"] == 0
+                && v["symbols"][0]["inbound_edges"] == 0
+        }));
+}
+
+#[test]
 fn signature_lists_class_members() {
     let temp = TempDir::new().unwrap();
     write_sample(&temp);

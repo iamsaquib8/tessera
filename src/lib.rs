@@ -49,7 +49,8 @@ pub use types::{
     KindCount, Language, LanguageCount, OutlineResult, QueryMeta, ReferenceRecord,
     ReferencesResult, SearchHit, SearchOptions, SearchResult, Sibling, SiblingsResult,
     SignatureLine, SignatureResult, SnippetReferenceCheck, StatsResult, SymbolRecord,
-    SymbolSuggestion, TestsForResult, TopFanout, ValidateResult, ValidateSnippetResult,
+    SymbolSuggestion, TestsForResult, TopFanout, UnusedOptions, UnusedResult, UnusedSymbol,
+    ValidateResult, ValidateSnippetResult,
 };
 
 /// High-level handle to a Tessera index. Holds a single SQLite connection and,
@@ -128,6 +129,10 @@ impl Index {
 
     pub fn search(&self, pattern: &str, options: SearchOptions) -> Result<SearchResult> {
         query::search_conn(&self.conn, pattern, options)
+    }
+
+    pub fn unused(&self, options: UnusedOptions) -> Result<UnusedResult> {
+        query::unused_conn(&self.conn, options)
     }
 
     pub fn context_pack(&self, symbol: &str, budget_tokens: usize) -> Result<ContextPack> {

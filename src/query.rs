@@ -17,7 +17,8 @@ use crate::types::{
     LanguageCount, OutlineResult, PathNode, QueryMeta, ReferenceRecord, ReferencesResult,
     SearchHit, SearchOptions, SearchResult, Sibling, SiblingsResult, SignatureLine,
     SignatureResult, SnippetReferenceCheck, StatsResult, SymbolRecord, SymbolSuggestion,
-    TestsForResult, TopFanout, ValidateResult, ValidateSnippetResult,
+    TestsForResult, TopFanout, UnusedOptions, UnusedResult, UnusedSymbol, ValidateResult,
+    ValidateSnippetResult,
 };
 
 // ─── Connection-based public API ─────────────────────────────────────────────
@@ -1023,6 +1024,56 @@ pub fn search_conn(
     })
 }
 
+pub fn unused_conn(conn: &Connection, options: UnusedOptions) -> Result<UnusedResult> {
+    let limit = options.limit.clamp(1, 500);
+    let candidates = list_all_symbols(conn)?;
+    let mut unused = Vec::new();
+
+    for symbol in candidates {
+        if is_test_path(&symbol.path) {
+            continue;
+        }
+        if !options.kinds.is_empty() && !options.kinds.contains(&symbol.kind) {
+            continue;
+        }
+        if !options.languages.is_empty() && !options.languages.contains(&symbol.language) {
+            continue;
+        }
+        if options
+            .exported
+            .is_some_and(|exported| symbol.exported != exported)
+        {
+            continue;
+        }
+        if options
+            .path_prefix
+            .as_deref()
+            .is_some_and(|prefix| !symbol.path.starts_with(prefix))
+        {
+            continue;
+        }
+
+        let inbound_refs = inbound_ref_count(conn, &symbol)?;
+        let inbound_edges = inbound_edge_count(conn, &symbol)?;
+        if inbound_refs == 0 && inbound_edges == 0 {
+            unused.push(UnusedSymbol {
+                symbol,
+                inbound_refs,
+                inbound_edges,
+            });
+            if unused.len() >= limit {
+                break;
+            }
+        }
+    }
+
+    let tokens = estimate_tokens(&unused).max(40);
+    Ok(UnusedResult {
+        symbols: unused,
+        meta: meta(tokens, "search", 320, 0.7),
+    })
+}
+
 pub fn tests_for_conn(conn: &Connection, symbol: &str) -> Result<TestsForResult> {
     // Walk callers transitively until we either find a test-path caller or exhaust
     // a small depth budget. We collect any caller whose file path looks like a test.
@@ -1335,6 +1386,11 @@ pub fn export(
 pub fn search(db_path: &Path, pattern: &str, options: SearchOptions) -> Result<SearchResult> {
     let conn = db::open(db_path)?;
     search_conn(&conn, pattern, options)
+}
+
+pub fn unused(db_path: &Path, options: UnusedOptions) -> Result<UnusedResult> {
+    let conn = db::open(db_path)?;
+    unused_conn(&conn, options)
 }
 
 pub fn context_pack(db_path: &Path, symbol: &str, budget: usize) -> Result<ContextPack> {
@@ -1776,6 +1832,48 @@ fn list_symbols(conn: &Connection, limit: usize) -> Result<Vec<SymbolRecord>> {
     )?;
     let rows = stmt.query_map(params![limit as i64], db::map_symbol)?;
     Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+}
+
+fn list_all_symbols(conn: &Connection) -> Result<Vec<SymbolRecord>> {
+    let mut stmt = conn.prepare(
+        "
+        SELECT s.id, s.name, s.qualified_name, s.kind, s.file_id, f.path, f.language,
+               s.start_line, s.end_line, s.signature, s.exported
+        FROM symbols s
+        JOIN files f ON f.id = s.file_id
+        ORDER BY s.qualified_name
+        ",
+    )?;
+    let rows = stmt.query_map([], db::map_symbol)?;
+    Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+}
+
+fn inbound_ref_count(conn: &Connection, symbol: &SymbolRecord) -> Result<usize> {
+    let mut stmt = conn.prepare(
+        "
+        SELECT COUNT(*)
+        FROM refs
+        WHERE symbol_name = ?1 OR symbol_name = ?2
+        ",
+    )?;
+    let count: i64 = stmt.query_row(params![symbol.name, symbol.qualified_name], |row| {
+        row.get(0)
+    })?;
+    Ok(count as usize)
+}
+
+fn inbound_edge_count(conn: &Connection, symbol: &SymbolRecord) -> Result<usize> {
+    let mut stmt = conn.prepare(
+        "
+        SELECT COUNT(*)
+        FROM edges
+        WHERE to_symbol_name = ?1 OR to_symbol_name = ?2
+        ",
+    )?;
+    let count: i64 = stmt.query_row(params![symbol.name, symbol.qualified_name], |row| {
+        row.get(0)
+    })?;
+    Ok(count as usize)
 }
 
 fn glob_score(pattern: &str, name: &str) -> f32 {

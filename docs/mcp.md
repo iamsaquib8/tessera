@@ -152,6 +152,20 @@ Summary statistics: counts, languages, kinds, top fan-out symbols, snapshot pres
 
 Returns tests whose call graph transitively touches the symbol — heuristically by inspecting caller file paths for test/spec markers.
 
+### `unused`
+
+```json
+{
+  "kinds": ["function"],
+  "languages": ["typescript"],
+  "exported": false,
+  "path_prefix": "src/",
+  "limit": 50
+}
+```
+
+Returns indexed symbols with zero inbound references and zero inbound call edges. Test files are excluded from the report.
+
 ## Example MCP Configuration
 
 ```json

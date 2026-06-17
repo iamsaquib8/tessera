@@ -110,7 +110,7 @@ Prefer not to install anything? Copy the [`/tessera` Agent Skill](skills/) into 
 cp -r skills/tessera ~/.claude/skills/tessera
 ```
 
-## Six commands to start
+## Seven commands to start
 
 ```sh
 tessera index .                          # index your repo into .tessera/tessera.db
@@ -119,6 +119,7 @@ tessera validate findByIdd               # "did the model hallucinate this?" —
 tessera connect handleRequest writeRow   # the shortest call path from A to B
 tessera export --from findById --format mermaid   # the call subgraph, as a diagram you can paste anywhere
 tessera context-pack findById            # body + deps + callers + tests in one budgeted bundle
+tessera unused --kind function           # symbols with no inbound refs/call edges
 ```
 
 That's it. The graph is local, the queries are deterministic, every response carries `_meta` token estimates so agents can plan their context budget.
@@ -223,7 +224,7 @@ claude mcp add tessera tessera -- mcp --db .tessera/tessera.db
 
 Configs for **Cline, Continue.dev, Codex CLI, Zed, Aider, and custom GPTs** live in [docs/integrations.md](docs/integrations.md). Tool schemas in [docs/mcp.md](docs/mcp.md).
 
-**Exposed tools:** `find_definition` · `find_references` · `get_outline` · `expand_symbol` · `impact` · `connect` · `export` · `context_pack` · `diff_impact` · `imports` · `imported_by` · `signature` · `siblings` · `search` · `validate` · `validate_snippet` · `tests_for` · `stats`.
+**Exposed tools:** `find_definition` · `find_references` · `get_outline` · `expand_symbol` · `impact` · `connect` · `export` · `context_pack` · `diff_impact` · `imports` · `imported_by` · `signature` · `siblings` · `search` · `unused` · `validate` · `validate_snippet` · `tests_for` · `stats`.
 
 **Tip:** add `tessera index .` to a git `post-merge` hook so the graph stays fresh on every pull (incremental re-index is 38–66 ms on real repos).
 

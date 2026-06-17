@@ -8,7 +8,7 @@ use serde_json::{json, Value};
 
 use crate::db;
 use crate::query;
-use crate::types::{Language, SearchOptions};
+use crate::types::{Language, SearchOptions, UnusedOptions};
 
 #[derive(Debug, Deserialize)]
 struct JsonRpcRequest {
@@ -240,6 +240,28 @@ fn call_tool(
             };
             serde_json::to_value(query::search_conn(conn, &pattern, options).map_err(to_string)?)
         }
+        "unused" => {
+            let kinds = string_array(&args, "kinds");
+            let languages = string_array(&args, "languages");
+            let exported = args.get("exported").and_then(Value::as_bool);
+            let path_prefix = args
+                .get("path_prefix")
+                .and_then(Value::as_str)
+                .map(ToOwned::to_owned);
+            let limit = args
+                .get("limit")
+                .and_then(Value::as_u64)
+                .map(|n| n as usize)
+                .unwrap_or(50);
+            let options = UnusedOptions {
+                kinds,
+                languages,
+                exported,
+                path_prefix,
+                limit,
+            };
+            serde_json::to_value(query::unused_conn(conn, options).map_err(to_string)?)
+        }
         _ => return Err(format!("unknown tool: {name}")),
     }
     .map_err(to_string)?;
@@ -461,6 +483,20 @@ fn tools() -> Value {
                     "from": { "type": "string", "description": "Root the export at this symbol's forward call subgraph." },
                     "depth": { "type": "integer", "minimum": 1, "maximum": 12, "description": "Traversal depth when `from` is set. Default 3." },
                     "limit": { "type": "integer", "minimum": 1, "maximum": 5000, "description": "Max edges to emit. Default 800." }
+                }
+            }
+        },
+        {
+            "name": "unused",
+            "description": "Find indexed symbols with no inbound references or call edges. Test files are excluded from the report.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "kinds": { "type": "array", "items": { "type": "string" }, "description": "Optional symbol kind filters such as function, method, class, struct." },
+                    "languages": { "type": "array", "items": { "type": "string" }, "description": "Optional language filters such as typescript, rust, java." },
+                    "exported": { "type": "boolean", "description": "When set, only include symbols whose exported flag matches this value." },
+                    "path_prefix": { "type": "string", "description": "Only include symbols whose file path starts with this prefix." },
+                    "limit": { "type": "integer", "minimum": 1, "maximum": 500, "description": "Maximum number of symbols to return. Default 50." }
                 }
             }
         }

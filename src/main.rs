@@ -10,7 +10,7 @@ use tessera_codegraph::indexer::{self, IndexOptions};
 use tessera_codegraph::mcp;
 use tessera_codegraph::query;
 use tessera_codegraph::snapshot;
-use tessera_codegraph::types::{GraphEngineKind, Language, SearchOptions};
+use tessera_codegraph::types::{GraphEngineKind, Language, SearchOptions, UnusedOptions};
 
 #[derive(Debug, Parser)]
 #[command(name = "tessera")]
@@ -186,6 +186,29 @@ enum Commands {
         #[arg(long, value_delimiter = ',')]
         kind: Vec<String>,
         /// Filter by language (typescript, java, python, …).
+        #[arg(long, value_delimiter = ',')]
+        language: Vec<String>,
+        /// Only show exported symbols (`--exported`) or only non-exported
+        /// (`--exported=false`).
+        #[arg(long, num_args = 0..=1, default_missing_value = "true")]
+        exported: Option<bool>,
+        /// Match symbols whose file path starts with this prefix.
+        #[arg(long)]
+        path: Option<String>,
+        #[arg(long, default_value_t = 50)]
+        limit: usize,
+        #[arg(long, default_value = ".tessera/tessera.db")]
+        db: PathBuf,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Find indexed symbols with no inbound references or call edges.
+    Unused {
+        /// Filter by symbol kind (function, method, class, struct, ...).
+        /// Repeat or comma-separate to allow multiple.
+        #[arg(long, value_delimiter = ',')]
+        kind: Vec<String>,
+        /// Filter by language (typescript, java, python, ...).
         #[arg(long, value_delimiter = ',')]
         language: Vec<String>,
         /// Only show exported symbols (`--exported`) or only non-exported
@@ -482,6 +505,24 @@ fn main() -> Result<()> {
                 limit,
             };
             print_result(query::search(&db, &pattern, options)?, json)?;
+        }
+        Commands::Unused {
+            kind,
+            language,
+            exported,
+            path,
+            limit,
+            db,
+            json,
+        } => {
+            let options = UnusedOptions {
+                kinds: kind,
+                languages: language,
+                exported,
+                path_prefix: path,
+                limit,
+            };
+            print_result(query::unused(&db, options)?, json)?;
         }
         Commands::Bench {
             path,
