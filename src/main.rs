@@ -1,5 +1,6 @@
 use std::io::Read;
 use std::path::PathBuf;
+use std::time::Duration;
 
 use anyhow::{anyhow, Result};
 use clap::{Parser, Subcommand, ValueEnum};
@@ -11,6 +12,7 @@ use tessera_codegraph::mcp;
 use tessera_codegraph::query;
 use tessera_codegraph::snapshot;
 use tessera_codegraph::types::{GraphEngineKind, Language, SearchOptions, UnusedOptions};
+use tessera_codegraph::watch::{self, WatchOptions};
 
 #[derive(Debug, Parser)]
 #[command(name = "tessera")]
@@ -106,6 +108,29 @@ enum Commands {
         /// Graph engine to use for impact queries. Cozo requires `--features cozo`.
         #[arg(long, value_enum, default_value_t = EngineArg::Sqlite)]
         graph_engine: EngineArg,
+    },
+    /// Watch a repository and incrementally re-index when source files change.
+    Watch {
+        /// Repository or directory to watch.
+        path: PathBuf,
+        /// SQLite database path.
+        #[arg(long, default_value = ".tessera/tessera.db")]
+        db: PathBuf,
+        /// Re-index from scratch instead of using the sha-diff incremental path.
+        #[arg(long)]
+        full: bool,
+        /// Skip writing the memory-mapped snapshot after indexing.
+        #[arg(long)]
+        no_snapshot: bool,
+        /// Poll interval in milliseconds.
+        #[arg(long, default_value_t = 500)]
+        poll_ms: u64,
+        /// Debounce interval in milliseconds after a detected change.
+        #[arg(long, default_value_t = 250)]
+        debounce_ms: u64,
+        /// Run one indexing pass and exit. Useful for smoke tests and CI.
+        #[arg(long)]
+        once: bool,
     },
     /// Find symbol definitions by name.
     FindDefinition {
@@ -389,6 +414,26 @@ fn main() -> Result<()> {
                 db.display(),
                 report.elapsed_ms
             );
+        }
+        Commands::Watch {
+            path,
+            db,
+            full,
+            no_snapshot,
+            poll_ms,
+            debounce_ms,
+            once,
+        } => {
+            let options = WatchOptions {
+                poll_interval: Duration::from_millis(poll_ms),
+                debounce: Duration::from_millis(debounce_ms),
+                index_options: IndexOptions {
+                    full,
+                    build_snapshot: !no_snapshot,
+                },
+                once,
+            };
+            watch::watch_path(&path, &db, options)?;
         }
         Commands::FindDefinition { symbol, db, json } => {
             print_result(query::find_definition(&db, &symbol)?, json)?;

@@ -110,10 +110,11 @@ Prefer not to install anything? Copy the [`/tessera` Agent Skill](skills/) into 
 cp -r skills/tessera ~/.claude/skills/tessera
 ```
 
-## Seven commands to start
+## Eight commands to start
 
 ```sh
 tessera index .                          # index your repo into .tessera/tessera.db
+tessera watch .                          # keep the graph fresh while you edit
 tessera impact findById                  # transitive callers ranked by personalised PageRank
 tessera validate findByIdd               # "did the model hallucinate this?" — yes; meant findById (0.98)
 tessera connect handleRequest writeRow   # the shortest call path from A to B
@@ -226,7 +227,7 @@ Configs for **Cline, Continue.dev, Codex CLI, Zed, Aider, and custom GPTs** live
 
 **Exposed tools:** `find_definition` · `find_references` · `get_outline` · `expand_symbol` · `impact` · `connect` · `export` · `context_pack` · `diff_impact` · `imports` · `imported_by` · `signature` · `siblings` · `search` · `unused` · `validate` · `validate_snippet` · `tests_for` · `stats`.
 
-**Tip:** add `tessera index .` to a git `post-merge` hook so the graph stays fresh on every pull (incremental re-index is 38–66 ms on real repos).
+**Tip:** run `tessera watch .` while coding, or add `tessera index .` to a git `post-merge` hook so the graph stays fresh on every pull (incremental re-index is 38–66 ms on real repos).
 
 ## Use as a Rust library
 

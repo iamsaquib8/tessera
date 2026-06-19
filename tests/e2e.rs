@@ -828,6 +828,45 @@ export function testOnlyHelper() {
 }
 
 #[test]
+fn watch_once_indexes_and_exits() {
+    let temp = TempDir::new().unwrap();
+    fs::write(
+        temp.path().join("app.ts"),
+        r#"
+export function start() {
+    return helper();
+}
+
+function helper() {
+    return 1;
+}
+"#,
+    )
+    .unwrap();
+
+    let db = temp.path().join(".tessera/watch.db");
+    Command::cargo_bin("tessera")
+        .unwrap()
+        .args([
+            "watch",
+            temp.path().to_str().unwrap(),
+            "--db",
+            db.to_str().unwrap(),
+            "--once",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("[watch:incremental] indexed"));
+
+    Command::cargo_bin("tessera")
+        .unwrap()
+        .args(["find-definition", "start", "--db", db.to_str().unwrap()])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("start"));
+}
+
+#[test]
 fn signature_lists_class_members() {
     let temp = TempDir::new().unwrap();
     write_sample(&temp);

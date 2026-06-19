@@ -35,6 +35,7 @@ pub mod mcp;
 pub mod query;
 pub mod snapshot;
 pub mod types;
+pub mod watch;
 
 use std::path::{Path, PathBuf};
 
