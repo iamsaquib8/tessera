@@ -10,7 +10,9 @@ Index a repository:
 
 ```sh
 cd path/to/project
+tessera init --mcp-configs
 tessera index .
+tessera doctor
 ```
 
 Re-running `tessera index .` reuses unchanged files via sha-diff. Use `--full` to rebuild from scratch.
@@ -28,6 +30,8 @@ tessera watch . --poll-ms 500
 tessera validate findByIdd
 tessera tests-for findById
 tessera stats
+tessera doctor --json
+tessera completions bash
 tessera search '*Repository*' --kind class --language java
 tessera search parseFrom --language java
 tessera search 'init*' --kind method --exported

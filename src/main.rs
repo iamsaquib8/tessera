@@ -6,8 +6,11 @@ use anyhow::{anyhow, Result};
 use clap::{Parser, Subcommand, ValueEnum};
 
 use tessera_codegraph::bench::{self, BenchOptions};
+use tessera_codegraph::completions::{self, CompletionShell};
 use tessera_codegraph::db;
+use tessera_codegraph::doctor::{self, DoctorOptions};
 use tessera_codegraph::indexer::{self, IndexOptions};
+use tessera_codegraph::init::{self, InitOptions};
 use tessera_codegraph::mcp;
 use tessera_codegraph::query;
 use tessera_codegraph::snapshot;
@@ -90,6 +93,25 @@ impl From<EngineArg> for GraphEngineKind {
     }
 }
 
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum CompletionShellArg {
+    Bash,
+    Zsh,
+    Fish,
+    Powershell,
+}
+
+impl From<CompletionShellArg> for CompletionShell {
+    fn from(value: CompletionShellArg) -> Self {
+        match value {
+            CompletionShellArg::Bash => CompletionShell::Bash,
+            CompletionShellArg::Zsh => CompletionShell::Zsh,
+            CompletionShellArg::Fish => CompletionShell::Fish,
+            CompletionShellArg::Powershell => CompletionShell::Powershell,
+        }
+    }
+}
+
 #[derive(Debug, Subcommand)]
 enum Commands {
     /// Index a repository into a SQLite semantic graph (incremental by default).
@@ -131,6 +153,42 @@ enum Commands {
         /// Run one indexing pass and exit. Useful for smoke tests and CI.
         #[arg(long)]
         once: bool,
+    },
+    /// Check local Tessera setup and print actionable diagnostics.
+    Doctor {
+        /// Repository root to inspect.
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+        /// SQLite database path.
+        #[arg(long, default_value = ".tessera/tessera.db")]
+        db: PathBuf,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Create project-local Tessera defaults and optional integration snippets.
+    Init {
+        /// Repository root to initialize.
+        #[arg(default_value = ".")]
+        root: PathBuf,
+        /// SQLite database path to write into generated snippets.
+        #[arg(long, default_value = ".tessera/tessera.db")]
+        db: PathBuf,
+        /// Create local git hooks that run `tessera index .`.
+        #[arg(long)]
+        git_hooks: bool,
+        /// Create MCP config snippets under `.tessera/mcp/`.
+        #[arg(long)]
+        mcp_configs: bool,
+        /// Overwrite existing generated files.
+        #[arg(long)]
+        force: bool,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Print shell completion script.
+    Completions {
+        #[arg(value_enum)]
+        shell: CompletionShellArg,
     },
     /// Find symbol definitions by name.
     FindDefinition {
@@ -434,6 +492,30 @@ fn main() -> Result<()> {
                 once,
             };
             watch::watch_path(&path, &db, options)?;
+        }
+        Commands::Doctor { root, db, json } => {
+            let result = doctor::run(DoctorOptions { root, db_path: db })?;
+            print_result(result, json)?;
+        }
+        Commands::Init {
+            root,
+            db,
+            git_hooks,
+            mcp_configs,
+            force,
+            json,
+        } => {
+            let result = init::run(InitOptions {
+                root,
+                db_path: db,
+                git_hooks,
+                mcp_configs,
+                force,
+            })?;
+            print_result(result, json)?;
+        }
+        Commands::Completions { shell } => {
+            print!("{}", completions::generate(shell.into()));
         }
         Commands::FindDefinition { symbol, db, json } => {
             print_result(query::find_definition(&db, &symbol)?, json)?;

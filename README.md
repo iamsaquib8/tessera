@@ -110,17 +110,20 @@ Prefer not to install anything? Copy the [`/tessera` Agent Skill](skills/) into 
 cp -r skills/tessera ~/.claude/skills/tessera
 ```
 
-## Eight commands to start
+## v0.5 daily-use commands
 
 ```sh
+tessera init --mcp-configs               # generate project-local defaults and MCP snippets
 tessera index .                          # index your repo into .tessera/tessera.db
 tessera watch .                          # keep the graph fresh while you edit
+tessera doctor                           # check DB, schema, snapshot, parsers, and MCP command
 tessera impact findById                  # transitive callers ranked by personalised PageRank
 tessera validate findByIdd               # "did the model hallucinate this?" — yes; meant findById (0.98)
 tessera connect handleRequest writeRow   # the shortest call path from A to B
 tessera export --from findById --format mermaid   # the call subgraph, as a diagram you can paste anywhere
 tessera context-pack findById            # body + deps + callers + tests in one budgeted bundle
 tessera unused --kind function           # symbols with no inbound refs/call edges
+tessera completions zsh                  # shell completions for bash/zsh/fish/PowerShell
 ```
 
 That's it. The graph is local, the queries are deterministic, every response carries `_meta` token estimates so agents can plan their context budget.
@@ -227,7 +230,7 @@ Configs for **Cline, Continue.dev, Codex CLI, Zed, Aider, and custom GPTs** live
 
 **Exposed tools:** `find_definition` · `find_references` · `get_outline` · `expand_symbol` · `impact` · `connect` · `export` · `context_pack` · `diff_impact` · `imports` · `imported_by` · `signature` · `siblings` · `search` · `unused` · `validate` · `validate_snippet` · `tests_for` · `stats`.
 
-**Tip:** run `tessera watch .` while coding, or add `tessera index .` to a git `post-merge` hook so the graph stays fresh on every pull (incremental re-index is 38–66 ms on real repos).
+**Tip:** run `tessera doctor` when a query looks stale or an MCP client cannot connect. It prints the exact `tessera index . --db ...` or `tessera snapshot --db ...` command to repair the local setup.
 
 ## Use as a Rust library
 

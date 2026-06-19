@@ -1319,32 +1319,32 @@ pub fn export_conn(
 // ─── Path-based wrappers used by the CLI ─────────────────────────────────────
 
 pub fn find_definition(db_path: &Path, symbol: &str) -> Result<DefinitionResult> {
-    let conn = db::open(db_path)?;
+    let conn = db::open_existing(db_path)?;
     find_definition_conn(&conn, symbol)
 }
 
 pub fn find_references(db_path: &Path, symbol: &str) -> Result<ReferencesResult> {
-    let conn = db::open(db_path)?;
+    let conn = db::open_existing(db_path)?;
     find_references_conn(&conn, symbol)
 }
 
 pub fn get_outline(db_path: &Path, path: &Path) -> Result<OutlineResult> {
-    let conn = db::open(db_path)?;
+    let conn = db::open_existing(db_path)?;
     get_outline_conn(&conn, path)
 }
 
 pub fn expand_symbol(db_path: &Path, symbol: &str) -> Result<ExpandResult> {
-    let conn = db::open(db_path)?;
+    let conn = db::open_existing(db_path)?;
     expand_symbol_conn(&conn, symbol)
 }
 
 pub fn impact(db_path: &Path, symbol: &str, depth: usize) -> Result<ImpactResult> {
-    let conn = db::open(db_path)?;
+    let conn = db::open_existing(db_path)?;
     impact_conn(&conn, symbol, depth)
 }
 
 pub fn validate(db_path: &Path, symbol: &str) -> Result<ValidateResult> {
-    let conn = db::open(db_path)?;
+    let conn = db::open_existing(db_path)?;
     validate_conn(&conn, symbol)
 }
 
@@ -1353,22 +1353,22 @@ pub fn validate_snippet(
     code: &str,
     language: Language,
 ) -> Result<ValidateSnippetResult> {
-    let conn = db::open(db_path)?;
+    let conn = db::open_existing(db_path)?;
     validate_snippet_conn(&conn, code, language)
 }
 
 pub fn stats(db_path: &Path) -> Result<StatsResult> {
-    let conn = db::open(db_path)?;
+    let conn = db::open_existing(db_path)?;
     stats_conn(&conn, db_path)
 }
 
 pub fn tests_for(db_path: &Path, symbol: &str) -> Result<TestsForResult> {
-    let conn = db::open(db_path)?;
+    let conn = db::open_existing(db_path)?;
     tests_for_conn(&conn, symbol)
 }
 
 pub fn connect(db_path: &Path, from: &str, to: &str, max_depth: usize) -> Result<ConnectResult> {
-    let conn = db::open(db_path)?;
+    let conn = db::open_existing(db_path)?;
     connect_conn(&conn, from, to, max_depth)
 }
 
@@ -1379,22 +1379,22 @@ pub fn export(
     depth: usize,
     limit: usize,
 ) -> Result<ExportResult> {
-    let conn = db::open(db_path)?;
+    let conn = db::open_existing(db_path)?;
     export_conn(&conn, format, from, depth, limit)
 }
 
 pub fn search(db_path: &Path, pattern: &str, options: SearchOptions) -> Result<SearchResult> {
-    let conn = db::open(db_path)?;
+    let conn = db::open_existing(db_path)?;
     search_conn(&conn, pattern, options)
 }
 
 pub fn unused(db_path: &Path, options: UnusedOptions) -> Result<UnusedResult> {
-    let conn = db::open(db_path)?;
+    let conn = db::open_existing(db_path)?;
     unused_conn(&conn, options)
 }
 
 pub fn context_pack(db_path: &Path, symbol: &str, budget: usize) -> Result<ContextPack> {
-    let conn = db::open(db_path)?;
+    let conn = db::open_existing(db_path)?;
     context_pack_conn(&conn, symbol, budget)
 }
 
@@ -1404,27 +1404,27 @@ pub fn diff_impact(
     to_ref: Option<&str>,
     depth: usize,
 ) -> Result<DiffImpactResult> {
-    let conn = db::open(db_path)?;
+    let conn = db::open_existing(db_path)?;
     diff_impact_conn(&conn, from_ref, to_ref, depth)
 }
 
 pub fn imports(db_path: &Path, path: &str) -> Result<ImportsResult> {
-    let conn = db::open(db_path)?;
+    let conn = db::open_existing(db_path)?;
     imports_conn(&conn, path)
 }
 
 pub fn imported_by(db_path: &Path, source: &str) -> Result<ImportedByResult> {
-    let conn = db::open(db_path)?;
+    let conn = db::open_existing(db_path)?;
     imported_by_conn(&conn, source)
 }
 
 pub fn signature(db_path: &Path, symbol: &str) -> Result<SignatureResult> {
-    let conn = db::open(db_path)?;
+    let conn = db::open_existing(db_path)?;
     signature_conn(&conn, symbol)
 }
 
 pub fn siblings(db_path: &Path, symbol: &str) -> Result<SiblingsResult> {
-    let conn = db::open(db_path)?;
+    let conn = db::open_existing(db_path)?;
     siblings_conn(&conn, symbol)
 }
 
