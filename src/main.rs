@@ -1,16 +1,21 @@
 use std::io::Read;
 use std::path::PathBuf;
+use std::time::Duration;
 
 use anyhow::{anyhow, Result};
 use clap::{Parser, Subcommand, ValueEnum};
 
 use tessera_codegraph::bench::{self, BenchOptions};
+use tessera_codegraph::completions::{self, CompletionShell};
 use tessera_codegraph::db;
+use tessera_codegraph::doctor::{self, DoctorOptions};
 use tessera_codegraph::indexer::{self, IndexOptions};
+use tessera_codegraph::init::{self, InitOptions};
 use tessera_codegraph::mcp;
 use tessera_codegraph::query;
 use tessera_codegraph::snapshot;
 use tessera_codegraph::types::{GraphEngineKind, Language, SearchOptions, UnusedOptions};
+use tessera_codegraph::watch::{self, WatchOptions};
 
 #[derive(Debug, Parser)]
 #[command(name = "tessera")]
@@ -88,6 +93,25 @@ impl From<EngineArg> for GraphEngineKind {
     }
 }
 
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum CompletionShellArg {
+    Bash,
+    Zsh,
+    Fish,
+    Powershell,
+}
+
+impl From<CompletionShellArg> for CompletionShell {
+    fn from(value: CompletionShellArg) -> Self {
+        match value {
+            CompletionShellArg::Bash => CompletionShell::Bash,
+            CompletionShellArg::Zsh => CompletionShell::Zsh,
+            CompletionShellArg::Fish => CompletionShell::Fish,
+            CompletionShellArg::Powershell => CompletionShell::Powershell,
+        }
+    }
+}
+
 #[derive(Debug, Subcommand)]
 enum Commands {
     /// Index a repository into a SQLite semantic graph (incremental by default).
@@ -106,6 +130,65 @@ enum Commands {
         /// Graph engine to use for impact queries. Cozo requires `--features cozo`.
         #[arg(long, value_enum, default_value_t = EngineArg::Sqlite)]
         graph_engine: EngineArg,
+    },
+    /// Watch a repository and incrementally re-index when source files change.
+    Watch {
+        /// Repository or directory to watch.
+        path: PathBuf,
+        /// SQLite database path.
+        #[arg(long, default_value = ".tessera/tessera.db")]
+        db: PathBuf,
+        /// Re-index from scratch instead of using the sha-diff incremental path.
+        #[arg(long)]
+        full: bool,
+        /// Skip writing the memory-mapped snapshot after indexing.
+        #[arg(long)]
+        no_snapshot: bool,
+        /// Poll interval in milliseconds.
+        #[arg(long, default_value_t = 500)]
+        poll_ms: u64,
+        /// Debounce interval in milliseconds after a detected change.
+        #[arg(long, default_value_t = 250)]
+        debounce_ms: u64,
+        /// Run one indexing pass and exit. Useful for smoke tests and CI.
+        #[arg(long)]
+        once: bool,
+    },
+    /// Check local Tessera setup and print actionable diagnostics.
+    Doctor {
+        /// Repository root to inspect.
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+        /// SQLite database path.
+        #[arg(long, default_value = ".tessera/tessera.db")]
+        db: PathBuf,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Create project-local Tessera defaults and optional integration snippets.
+    Init {
+        /// Repository root to initialize.
+        #[arg(default_value = ".")]
+        root: PathBuf,
+        /// SQLite database path to write into generated snippets.
+        #[arg(long, default_value = ".tessera/tessera.db")]
+        db: PathBuf,
+        /// Create local git hooks that run `tessera index .`.
+        #[arg(long)]
+        git_hooks: bool,
+        /// Create MCP config snippets under `.tessera/mcp/`.
+        #[arg(long)]
+        mcp_configs: bool,
+        /// Overwrite existing generated files.
+        #[arg(long)]
+        force: bool,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Print shell completion script.
+    Completions {
+        #[arg(value_enum)]
+        shell: CompletionShellArg,
     },
     /// Find symbol definitions by name.
     FindDefinition {
@@ -389,6 +472,50 @@ fn main() -> Result<()> {
                 db.display(),
                 report.elapsed_ms
             );
+        }
+        Commands::Watch {
+            path,
+            db,
+            full,
+            no_snapshot,
+            poll_ms,
+            debounce_ms,
+            once,
+        } => {
+            let options = WatchOptions {
+                poll_interval: Duration::from_millis(poll_ms),
+                debounce: Duration::from_millis(debounce_ms),
+                index_options: IndexOptions {
+                    full,
+                    build_snapshot: !no_snapshot,
+                },
+                once,
+            };
+            watch::watch_path(&path, &db, options)?;
+        }
+        Commands::Doctor { root, db, json } => {
+            let result = doctor::run(DoctorOptions { root, db_path: db })?;
+            print_result(result, json)?;
+        }
+        Commands::Init {
+            root,
+            db,
+            git_hooks,
+            mcp_configs,
+            force,
+            json,
+        } => {
+            let result = init::run(InitOptions {
+                root,
+                db_path: db,
+                git_hooks,
+                mcp_configs,
+                force,
+            })?;
+            print_result(result, json)?;
+        }
+        Commands::Completions { shell } => {
+            print!("{}", completions::generate(shell.into()));
         }
         Commands::FindDefinition { symbol, db, json } => {
             print_result(query::find_definition(&db, &symbol)?, json)?;

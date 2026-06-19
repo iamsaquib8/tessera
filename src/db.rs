@@ -1,7 +1,7 @@
 use std::fs;
 use std::path::Path;
 
-use anyhow::Result;
+use anyhow::{bail, Result};
 use rusqlite::{params, Connection, OptionalExtension};
 
 use crate::types::{
@@ -22,6 +22,17 @@ pub fn open(path: &Path) -> Result<Connection> {
     conn.pragma_update(None, "synchronous", "NORMAL")?;
     migrate(&conn)?;
     Ok(conn)
+}
+
+pub fn open_existing(path: &Path) -> Result<Connection> {
+    if !path.exists() {
+        bail!(
+            "Tessera database not found at {}. Run `tessera index . --db {}` first.",
+            path.display(),
+            path.display()
+        );
+    }
+    open(path)
 }
 
 pub fn reset(conn: &Connection) -> Result<()> {
