@@ -677,6 +677,53 @@ pub struct SearchOptions {
     pub limit: usize,
 }
 
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct UnusedOptions {
+    /// Restrict to these symbol kinds (function, method, class, struct, ...).
+    /// Empty means "any".
+    pub kinds: Vec<String>,
+    /// Restrict to these languages (typescript, java, ...). Empty means "any".
+    pub languages: Vec<String>,
+    /// `Some(true)` = only exported; `Some(false)` = only non-exported.
+    pub exported: Option<bool>,
+    /// Match symbols whose file path starts with this prefix.
+    pub path_prefix: Option<String>,
+    /// Maximum number of hits to return.
+    pub limit: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UnusedSymbol {
+    pub symbol: SymbolRecord,
+    pub inbound_refs: usize,
+    pub inbound_edges: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UnusedResult {
+    pub symbols: Vec<UnusedSymbol>,
+    pub meta: QueryMeta,
+}
+
+impl Display for UnusedResult {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if self.symbols.is_empty() {
+            writeln!(f, "No unused symbols found.")?;
+        } else {
+            writeln!(f, "Unused symbols ({}):", self.symbols.len())?;
+            for unused in &self.symbols {
+                let symbol = &unused.symbol;
+                writeln!(
+                    f,
+                    "  {:<9} {} at {}:{}",
+                    symbol.kind, symbol.qualified_name, symbol.path, symbol.start_line
+                )?;
+            }
+        }
+        write_meta(f, &self.meta)
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SearchHit {
     pub symbol: SymbolRecord,

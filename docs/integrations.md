@@ -7,7 +7,7 @@ cd path/to/your/repo
 tessera index .
 ```
 
-**Exposed tools** (all of them, in every client below): `find_definition` · `find_references` · `get_outline` · `expand_symbol` · `impact` · `context_pack` · `diff_impact` · `imports` · `imported_by` · `signature` · `siblings` · `search` · `validate` · `validate_snippet` · `tests_for` · `stats`. Schemas in [mcp.md](mcp.md).
+**Exposed tools** (all of them, in every client below): `find_definition` · `find_references` · `get_outline` · `expand_symbol` · `impact` · `connect` · `export` · `context_pack` · `diff_impact` · `imports` · `imported_by` · `signature` · `siblings` · `search` · `unused` · `validate` · `validate_snippet` · `tests_for` · `stats`. Schemas in [mcp.md](mcp.md).
 
 ## Claude Code
 

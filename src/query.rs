@@ -17,7 +17,8 @@ use crate::types::{
     LanguageCount, OutlineResult, PathNode, QueryMeta, ReferenceRecord, ReferencesResult,
     SearchHit, SearchOptions, SearchResult, Sibling, SiblingsResult, SignatureLine,
     SignatureResult, SnippetReferenceCheck, StatsResult, SymbolRecord, SymbolSuggestion,
-    TestsForResult, TopFanout, ValidateResult, ValidateSnippetResult,
+    TestsForResult, TopFanout, UnusedOptions, UnusedResult, UnusedSymbol, ValidateResult,
+    ValidateSnippetResult,
 };
 
 // ─── Connection-based public API ─────────────────────────────────────────────
@@ -1023,6 +1024,56 @@ pub fn search_conn(
     })
 }
 
+pub fn unused_conn(conn: &Connection, options: UnusedOptions) -> Result<UnusedResult> {
+    let limit = options.limit.clamp(1, 500);
+    let candidates = list_all_symbols(conn)?;
+    let mut unused = Vec::new();
+
+    for symbol in candidates {
+        if is_test_path(&symbol.path) {
+            continue;
+        }
+        if !options.kinds.is_empty() && !options.kinds.contains(&symbol.kind) {
+            continue;
+        }
+        if !options.languages.is_empty() && !options.languages.contains(&symbol.language) {
+            continue;
+        }
+        if options
+            .exported
+            .is_some_and(|exported| symbol.exported != exported)
+        {
+            continue;
+        }
+        if options
+            .path_prefix
+            .as_deref()
+            .is_some_and(|prefix| !symbol.path.starts_with(prefix))
+        {
+            continue;
+        }
+
+        let inbound_refs = inbound_ref_count(conn, &symbol)?;
+        let inbound_edges = inbound_edge_count(conn, &symbol)?;
+        if inbound_refs == 0 && inbound_edges == 0 {
+            unused.push(UnusedSymbol {
+                symbol,
+                inbound_refs,
+                inbound_edges,
+            });
+            if unused.len() >= limit {
+                break;
+            }
+        }
+    }
+
+    let tokens = estimate_tokens(&unused).max(40);
+    Ok(UnusedResult {
+        symbols: unused,
+        meta: meta(tokens, "search", 320, 0.7),
+    })
+}
+
 pub fn tests_for_conn(conn: &Connection, symbol: &str) -> Result<TestsForResult> {
     // Walk callers transitively until we either find a test-path caller or exhaust
     // a small depth budget. We collect any caller whose file path looks like a test.
@@ -1268,32 +1319,32 @@ pub fn export_conn(
 // ─── Path-based wrappers used by the CLI ─────────────────────────────────────
 
 pub fn find_definition(db_path: &Path, symbol: &str) -> Result<DefinitionResult> {
-    let conn = db::open(db_path)?;
+    let conn = db::open_existing(db_path)?;
     find_definition_conn(&conn, symbol)
 }
 
 pub fn find_references(db_path: &Path, symbol: &str) -> Result<ReferencesResult> {
-    let conn = db::open(db_path)?;
+    let conn = db::open_existing(db_path)?;
     find_references_conn(&conn, symbol)
 }
 
 pub fn get_outline(db_path: &Path, path: &Path) -> Result<OutlineResult> {
-    let conn = db::open(db_path)?;
+    let conn = db::open_existing(db_path)?;
     get_outline_conn(&conn, path)
 }
 
 pub fn expand_symbol(db_path: &Path, symbol: &str) -> Result<ExpandResult> {
-    let conn = db::open(db_path)?;
+    let conn = db::open_existing(db_path)?;
     expand_symbol_conn(&conn, symbol)
 }
 
 pub fn impact(db_path: &Path, symbol: &str, depth: usize) -> Result<ImpactResult> {
-    let conn = db::open(db_path)?;
+    let conn = db::open_existing(db_path)?;
     impact_conn(&conn, symbol, depth)
 }
 
 pub fn validate(db_path: &Path, symbol: &str) -> Result<ValidateResult> {
-    let conn = db::open(db_path)?;
+    let conn = db::open_existing(db_path)?;
     validate_conn(&conn, symbol)
 }
 
@@ -1302,22 +1353,22 @@ pub fn validate_snippet(
     code: &str,
     language: Language,
 ) -> Result<ValidateSnippetResult> {
-    let conn = db::open(db_path)?;
+    let conn = db::open_existing(db_path)?;
     validate_snippet_conn(&conn, code, language)
 }
 
 pub fn stats(db_path: &Path) -> Result<StatsResult> {
-    let conn = db::open(db_path)?;
+    let conn = db::open_existing(db_path)?;
     stats_conn(&conn, db_path)
 }
 
 pub fn tests_for(db_path: &Path, symbol: &str) -> Result<TestsForResult> {
-    let conn = db::open(db_path)?;
+    let conn = db::open_existing(db_path)?;
     tests_for_conn(&conn, symbol)
 }
 
 pub fn connect(db_path: &Path, from: &str, to: &str, max_depth: usize) -> Result<ConnectResult> {
-    let conn = db::open(db_path)?;
+    let conn = db::open_existing(db_path)?;
     connect_conn(&conn, from, to, max_depth)
 }
 
@@ -1328,17 +1379,22 @@ pub fn export(
     depth: usize,
     limit: usize,
 ) -> Result<ExportResult> {
-    let conn = db::open(db_path)?;
+    let conn = db::open_existing(db_path)?;
     export_conn(&conn, format, from, depth, limit)
 }
 
 pub fn search(db_path: &Path, pattern: &str, options: SearchOptions) -> Result<SearchResult> {
-    let conn = db::open(db_path)?;
+    let conn = db::open_existing(db_path)?;
     search_conn(&conn, pattern, options)
 }
 
+pub fn unused(db_path: &Path, options: UnusedOptions) -> Result<UnusedResult> {
+    let conn = db::open_existing(db_path)?;
+    unused_conn(&conn, options)
+}
+
 pub fn context_pack(db_path: &Path, symbol: &str, budget: usize) -> Result<ContextPack> {
-    let conn = db::open(db_path)?;
+    let conn = db::open_existing(db_path)?;
     context_pack_conn(&conn, symbol, budget)
 }
 
@@ -1348,27 +1404,27 @@ pub fn diff_impact(
     to_ref: Option<&str>,
     depth: usize,
 ) -> Result<DiffImpactResult> {
-    let conn = db::open(db_path)?;
+    let conn = db::open_existing(db_path)?;
     diff_impact_conn(&conn, from_ref, to_ref, depth)
 }
 
 pub fn imports(db_path: &Path, path: &str) -> Result<ImportsResult> {
-    let conn = db::open(db_path)?;
+    let conn = db::open_existing(db_path)?;
     imports_conn(&conn, path)
 }
 
 pub fn imported_by(db_path: &Path, source: &str) -> Result<ImportedByResult> {
-    let conn = db::open(db_path)?;
+    let conn = db::open_existing(db_path)?;
     imported_by_conn(&conn, source)
 }
 
 pub fn signature(db_path: &Path, symbol: &str) -> Result<SignatureResult> {
-    let conn = db::open(db_path)?;
+    let conn = db::open_existing(db_path)?;
     signature_conn(&conn, symbol)
 }
 
 pub fn siblings(db_path: &Path, symbol: &str) -> Result<SiblingsResult> {
-    let conn = db::open(db_path)?;
+    let conn = db::open_existing(db_path)?;
     siblings_conn(&conn, symbol)
 }
 
@@ -1776,6 +1832,48 @@ fn list_symbols(conn: &Connection, limit: usize) -> Result<Vec<SymbolRecord>> {
     )?;
     let rows = stmt.query_map(params![limit as i64], db::map_symbol)?;
     Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+}
+
+fn list_all_symbols(conn: &Connection) -> Result<Vec<SymbolRecord>> {
+    let mut stmt = conn.prepare(
+        "
+        SELECT s.id, s.name, s.qualified_name, s.kind, s.file_id, f.path, f.language,
+               s.start_line, s.end_line, s.signature, s.exported
+        FROM symbols s
+        JOIN files f ON f.id = s.file_id
+        ORDER BY s.qualified_name
+        ",
+    )?;
+    let rows = stmt.query_map([], db::map_symbol)?;
+    Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+}
+
+fn inbound_ref_count(conn: &Connection, symbol: &SymbolRecord) -> Result<usize> {
+    let mut stmt = conn.prepare(
+        "
+        SELECT COUNT(*)
+        FROM refs
+        WHERE symbol_name = ?1 OR symbol_name = ?2
+        ",
+    )?;
+    let count: i64 = stmt.query_row(params![symbol.name, symbol.qualified_name], |row| {
+        row.get(0)
+    })?;
+    Ok(count as usize)
+}
+
+fn inbound_edge_count(conn: &Connection, symbol: &SymbolRecord) -> Result<usize> {
+    let mut stmt = conn.prepare(
+        "
+        SELECT COUNT(*)
+        FROM edges
+        WHERE to_symbol_name = ?1 OR to_symbol_name = ?2
+        ",
+    )?;
+    let count: i64 = stmt.query_row(params![symbol.name, symbol.qualified_name], |row| {
+        row.get(0)
+    })?;
+    Ok(count as usize)
 }
 
 fn glob_score(pattern: &str, name: &str) -> f32 {

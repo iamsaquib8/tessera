@@ -28,13 +28,17 @@
 
 pub mod bench;
 pub mod bloom;
+pub mod completions;
 pub mod db;
+pub mod doctor;
 pub mod engine;
 pub mod indexer;
+pub mod init;
 pub mod mcp;
 pub mod query;
 pub mod snapshot;
 pub mod types;
+pub mod watch;
 
 use std::path::{Path, PathBuf};
 
@@ -49,7 +53,8 @@ pub use types::{
     KindCount, Language, LanguageCount, OutlineResult, QueryMeta, ReferenceRecord,
     ReferencesResult, SearchHit, SearchOptions, SearchResult, Sibling, SiblingsResult,
     SignatureLine, SignatureResult, SnippetReferenceCheck, StatsResult, SymbolRecord,
-    SymbolSuggestion, TestsForResult, TopFanout, ValidateResult, ValidateSnippetResult,
+    SymbolSuggestion, TestsForResult, TopFanout, UnusedOptions, UnusedResult, UnusedSymbol,
+    ValidateResult, ValidateSnippetResult,
 };
 
 /// High-level handle to a Tessera index. Holds a single SQLite connection and,
@@ -64,7 +69,7 @@ impl Index {
     /// or can't be migrated to the current schema.
     pub fn open(db_path: impl AsRef<Path>) -> Result<Self> {
         let db_path = db_path.as_ref().to_path_buf();
-        let conn = db::open(&db_path)?;
+        let conn = db::open_existing(&db_path)?;
         Ok(Self { conn, db_path })
     }
 
@@ -128,6 +133,10 @@ impl Index {
 
     pub fn search(&self, pattern: &str, options: SearchOptions) -> Result<SearchResult> {
         query::search_conn(&self.conn, pattern, options)
+    }
+
+    pub fn unused(&self, options: UnusedOptions) -> Result<UnusedResult> {
+        query::unused_conn(&self.conn, options)
     }
 
     pub fn context_pack(&self, symbol: &str, budget_tokens: usize) -> Result<ContextPack> {

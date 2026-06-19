@@ -742,6 +742,252 @@ export function run() {
 }
 
 #[test]
+fn unused_reports_zero_inbound_symbols_with_filters() {
+    let temp = TempDir::new().unwrap();
+    fs::create_dir(temp.path().join("src")).unwrap();
+    fs::create_dir(temp.path().join("tests")).unwrap();
+    fs::write(
+        temp.path().join("src/app.ts"),
+        r#"
+export function entry() {
+    return used();
+}
+
+function used() {
+    return 1;
+}
+
+function orphan() {
+    return 2;
+}
+
+export function publicUnused() {
+    return 3;
+}
+"#,
+    )
+    .unwrap();
+    fs::write(
+        temp.path().join("tests/app.test.ts"),
+        r#"
+export function testOnlyHelper() {
+    return 4;
+}
+"#,
+    )
+    .unwrap();
+
+    let db = temp.path().join(".tessera/unused.db");
+    Command::cargo_bin("tessera")
+        .unwrap()
+        .args([
+            "index",
+            temp.path().to_str().unwrap(),
+            "--db",
+            db.to_str().unwrap(),
+            "--full",
+        ])
+        .assert()
+        .success();
+
+    Command::cargo_bin("tessera")
+        .unwrap()
+        .args(["unused", "--db", db.to_str().unwrap()])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("orphan"))
+        .stdout(predicate::str::contains("publicUnused"))
+        .stdout(predicate::str::contains("testOnlyHelper").not());
+
+    Command::cargo_bin("tessera")
+        .unwrap()
+        .args([
+            "unused",
+            "--db",
+            db.to_str().unwrap(),
+            "--kind",
+            "function",
+            "--language",
+            "typescript",
+            "--path",
+            "src/",
+            "--exported=false",
+            "--limit",
+            "1",
+            "--json",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::function(|out: &str| {
+            let v: serde_json::Value = serde_json::from_str(out).unwrap();
+            v["symbols"].as_array().unwrap().len() == 1
+                && v["symbols"][0]["symbol"]["name"] == "orphan"
+                && v["symbols"][0]["inbound_refs"] == 0
+                && v["symbols"][0]["inbound_edges"] == 0
+        }));
+}
+
+#[test]
+fn watch_once_indexes_and_exits() {
+    let temp = TempDir::new().unwrap();
+    fs::write(
+        temp.path().join("app.ts"),
+        r#"
+export function start() {
+    return helper();
+}
+
+function helper() {
+    return 1;
+}
+"#,
+    )
+    .unwrap();
+
+    let db = temp.path().join(".tessera/watch.db");
+    Command::cargo_bin("tessera")
+        .unwrap()
+        .args([
+            "watch",
+            temp.path().to_str().unwrap(),
+            "--db",
+            db.to_str().unwrap(),
+            "--once",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("[watch:incremental] indexed"));
+
+    Command::cargo_bin("tessera")
+        .unwrap()
+        .args(["find-definition", "start", "--db", db.to_str().unwrap()])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("start"));
+}
+
+#[test]
+fn doctor_reports_index_health_and_missing_db_guidance() {
+    let temp = TempDir::new().unwrap();
+    fs::write(
+        temp.path().join("app.ts"),
+        "export function start() { return 1; }\n",
+    )
+    .unwrap();
+    let db = temp.path().join(".tessera/doctor.db");
+
+    Command::cargo_bin("tessera")
+        .unwrap()
+        .args([
+            "doctor",
+            "--root",
+            temp.path().to_str().unwrap(),
+            "--db",
+            db.to_str().unwrap(),
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("database"))
+        .stdout(predicate::str::contains("tessera index . --db"));
+
+    Command::cargo_bin("tessera")
+        .unwrap()
+        .args([
+            "index",
+            temp.path().to_str().unwrap(),
+            "--db",
+            db.to_str().unwrap(),
+            "--full",
+        ])
+        .assert()
+        .success();
+
+    Command::cargo_bin("tessera")
+        .unwrap()
+        .args([
+            "doctor",
+            "--root",
+            temp.path().to_str().unwrap(),
+            "--db",
+            db.to_str().unwrap(),
+            "--json",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::function(|out: &str| {
+            let v: serde_json::Value = serde_json::from_str(out).unwrap();
+            v["checks"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|check| check["name"] == "schema" && check["status"] == "ok")
+                && v["checks"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|check| check["name"] == "parsers" && check["status"] == "ok")
+        }));
+}
+
+#[test]
+fn init_creates_project_defaults_and_mcp_snippets() {
+    let temp = TempDir::new().unwrap();
+    fs::create_dir(temp.path().join(".git")).unwrap();
+    let db = temp.path().join(".tessera/init.db");
+
+    Command::cargo_bin("tessera")
+        .unwrap()
+        .args([
+            "init",
+            temp.path().to_str().unwrap(),
+            "--db",
+            db.to_str().unwrap(),
+            "--git-hooks",
+            "--mcp-configs",
+            "--json",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::function(|out: &str| {
+            let v: serde_json::Value = serde_json::from_str(out).unwrap();
+            let created = v["created"].as_array().unwrap();
+            created.iter().any(|path| path == ".tessera/config.toml")
+                && created.iter().any(|path| path == ".tessera/mcp/codex.toml")
+                && created.iter().any(|path| path == ".git/hooks/post-merge")
+        }));
+
+    assert!(temp.path().join(".tessera/config.toml").exists());
+    assert!(temp.path().join(".tessera/mcp/claude.json").exists());
+    assert!(temp.path().join(".git/hooks/post-checkout").exists());
+}
+
+#[test]
+fn completions_print_shell_scripts() {
+    Command::cargo_bin("tessera")
+        .unwrap()
+        .args(["completions", "bash"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("complete -F _tessera tessera"))
+        .stdout(predicate::str::contains("doctor"))
+        .stdout(predicate::str::contains("init"));
+}
+
+#[test]
+fn query_missing_database_is_actionable() {
+    let temp = TempDir::new().unwrap();
+    let db = temp.path().join(".tessera/missing.db");
+
+    Command::cargo_bin("tessera")
+        .unwrap()
+        .args(["stats", "--db", db.to_str().unwrap()])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("Tessera database not found"))
+        .stderr(predicate::str::contains("tessera index . --db"));
+}
+
+#[test]
 fn signature_lists_class_members() {
     let temp = TempDir::new().unwrap();
     write_sample(&temp);
