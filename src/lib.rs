@@ -28,9 +28,12 @@
 
 pub mod bench;
 pub mod bloom;
+pub mod completions;
 pub mod db;
+pub mod doctor;
 pub mod engine;
 pub mod indexer;
+pub mod init;
 pub mod mcp;
 pub mod query;
 pub mod snapshot;
@@ -66,7 +69,7 @@ impl Index {
     /// or can't be migrated to the current schema.
     pub fn open(db_path: impl AsRef<Path>) -> Result<Self> {
         let db_path = db_path.as_ref().to_path_buf();
-        let conn = db::open(&db_path)?;
+        let conn = db::open_existing(&db_path)?;
         Ok(Self { conn, db_path })
     }
 

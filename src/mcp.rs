@@ -36,7 +36,7 @@ struct JsonRpcError {
 }
 
 pub fn serve_stdio(db_path: &Path) -> Result<()> {
-    let conn = db::open(db_path)?;
+    let conn = db::open_existing(db_path)?;
     let stdin = io::stdin();
     let mut stdout = io::stdout();
 

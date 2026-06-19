@@ -4,11 +4,11 @@ Tessera turns source code into a small local graph plus a memory-mapped projecti
 
 ```text
 source files
-  -> tree-sitter parsers (TS/JS/Python/Go/Rust)
+  -> tree-sitter parsers (TS/TSX/JS, Python, Go, Rust, Java, C, C++, C#, Ruby, PHP)
   -> symbols, references, edges, exports
   -> SQLite (WAL, trigram FTS, bloom filter blob)
   -> memory-mapped snapshot (.tessera/snapshot.bin)
-  -> CLI, MCP server, library API
+  -> CLI, MCP server, library API, doctor/init/watch polish
 ```
 
 ## Storage
@@ -26,7 +26,7 @@ Core tables:
 
 ## Parsing
 
-Tree-sitter provides fast syntax trees without requiring a language server. The v0.2 parser extracts:
+Tree-sitter provides fast syntax trees without requiring a language server. The parser extracts:
 
 - Top-level and nested functions, methods, classes (TS/JS, Python)
 - Function-like variable declarations (TS/JS) — including React function components
@@ -34,6 +34,10 @@ Tree-sitter provides fast syntax trees without requiring a language server. The 
 - Functions, methods, structs, interfaces (Go), with Go method receivers qualified by their receiver type
 - Functions, methods, structs, enums, traits, modules, and `impl` blocks (Rust)
 - Classes, interfaces, records, enums, methods, constructors, method invocations, and `new` expressions (Java)
+- C and C++ functions, class methods, constructors, `new`, includes, and calls
+- C# classes, methods, constructors, using directives, and invocation expressions
+- Ruby classes, methods, requires, and calls
+- PHP functions, methods, namespace uses, object creation, and calls
 - Call expressions and Rust macro invocations
 
 Exported detection is language-aware:
@@ -55,6 +59,11 @@ Exported detection is language-aware:
 
 All inserts happen inside one transaction. `--full` keeps the previous "blow away and rebuild" behaviour.
 
+`tessera watch` wraps the same incremental indexer in a polling loop. It
+fingerprints supported source files, waits for the debounce window after a
+change, and then runs the normal incremental path. `--once` runs one pass and
+exits for smoke tests and CI.
+
 ## Snapshot
 
 After indexing, Tessera writes `.tessera/snapshot.bin`: a bincode archive containing every symbol, the call adjacency list, and a name-to-id reverse index. The MCP server `mmap`s this file at startup so `find_definition`, `find_references`, and `impact` can avoid SQLite on the hot path. SQLite remains the source of truth — the snapshot is a derived view that can be rebuilt at any time via `tessera snapshot`.
@@ -75,6 +84,23 @@ iterations     : 25
 ```
 
 Each caller's normalised PageRank lands in `criticality` (0–100). The `breakdown` object exposes the components an agent or human might want to audit (`fanout_in`, `fanout_out`, `exported`, `test_coverage`, `depth_decay`, raw `pagerank`).
+
+Workflow tools layer on top of the same graph:
+
+- `context_pack` bundles body, dependency signatures, callers, and tests.
+- `diff_impact` maps git hunks to changed symbols and impacted callers.
+- `imports` / `imported_by` expose module-level edges.
+- `signature` returns API shape without bodies.
+- `siblings` finds symbols with shared callers.
+- `search` provides fuzzy and glob symbol lookup.
+- `connect` finds shortest call paths.
+- `export` emits Mermaid or DOT call graphs.
+- `unused` reports zero-inbound symbols with filters.
+
+`doctor` is intentionally diagnostic rather than a graph query. It checks root
+path, DB existence, schema metadata, snapshot freshness, parser smoke tests,
+ignored-path rules, and the MCP command to paste into agent configs. `init`
+creates project-local defaults and optional MCP config snippets.
 
 ## Hallucination validator
 
