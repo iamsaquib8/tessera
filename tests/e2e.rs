@@ -988,6 +988,87 @@ fn query_missing_database_is_actionable() {
 }
 
 #[test]
+fn explain_flags_and_empty_results_are_actionable() {
+    let temp = TempDir::new().unwrap();
+    fs::write(
+        temp.path().join("app.ts"),
+        r#"
+export function entry() {
+    return helper();
+}
+
+function helper() {
+    return 1;
+}
+"#,
+    )
+    .unwrap();
+    let db = temp.path().join(".tessera/explain.db");
+    Command::cargo_bin("tessera")
+        .unwrap()
+        .args([
+            "index",
+            temp.path().to_str().unwrap(),
+            "--db",
+            db.to_str().unwrap(),
+            "--full",
+        ])
+        .assert()
+        .success();
+
+    Command::cargo_bin("tessera")
+        .unwrap()
+        .args([
+            "impact",
+            "helper",
+            "--db",
+            db.to_str().unwrap(),
+            "--explain",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Why:"))
+        .stdout(predicate::str::contains("personalised PageRank"));
+
+    Command::cargo_bin("tessera")
+        .unwrap()
+        .args(["validate", "helpr", "--db", db.to_str().unwrap(), "--why"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Why:"))
+        .stdout(predicate::str::contains("Bloom filter"));
+
+    Command::cargo_bin("tessera")
+        .unwrap()
+        .args([
+            "find-definition",
+            "missingSymbol",
+            "--db",
+            db.to_str().unwrap(),
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "hint: run `tessera search <name>`",
+        ));
+}
+
+#[test]
+fn release_docs_and_schema_snapshot_exist() {
+    let schema = fs::read_to_string("docs/json-schemas/tessera-cli-v0.5.schema.json").unwrap();
+    let schema_json: serde_json::Value = serde_json::from_str(&schema).unwrap();
+    assert_eq!(schema_json["title"], "Tessera CLI JSON responses v0.5");
+
+    for path in [
+        "docs/first-five-minutes.md",
+        "docs/when-not-to-use.md",
+        "docs/troubleshooting.md",
+    ] {
+        assert!(fs::metadata(path).unwrap().is_file(), "{path} missing");
+    }
+}
+
+#[test]
 fn signature_lists_class_members() {
     let temp = TempDir::new().unwrap();
     write_sample(&temp);

@@ -122,6 +122,15 @@ Build a simple wrapper that exposes the CLI as HTTP — e.g. `tessera mcp` behin
 
 Any process can spawn `tessera mcp --db <path>` and talk JSON-RPC over stdio. Or skip MCP entirely and use the [Rust library](../README.md#use-as-a-rust-library) — `Index::open(...).impact(...)` is exactly the same query path the MCP server uses.
 
+For local clients that need HTTP instead of stdio, run:
+
+```sh
+tessera mcp-http --addr 127.0.0.1:8765 --db .tessera/tessera.db
+```
+
+The HTTP transport exposes `POST /mcp` for JSON-RPC, `GET /sse` as a simple
+readiness event stream, and `GET /health` for health checks.
+
 ## Tip: re-index after pulls
 
 Add this to a git hook (`.git/hooks/post-merge`, `post-checkout`):

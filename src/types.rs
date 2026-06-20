@@ -168,7 +168,11 @@ pub struct DefinitionResult {
 impl Display for DefinitionResult {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         if self.matches.is_empty() {
-            return writeln!(f, "No definitions found.");
+            writeln!(f, "No definitions found.")?;
+            return writeln!(
+                f,
+                "  hint: run `tessera search <name>` for fuzzy lookup, `tessera validate <name>` for near-misses, or re-index with `tessera index . --full` if the DB is stale."
+            );
         }
         for symbol in &self.matches {
             writeln!(
@@ -193,7 +197,11 @@ pub struct ReferencesResult {
 impl Display for ReferencesResult {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         if self.references.is_empty() {
-            return writeln!(f, "No references found.");
+            writeln!(f, "No references found.")?;
+            return writeln!(
+                f,
+                "  hint: run `tessera impact <symbol>` for transitive callers, or `tessera search <symbol>` to confirm the indexed name."
+            );
         }
         for reference in &self.references {
             writeln!(
@@ -217,6 +225,10 @@ impl Display for OutlineResult {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         if self.symbols.is_empty() {
             writeln!(f, "No indexed symbols under {}.", self.path)?;
+            writeln!(
+                f,
+                "  hint: check the path prefix, run `tessera stats`, or re-index with `tessera index . --full`."
+            )?;
         } else {
             writeln!(f, "Outline for {}", self.path)?;
             for symbol in &self.symbols {
@@ -242,7 +254,11 @@ pub struct ExpandResult {
 impl Display for ExpandResult {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let Some(symbol) = &self.symbol else {
-            return writeln!(f, "No symbol found.");
+            writeln!(f, "No symbol found.")?;
+            return writeln!(
+                f,
+                "  hint: run `tessera find-definition <symbol>` or `tessera search <symbol>` to find the indexed name."
+            );
         };
         writeln!(
             f,
@@ -273,6 +289,11 @@ impl Display for ImpactResult {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         if self.callers.is_empty() {
             writeln!(f, "No callers found for {}.", self.symbol)?;
+            writeln!(
+                f,
+                "  hint: run `tessera find-references {}` for direct refs, `tessera validate {}` for near-misses, or re-index if the call graph is stale.",
+                self.symbol, self.symbol
+            )?;
         } else {
             writeln!(f, "Impact for {}", self.symbol)?;
             for caller in &self.callers {
@@ -357,6 +378,12 @@ impl Display for ValidateResult {
                     candidate.confidence, candidate.qualified_name, candidate.path, candidate.line
                 )?;
             }
+        } else if !self.exists {
+            writeln!(
+                f,
+                "  hint: run `tessera search {}` for broader fuzzy matching, or re-index with `tessera index . --full` if this symbol should exist.",
+                self.query
+            )?;
         }
         write_meta(f, &self.meta)
     }
@@ -709,6 +736,10 @@ impl Display for UnusedResult {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         if self.symbols.is_empty() {
             writeln!(f, "No unused symbols found.")?;
+            writeln!(
+                f,
+                "  hint: relax filters such as `--kind`, `--language`, `--path`, or `--exported=false`."
+            )?;
         } else {
             writeln!(f, "Unused symbols ({}):", self.symbols.len())?;
             for unused in &self.symbols {
@@ -741,6 +772,11 @@ impl Display for SearchResult {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         if self.hits.is_empty() {
             writeln!(f, "No symbols matched {:?}.", self.query)?;
+            writeln!(
+                f,
+                "  hint: try a wider pattern such as `*{}*`, remove filters, or run `tessera validate {}` for near-misses.",
+                self.query, self.query
+            )?;
         } else {
             writeln!(f, "Search for {:?} ({} hits)", self.query, self.hits.len())?;
             for hit in &self.hits {

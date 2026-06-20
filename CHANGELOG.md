@@ -2,6 +2,27 @@
 
 All notable changes to Tessera will be documented here.
 
+## 0.5.0 - Unreleased
+
+v0.5 hardens Tessera for daily use: keeping indexes fresh, diagnosing local
+setup, reducing empty-result confusion, and documenting the first-run path.
+
+### Added
+- **`watch`**: polling daemon mode that runs the incremental indexer after source changes, with `--once`, `--poll-ms`, `--debounce-ms`, `--full`, and `--no-snapshot`.
+- **`unused`**: zero-inbound-reference detection with kind, language, exported, path, limit, and JSON filters.
+- **`doctor`**: local setup diagnostics for root path, DB existence, schema, index counts, snapshot freshness, parser smoke tests, ignored paths, and MCP command hints.
+- **`init`**: project-local `.tessera/config.toml`, optional MCP snippets, optional git hooks, and next-step prompts.
+- **`completions`**: dependency-free shell completion output for bash, zsh, fish, and PowerShell.
+- **`mcp-http`**: local HTTP transport with `POST /mcp`, `GET /sse`, and `GET /health`.
+- **`--explain` / `--why`** on `impact`, `validate`, `search`, and `unused`.
+- Stable v0.5 JSON response schema snapshot at `docs/json-schemas/tessera-cli-v0.5.schema.json`.
+- New docs: first five minutes, when not to use Tessera, and troubleshooting.
+
+### Changed
+- Read-only query paths now fail with an actionable missing-DB error instead of creating an empty DB.
+- Empty human-readable results now include next-command hints.
+- Architecture, quickstart, integration, and README docs now reflect the v0.5 command set.
+
 ## 0.4.0 - 2026-06-14
 
 The biggest release since launch: five new languages, two new graph queries, a

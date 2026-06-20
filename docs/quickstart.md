@@ -3,6 +3,11 @@
 Install the package:
 
 ```sh
+npm install -g tessera-codegraph
+# or: brew install iamsaquib8/tessera/tessera
+# or: curl -fsSL https://raw.githubusercontent.com/iamsaquib8/tessera/main/install.sh | sh
+# or: docker run --rm -v "$PWD:/work" ghcr.io/iamsaquib8/tessera index /work
+# or:
 cargo install tessera-codegraph
 ```
 
@@ -32,6 +37,7 @@ tessera tests-for findById
 tessera stats
 tessera doctor --json
 tessera completions bash
+tessera mcp-http --addr 127.0.0.1:8765
 tessera search '*Repository*' --kind class --language java
 tessera search parseFrom --language java
 tessera search 'init*' --kind method --exported
@@ -55,6 +61,9 @@ Use JSON output for scripts or agents:
 ```sh
 tessera impact findById --json
 ```
+
+The v0.5 JSON response schema snapshot lives in
+[`docs/json-schemas/tessera-cli-v0.5.schema.json`](json-schemas/tessera-cli-v0.5.schema.json).
 
 Use a custom database path:
 

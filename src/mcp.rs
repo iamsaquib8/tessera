@@ -11,7 +11,7 @@ use crate::query;
 use crate::types::{Language, SearchOptions, UnusedOptions};
 
 #[derive(Debug, Deserialize)]
-struct JsonRpcRequest {
+pub struct JsonRpcRequest {
     id: Option<Value>,
     method: String,
     #[serde(default)]
@@ -19,7 +19,7 @@ struct JsonRpcRequest {
 }
 
 #[derive(Debug, Serialize)]
-struct JsonRpcResponse {
+pub struct JsonRpcResponse {
     jsonrpc: &'static str,
     #[serde(skip_serializing_if = "Option::is_none")]
     id: Option<Value>,
@@ -61,6 +61,21 @@ pub fn serve_stdio(db_path: &Path) -> Result<()> {
         stdout.flush()?;
     }
     Ok(())
+}
+
+pub fn handle_json_rpc(conn: &Connection, db_path: &Path, body: &str) -> JsonRpcResponse {
+    match serde_json::from_str::<JsonRpcRequest>(body) {
+        Ok(request) => handle_request(conn, db_path, request),
+        Err(error) => JsonRpcResponse {
+            jsonrpc: "2.0",
+            id: None,
+            result: None,
+            error: Some(JsonRpcError {
+                code: -32700,
+                message: error.to_string(),
+            }),
+        },
+    }
 }
 
 fn handle_request(conn: &Connection, db_path: &Path, request: JsonRpcRequest) -> JsonRpcResponse {
