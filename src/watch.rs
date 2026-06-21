@@ -78,6 +78,12 @@ fn index_once(root: &Path, db_path: &Path, options: IndexOptions) -> Result<()> 
         db_path.display(),
         report.elapsed_ms
     );
+    if !report.warnings.is_empty() {
+        eprintln!("[watch] indexed with {} warning(s)", report.warnings.len());
+        for warning in report.warnings.iter().take(5) {
+            eprintln!("  {}: {}", warning.path, warning.message);
+        }
+    }
     Ok(())
 }
 

@@ -145,7 +145,7 @@ fn write_file(
 
 fn config_toml(db_path: &Path) -> String {
     format!(
-        "# Tessera project defaults\n[index]\ndb = \"{}\"\nwatch_poll_ms = 500\nwatch_debounce_ms = 250\n\n[ignore]\n# Built-in ignores already cover .git, node_modules, target, dist, build, .next, virtualenvs, __pycache__, and .tessera.\nextra = []\n",
+        "# Tessera project defaults\n[index]\ndb = \"{}\"\nwatch_poll_ms = 500\nwatch_debounce_ms = 250\n\n[include]\n# Empty means all supported source files under the root.\npaths = []\n\n[exclude]\n# Relative path prefixes to skip after built-in ignores.\npaths = []\n\n[ignore]\n# Built-in ignores already cover .git, node_modules, target, dist, build, out, coverage, vendor, .next, virtualenvs, caches, and .tessera.\nextra = []\n",
         db_path.display()
     )
 }

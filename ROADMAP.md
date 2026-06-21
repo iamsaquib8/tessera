@@ -150,6 +150,10 @@ grammar crates require a Tree-sitter core upgrade rather than a safe v0.5 patch.
 Goal: reduce false edges, missed edges, and "works on the sample but not my
 repo" moments.
 
+Status: correctness-infrastructure complete. Deep per-language resolution and
+new language families remain future v0.6/v0.7 work because they require parser
+and resolver upgrades, not just CLI hardening.
+
 ### Language Depth
 
 - Add new language families after upgrading the Tree-sitter core past the 0.20
@@ -203,11 +207,11 @@ repo" moments.
 - Add JSON schema compatibility tests for all MCP tools.
 - Add performance budgets to CI for indexing, incremental re-indexing, and
   common queries on the sample corpus.
-- Add panic-free indexing guarantees: syntax errors and unsupported constructs
-  should degrade into warnings, not crashes.
-- Add better ignored-path defaults for generated, vendored, build, package
+- Ship panic-free indexing guarantees: unreadable files, traversal errors, and
+  parser failures degrade into warnings, not crashes.
+- Ship better ignored-path defaults for generated, vendored, build, package
   manager, virtualenv, and cache directories.
-- Add opt-in include/exclude config in `.tessera/config.toml`.
+- Ship opt-in include/exclude config in `.tessera/config.toml`.
 
 ## v0.7 - Agent Workflow Layer
 

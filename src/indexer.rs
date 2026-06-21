@@ -10,6 +10,7 @@ use tree_sitter::{Node, Parser};
 use walkdir::{DirEntry, WalkDir};
 
 use crate::bloom::BloomFilter;
+use crate::config::TesseraConfig;
 use crate::db;
 use crate::snapshot;
 use crate::types::{IndexedImport, IndexedReference, IndexedSymbol, Language};
@@ -23,6 +24,13 @@ pub struct IndexReport {
     pub references_indexed: usize,
     pub elapsed_ms: u128,
     pub mode: IndexMode,
+    pub warnings: Vec<IndexWarning>,
+}
+
+#[derive(Debug, Clone)]
+pub struct IndexWarning {
+    pub path: String,
+    pub message: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -56,6 +64,7 @@ pub fn index_path_with(root: &Path, db_path: &Path, options: IndexOptions) -> Re
         .canonicalize()
         .with_context(|| format!("failed to canonicalize {}", root.display()))?;
     let conn = db::open(db_path)?;
+    let config = TesseraConfig::load(&root);
     if options.full {
         db::reset(&conn)?;
     }
@@ -75,31 +84,58 @@ pub fn index_path_with(root: &Path, db_path: &Path, options: IndexOptions) -> Re
         references_indexed: 0,
         elapsed_ms: 0,
         mode,
+        warnings: Vec::new(),
     };
 
     let mut visited_ids: Vec<i64> = Vec::new();
 
     let tx = conn.unchecked_transaction()?;
 
-    for entry in WalkDir::new(&root)
+    for entry_result in WalkDir::new(&root)
         .into_iter()
-        .filter_entry(should_enter)
-        .filter_map(Result::ok)
-        .filter(|entry| entry.file_type().is_file())
+        .filter_entry(|entry| should_enter(entry, &config))
     {
-        let path = entry.path();
-        let Some(language) = language_for_path(path) else {
+        let entry = match entry_result {
+            Ok(entry) => entry,
+            Err(error) => {
+                report.warnings.push(IndexWarning {
+                    path: error
+                        .path()
+                        .map(|p| p.display().to_string())
+                        .unwrap_or_else(|| "<walkdir>".to_string()),
+                    message: error.to_string(),
+                });
+                continue;
+            }
+        };
+        if !entry.file_type().is_file() {
             continue;
-        };
-        let content = match fs::read_to_string(path) {
-            Ok(c) => c,
-            Err(_) => continue, // binary or unreadable; skip silently
-        };
+        }
+
+        let path = entry.path();
         let rel_path = path
             .strip_prefix(&root)
             .unwrap_or(path)
             .to_string_lossy()
             .replace('\\', "/");
+
+        if !config.includes_path(&rel_path) || config.excludes_path(&rel_path) {
+            continue;
+        }
+
+        let Some(language) = language_for_path(path) else {
+            continue;
+        };
+        let content = match fs::read_to_string(path) {
+            Ok(c) => c,
+            Err(error) => {
+                report.warnings.push(IndexWarning {
+                    path: rel_path,
+                    message: format!("failed to read file: {error}"),
+                });
+                continue;
+            }
+        };
         let sha = format!("{:x}", Sha256::digest(content.as_bytes()));
 
         // Incremental: short-circuit when sha is unchanged.
@@ -114,8 +150,16 @@ pub fn index_path_with(root: &Path, db_path: &Path, options: IndexOptions) -> Re
             }
         }
 
-        let parsed = parse_file(language, &content)
-            .with_context(|| format!("failed to parse {}", path.display()))?;
+        let parsed = match parse_file(language, &content) {
+            Ok(parsed) => parsed,
+            Err(error) => {
+                report.warnings.push(IndexWarning {
+                    path: rel_path,
+                    message: format!("failed to parse {language}: {error}"),
+                });
+                continue;
+            }
+        };
 
         let file_id = db::insert_file(&tx, &rel_path, language, &sha, content.lines().count())?;
         let symbol_ids = db::insert_symbols(&tx, file_id, &parsed.symbols)?;
@@ -176,8 +220,11 @@ fn rebuild_bloom(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
-fn should_enter(entry: &DirEntry) -> bool {
+fn should_enter(entry: &DirEntry, config: &TesseraConfig) -> bool {
     let name = entry.file_name().to_string_lossy();
+    if config.ignores_name(&name) {
+        return false;
+    }
     !matches!(
         name.as_ref(),
         ".git"
@@ -187,6 +234,21 @@ fn should_enter(entry: &DirEntry) -> bool {
             | "target"
             | "dist"
             | "build"
+            | "out"
+            | "coverage"
+            | "vendor"
+            | "vendors"
+            | "third_party"
+            | ".cache"
+            | ".gradle"
+            | ".idea"
+            | ".pytest_cache"
+            | ".mypy_cache"
+            | ".ruff_cache"
+            | ".tox"
+            | ".cargo"
+            | "Pods"
+            | "DerivedData"
             | ".next"
             | ".venv"
             | "venv"

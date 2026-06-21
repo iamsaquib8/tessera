@@ -65,6 +65,8 @@ tessera impact findById --json
 The v0.5 JSON response schema snapshot lives in
 [`docs/json-schemas/tessera-cli-v0.5.schema.json`](json-schemas/tessera-cli-v0.5.schema.json).
 
+For include/exclude rules in larger repos, see [`docs/configuration.md`](configuration.md).
+
 Use a custom database path:
 
 ```sh
