@@ -695,6 +695,74 @@ fn context_pack_bundles_body_deps_callers() {
 }
 
 #[test]
+fn plan_query_recommends_agent_workflow() {
+    Command::cargo_bin("tessera")
+        .unwrap()
+        .args([
+            "plan-query",
+            "edit findById safely",
+            "--symbol",
+            "findById",
+            "--json",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::function(|out: &str| {
+            let v: serde_json::Value = serde_json::from_str(out).unwrap();
+            v["inferred_intent"] == "prepare_edit"
+                && v["steps"].as_array().unwrap().iter().any(|step| {
+                    step["tool"] == "edit-prep"
+                        && step["command"]
+                            .as_str()
+                            .unwrap()
+                            .contains("tessera edit-prep findById")
+                })
+        }));
+}
+
+#[test]
+fn edit_prep_bundles_pre_edit_graph_context() {
+    let temp = TempDir::new().unwrap();
+    write_sample(&temp);
+    let db = temp.path().join(".tessera/edit.db");
+    Command::cargo_bin("tessera")
+        .unwrap()
+        .args([
+            "index",
+            temp.path().to_str().unwrap(),
+            "--db",
+            db.to_str().unwrap(),
+            "--full",
+        ])
+        .assert()
+        .success();
+
+    Command::cargo_bin("tessera")
+        .unwrap()
+        .args([
+            "edit-prep",
+            "findById",
+            "--db",
+            db.to_str().unwrap(),
+            "--json",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::function(|out: &str| {
+            let v: serde_json::Value = serde_json::from_str(out).unwrap();
+            v["validate"]["exists"] == true
+                && v["signature"]["symbol"]["name"] == "findById"
+                && v["context"]["body"].is_string()
+                && v["tests"]["tests"].is_array()
+                && v["next_steps"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|step| step["tool"] == "impact")
+        }));
+}
+
+#[test]
 fn imports_and_imported_by_track_module_graph() {
     let temp = TempDir::new().unwrap();
     fs::write(

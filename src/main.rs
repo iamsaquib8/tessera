@@ -333,6 +333,27 @@ enum Commands {
         #[arg(long)]
         json: bool,
     },
+    /// Recommend the cheapest Tessera tool sequence for an agent task.
+    PlanQuery {
+        /// Natural-language task shape, for example "edit findById safely".
+        task: String,
+        /// Optional symbol to substitute into the recommended commands.
+        #[arg(long)]
+        symbol: Option<String>,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Bundle validation, signature, siblings, context, and tests before editing.
+    EditPrep {
+        symbol: String,
+        /// Token budget for the embedded context pack (default 1800).
+        #[arg(long, default_value_t = 1800)]
+        budget: usize,
+        #[arg(long, default_value = ".tessera/tessera.db")]
+        db: PathBuf,
+        #[arg(long)]
+        json: bool,
+    },
     /// Map a git range to changed symbols + their PageRank-impacted callers.
     DiffImpact {
         /// Base git ref (e.g. `main`, `origin/main`, `HEAD~5`).
@@ -458,6 +479,21 @@ enum Commands {
 }
 
 fn main() -> Result<()> {
+    #[cfg(windows)]
+    {
+        return std::thread::Builder::new()
+            .name("tessera-main".to_string())
+            .stack_size(8 * 1024 * 1024)
+            .spawn(run)?
+            .join()
+            .map_err(|_| anyhow!("tessera main thread panicked"))?;
+    }
+
+    #[cfg(not(windows))]
+    run()
+}
+
+fn run() -> Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
@@ -628,6 +664,17 @@ fn main() -> Result<()> {
             json,
         } => {
             print_result(query::context_pack(&db, &symbol, budget)?, json)?;
+        }
+        Commands::PlanQuery { task, symbol, json } => {
+            print_result(query::plan_query(&task, symbol.as_deref()), json)?;
+        }
+        Commands::EditPrep {
+            symbol,
+            budget,
+            db,
+            json,
+        } => {
+            print_result(query::edit_prep(&db, &symbol, budget)?, json)?;
         }
         Commands::DiffImpact {
             from,

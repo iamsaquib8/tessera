@@ -217,11 +217,16 @@ and resolver upgrades, not just CLI hardening.
 
 Goal: make Tessera not just a graph, but the agent's navigation planner.
 
-- Add `plan-query`: given a natural-language task shape or requested symbol,
+Status: first workflow layer complete. Tessera now has deterministic tool
+planning and a one-call pre-edit bundle exposed through CLI and MCP. CI checks,
+PR comments, pagination, and richer review workflows remain future v0.7/v0.8
+work.
+
+- Ship `plan-query`: given a natural-language task shape or requested symbol,
   recommend the cheapest sequence of Tessera tools.
 - Add `context-pack v2`: include doc comments, nearby examples, relevant tests,
   public API shape, and diff context under one budget.
-- Add `edit-prep`: combine `validate`, `signature`, `siblings`,
+- Ship `edit-prep`: combine `validate`, `signature`, `siblings`,
   `context-pack`, and `tests_for` into a single pre-edit bundle.
 - Add `review-pack`: summarize changed symbols, high-impact callers, missing
   tests, and likely docs updates for a PR.
