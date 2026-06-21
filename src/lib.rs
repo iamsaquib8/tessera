@@ -48,15 +48,17 @@ use anyhow::Result;
 use rusqlite::Connection;
 
 pub use indexer::{IndexMode, IndexOptions, IndexReport};
+pub use query::{ExportGroupBy, ExportOptions};
 pub use types::{
-    AlternativeQuery, BenchQuery, BenchResult, BenchSavings, ContextPack, CriticalityBreakdown,
-    DefinitionResult, DiffChangedSymbol, DiffImpactResult, DiffImpactedSymbol, EditPrepResult,
-    ExpandResult, GraphEngineKind, ImpactCaller, ImpactResult, ImportRecord, ImportedByResult,
-    ImportsResult, KindCount, Language, LanguageCount, OutlineResult, PlanQueryResult, PlanStep,
-    QueryMeta, ReferenceRecord, ReferencesResult, SearchHit, SearchOptions, SearchResult, Sibling,
-    SiblingsResult, SignatureLine, SignatureResult, SnippetReferenceCheck, StatsResult,
-    SymbolRecord, SymbolSuggestion, TestsForResult, TopFanout, UnusedOptions, UnusedResult,
-    UnusedSymbol, ValidateResult, ValidateSnippetResult,
+    AlternativeQuery, BenchQuery, BenchResult, BenchSavings, ConnectResult, ContextPack,
+    CriticalityBreakdown, DefinitionResult, DiffChangedSymbol, DiffImpactResult,
+    DiffImpactedSymbol, EditPrepResult, ExpandResult, ExportResult, GraphEngineKind, ImpactCaller,
+    ImpactResult, ImportRecord, ImportedByResult, ImportsResult, KindCount, Language,
+    LanguageCount, OutlineResult, PlanQueryResult, PlanStep, QueryMeta, ReferenceRecord,
+    ReferencesResult, SearchHit, SearchOptions, SearchResult, Sibling, SiblingsResult,
+    SignatureLine, SignatureResult, SnippetReferenceCheck, StatsResult, SymbolRecord,
+    SymbolSuggestion, TestsForResult, TopFanout, UnusedOptions, UnusedResult, UnusedSymbol,
+    ValidateResult, ValidateSnippetResult,
 };
 
 /// High-level handle to a Tessera index. Holds a single SQLite connection and,
@@ -131,6 +133,24 @@ impl Index {
 
     pub fn tests_for(&self, symbol: &str) -> Result<TestsForResult> {
         query::tests_for_conn(&self.conn, symbol)
+    }
+
+    pub fn connect(&self, from: &str, to: &str, depth: usize) -> Result<ConnectResult> {
+        query::connect_conn(&self.conn, from, to, depth)
+    }
+
+    pub fn export(
+        &self,
+        format: &str,
+        from: Option<&str>,
+        depth: usize,
+        limit: usize,
+    ) -> Result<ExportResult> {
+        query::export_conn(&self.conn, format, from, depth, limit)
+    }
+
+    pub fn export_with_options(&self, options: ExportOptions) -> Result<ExportResult> {
+        query::export_conn_with_options(&self.conn, options)
     }
 
     pub fn search(&self, pattern: &str, options: SearchOptions) -> Result<SearchResult> {

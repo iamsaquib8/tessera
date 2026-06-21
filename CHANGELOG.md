@@ -2,6 +2,17 @@
 
 All notable changes to Tessera will be documented here.
 
+## 0.8.0 - Unreleased
+
+v0.8 makes exported graphs easier to inspect and share without leaving the CLI.
+
+### Added
+- `tessera export --group-by none|file|directory|language` for Mermaid subgraphs and DOT clusters.
+- `tessera export --collapse-tests` and `--exported-only` graph filters.
+- `tessera export --html-out graph.html` to write a self-contained Mermaid preview page with a copy button.
+- MCP `export` arguments for grouping and graph filters.
+- README, quickstart, and MCP docs for the v0.8 graph export workflow.
+
 ## 0.7.0 - Unreleased
 
 v0.7 adds the first agent workflow layer on top of the code graph: deterministic

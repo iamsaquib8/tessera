@@ -117,6 +117,34 @@ Returns a pre-edit bundle: `validate`, `signature`, `siblings`,
 agent workflow shortcut for preparing a symbol edit without five separate tool
 calls.
 
+### `connect`
+
+```json
+{ "from": "handler", "to": "loadUser", "depth": 8 }
+```
+
+Returns the shortest call path from one symbol to another, or a not-found result
+when no path exists inside the depth budget.
+
+### `export`
+
+```json
+{
+  "format": "mermaid",
+  "from": "handler",
+  "depth": 3,
+  "limit": 800,
+  "group_by": "language",
+  "collapse_tests": true,
+  "exported_only": false
+}
+```
+
+Returns a rendered call graph as Mermaid or DOT. v0.8 export controls can group
+nodes by `file`, `directory`, or `language`; hide test/spec nodes; and restrict
+the graph to exported endpoints. The CLI also supports `--html-out graph.html`
+to write a copy-button Mermaid preview page.
+
 ### `diff_impact`
 
 ```json

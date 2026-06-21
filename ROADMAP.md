@@ -246,13 +246,18 @@ work.
 
 Goal: make the graph visible enough that people share screenshots.
 
+Status: shareable graph export complete. Tessera can now group Mermaid/DOT
+exports, filter tests/exported endpoints, and write a self-contained Mermaid
+preview HTML page with a copy button. The full interactive local web explorer,
+SVG/PNG rendering, and IDE extensions remain future v0.8/v0.9 work.
+
 - Add `tessera ui`: a local web explorer for symbols, references, impact,
   imports, and call paths.
 - Add an impact heatmap grouped by file, directory, and language.
 - Add an import graph view with cycle detection.
 - Add a call-path explorer for `connect` with expandable branches.
-- Add a Mermaid preview page and copy button.
-- Add graph export controls:
+- Ship a Mermaid preview page and copy button.
+- Ship graph export controls:
   - Collapse tests, vendor, generated files, and external modules.
   - Group nodes by file, directory, package, module, or language.
   - Limit by depth, fanout, criticality, exported-only, or changed-only.

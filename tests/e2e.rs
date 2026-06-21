@@ -421,6 +421,36 @@ fn connect_finds_call_paths_and_export_renders_graph() {
                 .and(predicate::str::contains("loadUser"))
                 .and(predicate::str::contains("->")),
         );
+
+    let html = temp.path().join("graph.html");
+    Command::cargo_bin("tessera")
+        .unwrap()
+        .args([
+            "export",
+            "--format",
+            "mermaid",
+            "--from",
+            "handler",
+            "--group-by",
+            "language",
+            "--collapse-tests",
+            "--html-out",
+            html.to_str().unwrap(),
+            "--db",
+            db.to_str().unwrap(),
+            "--json",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::function(|out: &str| {
+            let v: serde_json::Value = serde_json::from_str(out).unwrap();
+            v["group_by"] == "language"
+                && v["html_path"].is_string()
+                && v["diagram"].as_str().unwrap().contains("subgraph")
+        }));
+    let html_content = fs::read_to_string(html).unwrap();
+    assert!(html_content.contains("Tessera Graph Preview"));
+    assert!(html_content.contains("Copy Mermaid"));
 }
 
 #[test]
@@ -1134,6 +1164,35 @@ fn release_docs_and_schema_snapshot_exist() {
     ] {
         assert!(fs::metadata(path).unwrap().is_file(), "{path} missing");
     }
+}
+
+#[test]
+fn release_package_versions_stay_aligned() {
+    let cargo_toml = fs::read_to_string("Cargo.toml").unwrap();
+    let cargo_version = find_manifest_value(&cargo_toml, "version").unwrap();
+
+    let cargo_lock = fs::read_to_string("Cargo.lock").unwrap();
+    let lock_version = cargo_lock
+        .split("[[package]]")
+        .find(|section| section.contains("name = \"tessera-codegraph\""))
+        .and_then(|section| find_manifest_value(section, "version"))
+        .unwrap();
+
+    let npm_package = fs::read_to_string("npm/package.json").unwrap();
+    let npm_json: serde_json::Value = serde_json::from_str(&npm_package).unwrap();
+    let npm_version = npm_json["version"].as_str().unwrap();
+
+    assert_eq!(cargo_version, lock_version);
+    assert_eq!(cargo_version, npm_version);
+}
+
+fn find_manifest_value<'a>(content: &'a str, key: &str) -> Option<&'a str> {
+    let prefix = format!("{key} = \"");
+    content.lines().find_map(|line| {
+        line.trim()
+            .strip_prefix(&prefix)
+            .and_then(|rest| rest.split('"').next())
+    })
 }
 
 #[test]

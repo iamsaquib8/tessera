@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
@@ -20,6 +20,52 @@ use crate::types::{
     SymbolRecord, SymbolSuggestion, TestsForResult, TopFanout, UnusedOptions, UnusedResult,
     UnusedSymbol, ValidateResult, ValidateSnippetResult,
 };
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExportGroupBy {
+    None,
+    File,
+    Directory,
+    Language,
+}
+
+impl ExportGroupBy {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::File => "file",
+            Self::Directory => "directory",
+            Self::Language => "language",
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct ExportOptions {
+    pub format: String,
+    pub from: Option<String>,
+    pub depth: usize,
+    pub limit: usize,
+    pub group_by: ExportGroupBy,
+    pub collapse_tests: bool,
+    pub exported_only: bool,
+    pub html_out: Option<PathBuf>,
+}
+
+impl ExportOptions {
+    pub fn new(format: &str, from: Option<&str>, depth: usize, limit: usize) -> Self {
+        Self {
+            format: format.to_string(),
+            from: from.map(ToOwned::to_owned),
+            depth,
+            limit,
+            group_by: ExportGroupBy::None,
+            collapse_tests: false,
+            exported_only: false,
+            html_out: None,
+        }
+    }
+}
 
 // ─── Connection-based public API ─────────────────────────────────────────────
 // Every query takes a `&Connection`. Convenience wrappers that open the DB
@@ -1447,23 +1493,29 @@ pub fn export_conn(
     depth: usize,
     limit: usize,
 ) -> Result<ExportResult> {
-    let fmt = if format.eq_ignore_ascii_case("dot") {
+    export_conn_with_options(conn, ExportOptions::new(format, from, depth, limit))
+}
+
+pub fn export_conn_with_options(conn: &Connection, options: ExportOptions) -> Result<ExportResult> {
+    let fmt = if options.format.eq_ignore_ascii_case("dot") {
         "dot"
     } else {
         "mermaid"
     };
-    let limit = limit.clamp(1, 5000);
-    let depth = depth.clamp(1, 12);
+    let limit = options.limit.clamp(1, 5000);
+    let depth = options.depth.clamp(1, 12);
     let mut edges: Vec<(String, String)> = Vec::new();
+    let mut node_meta: HashMap<String, GraphNode> = HashMap::new();
     let mut truncated = false;
     let scope;
 
-    if let Some(sym) = from {
+    if let Some(sym) = options.from.as_deref() {
         scope = format!("from:{sym}");
         let starts = exact_symbols(conn, sym, 25)?;
         let mut visited: HashSet<i64> = HashSet::new();
         let mut queue: VecDeque<(SymbolRecord, usize)> = VecDeque::new();
         for s in &starts {
+            insert_graph_node(&mut node_meta, s);
             if visited.insert(s.id) {
                 queue.push_back((s.clone(), 0));
             }
@@ -1473,6 +1525,11 @@ pub fn export_conn(
                 continue;
             }
             for callee in callees_for_symbol(conn, &node, 200)? {
+                insert_graph_node(&mut node_meta, &node);
+                insert_graph_node(&mut node_meta, &callee);
+                if !include_graph_node(&node, &options) || !include_graph_node(&callee, &options) {
+                    continue;
+                }
                 edges.push((node.qualified_name.clone(), callee.qualified_name.clone()));
                 if edges.len() >= limit {
                     truncated = true;
@@ -1487,20 +1544,45 @@ pub fn export_conn(
         scope = "all".to_string();
         let mut stmt = conn.prepare(
             "
-            SELECT DISTINCT s1.qualified_name, s2.qualified_name
+            SELECT DISTINCT
+                s1.qualified_name, f1.path, f1.language, s1.exported,
+                s2.qualified_name, f2.path, f2.language, s2.exported
             FROM edges e
             JOIN symbols s1 ON s1.id = e.from_symbol_id
+            JOIN files f1 ON f1.id = s1.file_id
             JOIN symbols s2 ON (s2.name = e.to_symbol_name OR s2.qualified_name = e.to_symbol_name)
+            JOIN files f2 ON f2.id = s2.file_id
             WHERE s1.id != s2.id
             ORDER BY s1.qualified_name, s2.qualified_name
             LIMIT ?1
             ",
         )?;
         let rows = stmt.query_map(params![(limit + 1) as i64], |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            Ok((
+                GraphNode {
+                    name: row.get(0)?,
+                    path: row.get(1)?,
+                    language: row.get(2)?,
+                    exported: row.get::<_, i64>(3)? != 0,
+                },
+                GraphNode {
+                    name: row.get(4)?,
+                    path: row.get(5)?,
+                    language: row.get(6)?,
+                    exported: row.get::<_, i64>(7)? != 0,
+                },
+            ))
         })?;
         for row in rows {
-            edges.push(row?);
+            let (from_node, to_node) = row?;
+            node_meta.insert(from_node.name.clone(), from_node.clone());
+            node_meta.insert(to_node.name.clone(), to_node.clone());
+            if !include_graph_node_raw(&from_node, &options)
+                || !include_graph_node_raw(&to_node, &options)
+            {
+                continue;
+            }
+            edges.push((from_node.name, to_node.name));
         }
         if edges.len() > limit {
             truncated = true;
@@ -1526,19 +1608,35 @@ pub fn export_conn(
     }
 
     let diagram = if fmt == "dot" {
-        render_dot(&edges)
+        render_dot(&edges, &node_meta, options.group_by)
     } else {
-        render_mermaid(&nodes, &edges)
+        render_mermaid(&nodes, &edges, &node_meta, options.group_by)
+    };
+    let html_path = if let Some(path) = options.html_out.as_ref() {
+        let preview_diagram = if fmt == "mermaid" {
+            diagram.clone()
+        } else {
+            render_mermaid(&nodes, &edges, &node_meta, options.group_by)
+        };
+        fs::write(
+            path,
+            render_html_preview(&preview_diagram, &scope, options.group_by),
+        )?;
+        Some(path.to_string_lossy().to_string())
+    } else {
+        None
     };
 
     let tokens = estimate_tokens(&diagram).max(40);
     Ok(ExportResult {
         format: fmt.to_string(),
         scope,
+        group_by: options.group_by.as_str().to_string(),
         nodes: nodes.len(),
         edges: edges.len(),
         truncated,
         diagram,
+        html_path,
         meta: meta(tokens, "impact", 900, 0.7),
     })
 }
@@ -1608,6 +1706,11 @@ pub fn export(
 ) -> Result<ExportResult> {
     let conn = db::open_existing(db_path)?;
     export_conn(&conn, format, from, depth, limit)
+}
+
+pub fn export_with_options(db_path: &Path, options: ExportOptions) -> Result<ExportResult> {
+    let conn = db::open_existing(db_path)?;
+    export_conn_with_options(&conn, options)
 }
 
 pub fn search(db_path: &Path, pattern: &str, options: SearchOptions) -> Result<SearchResult> {
@@ -1870,10 +1973,91 @@ fn exact_symbols(conn: &Connection, symbol: &str, limit: usize) -> Result<Vec<Sy
     Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
 }
 
-fn render_dot(edges: &[(String, String)]) -> String {
+#[derive(Debug, Clone)]
+struct GraphNode {
+    name: String,
+    path: String,
+    language: String,
+    exported: bool,
+}
+
+fn insert_graph_node(nodes: &mut HashMap<String, GraphNode>, symbol: &SymbolRecord) {
+    nodes.insert(
+        symbol.qualified_name.clone(),
+        GraphNode {
+            name: symbol.qualified_name.clone(),
+            path: symbol.path.clone(),
+            language: symbol.language.clone(),
+            exported: symbol.exported,
+        },
+    );
+}
+
+fn include_graph_node(symbol: &SymbolRecord, options: &ExportOptions) -> bool {
+    if options.exported_only && !symbol.exported {
+        return false;
+    }
+    if options.collapse_tests && is_test_path(&symbol.path) {
+        return false;
+    }
+    true
+}
+
+fn include_graph_node_raw(node: &GraphNode, options: &ExportOptions) -> bool {
+    if options.exported_only && !node.exported {
+        return false;
+    }
+    if options.collapse_tests && is_test_path(&node.path) {
+        return false;
+    }
+    true
+}
+
+fn graph_group(node: Option<&GraphNode>, group_by: ExportGroupBy) -> String {
+    let Some(node) = node else {
+        return "unknown".to_string();
+    };
+    match group_by {
+        ExportGroupBy::None => "graph".to_string(),
+        ExportGroupBy::File => node.path.clone(),
+        ExportGroupBy::Directory => node
+            .path
+            .rsplit_once('/')
+            .map(|(dir, _)| dir.to_string())
+            .unwrap_or_else(|| ".".to_string()),
+        ExportGroupBy::Language => node.language.clone(),
+    }
+}
+
+fn render_dot(
+    edges: &[(String, String)],
+    node_meta: &HashMap<String, GraphNode>,
+    group_by: ExportGroupBy,
+) -> String {
     let mut out = String::from(
         "digraph tessera {\n  rankdir=LR;\n  node [shape=box, fontname=\"monospace\"];\n",
     );
+    if group_by != ExportGroupBy::None {
+        let mut groups: BTreeMap<String, Vec<String>> = BTreeMap::new();
+        for name in dot_nodes(edges) {
+            groups
+                .entry(graph_group(node_meta.get(&name), group_by))
+                .or_default()
+                .push(name);
+        }
+        for (idx, (group, mut nodes)) in groups.into_iter().enumerate() {
+            nodes.sort();
+            nodes.dedup();
+            out.push_str(&format!(
+                "  subgraph cluster_{idx} {{\n    label={};\n",
+                dot_quote(&group)
+            ));
+            for node in nodes {
+                out.push_str(&format!("    {};\n", dot_quote(&node)));
+            }
+            out.push_str("  }\n");
+        }
+    }
     for (a, b) in edges {
         out.push_str(&format!("  {} -> {};\n", dot_quote(a), dot_quote(b)));
     }
@@ -1885,11 +2069,46 @@ fn dot_quote(s: &str) -> String {
     format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\""))
 }
 
-fn render_mermaid(nodes: &[String], edges: &[(String, String)]) -> String {
+fn dot_nodes(edges: &[(String, String)]) -> Vec<String> {
+    let mut nodes = Vec::new();
+    for (a, b) in edges {
+        nodes.push(a.clone());
+        nodes.push(b.clone());
+    }
+    nodes.sort();
+    nodes.dedup();
+    nodes
+}
+
+fn render_mermaid(
+    nodes: &[String],
+    edges: &[(String, String)],
+    node_meta: &HashMap<String, GraphNode>,
+    group_by: ExportGroupBy,
+) -> String {
     let id_of: HashMap<&String, usize> = nodes.iter().enumerate().map(|(i, n)| (n, i)).collect();
     let mut out = String::from("graph TD\n");
-    for (i, n) in nodes.iter().enumerate() {
-        out.push_str(&format!("  n{}[\"{}\"]\n", i, mermaid_label(n)));
+    if group_by == ExportGroupBy::None {
+        for (i, n) in nodes.iter().enumerate() {
+            out.push_str(&format!("  n{}[\"{}\"]\n", i, mermaid_label(n)));
+        }
+    } else {
+        let mut groups: BTreeMap<String, Vec<&String>> = BTreeMap::new();
+        for n in nodes {
+            groups
+                .entry(graph_group(node_meta.get(n), group_by))
+                .or_default()
+                .push(n);
+        }
+        for (group, members) in groups {
+            out.push_str(&format!("  subgraph \"{}\"\n", mermaid_label(&group)));
+            for n in members {
+                if let Some(&i) = id_of.get(n) {
+                    out.push_str(&format!("    n{}[\"{}\"]\n", i, mermaid_label(n)));
+                }
+            }
+            out.push_str("  end\n");
+        }
     }
     for (a, b) in edges {
         if let (Some(&ai), Some(&bi)) = (id_of.get(a), id_of.get(b)) {
@@ -1902,6 +2121,57 @@ fn render_mermaid(nodes: &[String], edges: &[(String, String)]) -> String {
 fn mermaid_label(s: &str) -> String {
     // Mermaid node labels are quoted; quotes and brackets break the parser.
     s.replace('"', "'").replace('[', "(").replace(']', ")")
+}
+
+fn render_html_preview(diagram: &str, scope: &str, group_by: ExportGroupBy) -> String {
+    format!(
+        r#"<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Tessera Graph Preview</title>
+  <script type="module">
+    import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.esm.min.mjs";
+    mermaid.initialize({{ startOnLoad: true, theme: "default" }});
+  </script>
+  <style>
+    body {{ margin: 0; font: 14px system-ui, sans-serif; color: #17202a; background: #f7f8fa; }}
+    header {{ display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 14px 18px; background: white; border-bottom: 1px solid #d9dee7; }}
+    main {{ padding: 18px; }}
+    button {{ border: 1px solid #9aa7b7; background: #fff; border-radius: 6px; padding: 8px 12px; cursor: pointer; }}
+    .meta {{ color: #5e6b7a; }}
+    .mermaid {{ background: white; border: 1px solid #d9dee7; border-radius: 8px; padding: 18px; overflow: auto; }}
+    pre {{ position: absolute; left: -9999px; }}
+  </style>
+</head>
+<body>
+  <header>
+    <div>
+      <strong>Tessera Graph Preview</strong>
+      <div class="meta">scope: {scope} · grouped by: {group_by}</div>
+    </div>
+    <button type="button" onclick="navigator.clipboard.writeText(document.getElementById('diagram').textContent)">Copy Mermaid</button>
+  </header>
+  <main>
+    <pre id="diagram">{diagram}</pre>
+    <div class="mermaid">{diagram}</div>
+  </main>
+</body>
+</html>
+"#,
+        scope = html_escape(scope),
+        group_by = group_by.as_str(),
+        diagram = html_escape(diagram)
+    )
+}
+
+fn html_escape(value: &str) -> String {
+    value
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
 }
 
 fn read_symbol_body(conn: &Connection, symbol: &SymbolRecord) -> Result<String> {

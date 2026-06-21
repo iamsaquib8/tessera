@@ -17,6 +17,7 @@ use tessera_codegraph::query;
 use tessera_codegraph::snapshot;
 use tessera_codegraph::types::{GraphEngineKind, Language, SearchOptions, UnusedOptions};
 use tessera_codegraph::watch::{self, WatchOptions};
+use tessera_codegraph::{ExportGroupBy, ExportOptions};
 
 #[derive(Debug, Parser)]
 #[command(name = "tessera")]
@@ -67,6 +68,26 @@ enum GraphFormat {
     #[default]
     Mermaid,
     Dot,
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum, Default)]
+enum GraphGroupArg {
+    #[default]
+    None,
+    File,
+    Directory,
+    Language,
+}
+
+impl From<GraphGroupArg> for ExportGroupBy {
+    fn from(value: GraphGroupArg) -> Self {
+        match value {
+            GraphGroupArg::None => ExportGroupBy::None,
+            GraphGroupArg::File => ExportGroupBy::File,
+            GraphGroupArg::Directory => ExportGroupBy::Directory,
+            GraphGroupArg::Language => ExportGroupBy::Language,
+        }
+    }
 }
 
 impl GraphFormat {
@@ -434,6 +455,18 @@ enum Commands {
         /// Maximum number of edges to emit.
         #[arg(long, default_value_t = 800)]
         limit: usize,
+        /// Group rendered graph nodes.
+        #[arg(long, value_enum, default_value_t = GraphGroupArg::None)]
+        group_by: GraphGroupArg,
+        /// Hide test/spec nodes and their edges from the export.
+        #[arg(long)]
+        collapse_tests: bool,
+        /// Only include edges whose endpoints are exported symbols.
+        #[arg(long)]
+        exported_only: bool,
+        /// Write a self-contained Mermaid preview HTML file.
+        #[arg(long)]
+        html_out: Option<PathBuf>,
         #[arg(long, default_value = ".tessera/tessera.db")]
         db: PathBuf,
         #[arg(long)]
@@ -649,13 +682,19 @@ fn run() -> Result<()> {
             from,
             depth,
             limit,
+            group_by,
+            collapse_tests,
+            exported_only,
+            html_out,
             db,
             json,
         } => {
-            print_result(
-                query::export(&db, format.as_str(), from.as_deref(), depth, limit)?,
-                json,
-            )?;
+            let mut options = ExportOptions::new(format.as_str(), from.as_deref(), depth, limit);
+            options.group_by = group_by.into();
+            options.collapse_tests = collapse_tests;
+            options.exported_only = exported_only;
+            options.html_out = html_out;
+            print_result(query::export_with_options(&db, options)?, json)?;
         }
         Commands::ContextPack {
             symbol,
