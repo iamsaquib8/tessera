@@ -43,6 +43,8 @@ tessera search parseFrom --language java
 tessera search 'init*' --kind method --exported
 tessera unused --kind function --exported=false
 tessera context-pack findById --budget 1500
+tessera plan-query "edit findById safely" --symbol findById
+tessera edit-prep findById --budget 1800
 tessera diff-impact origin/main
 tessera imports src/users.ts
 tessera imported-by ./users

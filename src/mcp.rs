@@ -201,6 +201,20 @@ fn call_tool(
                 query::context_pack_conn(conn, &symbol, budget).map_err(to_string)?,
             )
         }
+        "plan_query" => {
+            let task = arg_string(&args, "task")?;
+            let symbol = args.get("symbol").and_then(Value::as_str);
+            serde_json::to_value(query::plan_query(&task, symbol))
+        }
+        "edit_prep" => {
+            let symbol = arg_string(&args, "symbol")?;
+            let budget = args
+                .get("budget")
+                .and_then(Value::as_u64)
+                .map(|n| n as usize)
+                .unwrap_or(1800);
+            serde_json::to_value(query::edit_prep_conn(conn, &symbol, budget).map_err(to_string)?)
+        }
         "diff_impact" => {
             let from = arg_string(&args, "from")?;
             let to = args
@@ -406,6 +420,30 @@ fn tools() -> Value {
                 "properties": {
                     "symbol": { "type": "string" },
                     "budget": { "type": "integer", "minimum": 200, "maximum": 8000, "description": "Approximate token budget for the entire response. Default 1500." }
+                },
+                "required": ["symbol"]
+            }
+        },
+        {
+            "name": "plan_query",
+            "description": "Given a natural-language coding task, recommend the cheapest ordered Tessera tool sequence an agent should run before spending broader context.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "task": { "type": "string", "description": "Task shape, for example `edit findById safely` or `review this PR`." },
+                    "symbol": { "type": "string", "description": "Optional known symbol to substitute into commands." }
+                },
+                "required": ["task"]
+            }
+        },
+        {
+            "name": "edit_prep",
+            "description": "One-call pre-edit bundle: validate the target, return its signature, related sibling symbols, budgeted context pack, relevant tests, and next recommended checks.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "symbol": { "type": "string" },
+                    "budget": { "type": "integer", "minimum": 400, "maximum": 8000, "description": "Approximate token budget for embedded context. Default 1800." }
                 },
                 "required": ["symbol"]
             }

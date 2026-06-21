@@ -12,13 +12,13 @@ use crate::db;
 use crate::indexer;
 use crate::types::{
     AlternativeQuery, ConnectResult, ContextPack, CriticalityBreakdown, DefinitionResult,
-    DiffChangedSymbol, DiffImpactResult, DiffImpactedSymbol, ExpandResult, ExportResult,
-    ImpactCaller, ImpactResult, ImportRecord, ImportedByResult, ImportsResult, KindCount, Language,
-    LanguageCount, OutlineResult, PathNode, QueryMeta, ReferenceRecord, ReferencesResult,
-    SearchHit, SearchOptions, SearchResult, Sibling, SiblingsResult, SignatureLine,
-    SignatureResult, SnippetReferenceCheck, StatsResult, SymbolRecord, SymbolSuggestion,
-    TestsForResult, TopFanout, UnusedOptions, UnusedResult, UnusedSymbol, ValidateResult,
-    ValidateSnippetResult,
+    DiffChangedSymbol, DiffImpactResult, DiffImpactedSymbol, EditPrepResult, ExpandResult,
+    ExportResult, ImpactCaller, ImpactResult, ImportRecord, ImportedByResult, ImportsResult,
+    KindCount, Language, LanguageCount, OutlineResult, PathNode, PlanQueryResult, PlanStep,
+    QueryMeta, ReferenceRecord, ReferencesResult, SearchHit, SearchOptions, SearchResult, Sibling,
+    SiblingsResult, SignatureLine, SignatureResult, SnippetReferenceCheck, StatsResult,
+    SymbolRecord, SymbolSuggestion, TestsForResult, TopFanout, UnusedOptions, UnusedResult,
+    UnusedSymbol, ValidateResult, ValidateSnippetResult,
 };
 
 // ─── Connection-based public API ─────────────────────────────────────────────
@@ -625,6 +625,233 @@ pub fn context_pack_conn(
         tests,
         budget_tokens: budget,
         meta: meta(tokens, "expand_symbol", 800, 0.88),
+    })
+}
+
+pub fn plan_query(task: &str, symbol: Option<&str>) -> PlanQueryResult {
+    let query = task.trim();
+    let lower = query.to_lowercase();
+    let subject = symbol
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or("<symbol>");
+
+    let (intent, mut steps) = if contains_any(
+        &lower,
+        &["edit", "change", "modify", "refactor", "fix"],
+    ) {
+        (
+            "prepare_edit",
+            vec![
+                plan_step(
+                    1,
+                    "validate",
+                    subject,
+                    "Confirm the target exists before spending context.",
+                    80,
+                ),
+                plan_step(
+                    2,
+                    "edit-prep",
+                    subject,
+                    "Fetch signature, related symbols, context, and tests in one bundle.",
+                    1300,
+                ),
+                plan_step(
+                    3,
+                    "impact",
+                    subject,
+                    "Check downstream callers before making the change.",
+                    500,
+                ),
+            ],
+        )
+    } else if contains_any(&lower, &["review", "pr", "diff", "changed", "regression"]) {
+        (
+            "review_changes",
+            vec![
+                PlanStep {
+                    order: 1,
+                    tool: "diff-impact".to_string(),
+                    command: "tessera diff-impact origin/main --depth 3".to_string(),
+                    reason: "Map changed symbols to high-impact callers for PR review.".to_string(),
+                    expected_tokens: 900,
+                },
+                PlanStep {
+                    order: 2,
+                    tool: "tests-for".to_string(),
+                    command: format!("tessera tests-for {subject}"),
+                    reason: "Verify whether the changed surface has focused test coverage."
+                        .to_string(),
+                    expected_tokens: 250,
+                },
+            ],
+        )
+    } else if contains_any(&lower, &["call path", "connect", "reach", "flow"]) {
+        (
+            "trace_connection",
+            vec![
+                PlanStep {
+                    order: 1,
+                    tool: "connect".to_string(),
+                    command: "tessera connect <from> <to> --depth 8".to_string(),
+                    reason: "Find the shortest deterministic call path between two symbols."
+                        .to_string(),
+                    expected_tokens: 250,
+                },
+                PlanStep {
+                    order: 2,
+                    tool: "export".to_string(),
+                    command: "tessera export --from <from> --depth 3".to_string(),
+                    reason:
+                        "Render the forward call neighbourhood if the path needs visual context."
+                            .to_string(),
+                    expected_tokens: 450,
+                },
+            ],
+        )
+    } else if contains_any(&lower, &["unused", "dead", "cleanup"]) {
+        (
+            "find_cleanup_targets",
+            vec![
+                PlanStep {
+                    order: 1,
+                    tool: "unused".to_string(),
+                    command: "tessera unused --limit 50".to_string(),
+                    reason: "Find indexed symbols with no inbound refs or call edges.".to_string(),
+                    expected_tokens: 600,
+                },
+                PlanStep {
+                    order: 2,
+                    tool: "impact".to_string(),
+                    command: format!("tessera impact {subject}"),
+                    reason: "Double-check callers before removing a candidate.".to_string(),
+                    expected_tokens: 400,
+                },
+            ],
+        )
+    } else if contains_any(&lower, &["where", "definition", "find", "locate"]) {
+        (
+            "locate_symbol",
+            vec![
+                plan_step(
+                    1,
+                    "validate",
+                    subject,
+                    "Catch typos and near-misses before lookup.",
+                    80,
+                ),
+                plan_step(
+                    2,
+                    "find-definition",
+                    subject,
+                    "Jump to exact file, line, and signature.",
+                    120,
+                ),
+                plan_step(
+                    3,
+                    "signature",
+                    subject,
+                    "Fetch the public shape without function bodies.",
+                    180,
+                ),
+            ],
+        )
+    } else {
+        (
+            "understand_symbol",
+            vec![
+                plan_step(
+                    1,
+                    "validate",
+                    subject,
+                    "Confirm the indexed symbol name.",
+                    80,
+                ),
+                plan_step(
+                    2,
+                    "context-pack",
+                    subject,
+                    "Bundle body, dependencies, callers, and tests under one budget.",
+                    1200,
+                ),
+                plan_step(
+                    3,
+                    "siblings",
+                    subject,
+                    "Find adjacent symbols that share callers.",
+                    250,
+                ),
+            ],
+        )
+    };
+
+    for (idx, step) in steps.iter_mut().enumerate() {
+        step.order = idx + 1;
+    }
+    let tokens = steps.iter().map(|step| step.expected_tokens).sum::<usize>() + 40;
+    PlanQueryResult {
+        query: query.to_string(),
+        inferred_intent: intent.to_string(),
+        steps,
+        meta: meta(tokens, "search", 500, 0.68),
+    }
+}
+
+pub fn edit_prep_conn(
+    conn: &Connection,
+    symbol: &str,
+    budget_tokens: usize,
+) -> Result<EditPrepResult> {
+    let budget = if budget_tokens == 0 {
+        1800
+    } else {
+        budget_tokens
+    };
+    let validate = validate_conn(conn, symbol)?;
+    let signature = signature_conn(conn, symbol)?;
+    let siblings = siblings_conn(conn, symbol)?;
+    let context = context_pack_conn(conn, symbol, budget)?;
+    let tests = tests_for_conn(conn, symbol)?;
+    let next_steps = vec![
+        plan_step(
+            1,
+            "impact",
+            symbol,
+            "Review downstream callers before editing shared behavior.",
+            500,
+        ),
+        plan_step(
+            2,
+            "validate-snippet",
+            symbol,
+            "After editing, validate new call sites before relying on the graph.",
+            300,
+        ),
+        plan_step(
+            3,
+            "tests-for",
+            symbol,
+            "Run or update focused tests that transitively touch the symbol.",
+            250,
+        ),
+    ];
+    let tokens = estimate_tokens(&validate)
+        + estimate_tokens(&signature)
+        + estimate_tokens(&siblings)
+        + estimate_tokens(&context)
+        + estimate_tokens(&tests)
+        + estimate_tokens(&next_steps);
+
+    Ok(EditPrepResult {
+        symbol: symbol.to_string(),
+        validate,
+        signature,
+        siblings,
+        context,
+        tests,
+        next_steps,
+        meta: meta(tokens, "context_pack", budget, 0.92),
     })
 }
 
@@ -1398,6 +1625,11 @@ pub fn context_pack(db_path: &Path, symbol: &str, budget: usize) -> Result<Conte
     context_pack_conn(&conn, symbol, budget)
 }
 
+pub fn edit_prep(db_path: &Path, symbol: &str, budget: usize) -> Result<EditPrepResult> {
+    let conn = db::open_existing(db_path)?;
+    edit_prep_conn(&conn, symbol, budget)
+}
+
 pub fn diff_impact(
     db_path: &Path,
     from_ref: &str,
@@ -1464,6 +1696,26 @@ pub fn shell(db_path: &Path) -> Result<()> {
 }
 
 // ─── Internals ───────────────────────────────────────────────────────────────
+
+fn contains_any(haystack: &str, needles: &[&str]) -> bool {
+    needles.iter().any(|needle| haystack.contains(needle))
+}
+
+fn plan_step(
+    order: usize,
+    tool: &str,
+    symbol: &str,
+    reason: &str,
+    expected_tokens: usize,
+) -> PlanStep {
+    PlanStep {
+        order,
+        tool: tool.to_string(),
+        command: format!("tessera {} {}", tool.replace('_', "-"), symbol),
+        reason: reason.to_string(),
+        expected_tokens,
+    }
+}
 
 fn references_for_symbol(
     conn: &Connection,

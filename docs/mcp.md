@@ -96,6 +96,27 @@ Fuzzy / `*`-glob search across indexed symbols, filterable by kind, language, ex
 
 Returns `{ symbol, body, dependency_signatures, caller_signatures, tests }` token-budgeted. Replaces 3-5 round trips an agent makes to "understand" a symbol before editing it. Body is clipped to ~40 % of the budget; dependency and caller signatures (no bodies) fill the rest; tests trim to fit.
 
+### `plan_query`
+
+```json
+{ "task": "edit findById safely", "symbol": "findById" }
+```
+
+Returns an ordered tool plan with commands, reasons, inferred intent, and token
+estimates. Use it as the first MCP call when an agent knows the task shape but
+not the cheapest Tessera workflow.
+
+### `edit_prep`
+
+```json
+{ "symbol": "findById", "budget": 1800 }
+```
+
+Returns a pre-edit bundle: `validate`, `signature`, `siblings`,
+`context_pack`, `tests_for`, and next recommended checks. This is the v0.7
+agent workflow shortcut for preparing a symbol edit without five separate tool
+calls.
+
 ### `diff_impact`
 
 ```json
