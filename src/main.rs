@@ -493,6 +493,7 @@ fn main() -> Result<()> {
                 db.display(),
                 report.elapsed_ms
             );
+            print_index_warnings(&report.warnings);
         }
         Commands::Watch {
             path,
@@ -795,5 +796,18 @@ fn explain_unused(result: &tessera_codegraph::types::UnusedResult) {
             "  `{}` has inbound_refs={} and inbound_edges={}.",
             first.symbol.qualified_name, first.inbound_refs, first.inbound_edges
         );
+    }
+}
+
+fn print_index_warnings(warnings: &[indexer::IndexWarning]) {
+    if warnings.is_empty() {
+        return;
+    }
+    eprintln!("indexed with {} warning(s):", warnings.len());
+    for warning in warnings.iter().take(5) {
+        eprintln!("  {}: {}", warning.path, warning.message);
+    }
+    if warnings.len() > 5 {
+        eprintln!("  ... {} more", warnings.len() - 5);
     }
 }

@@ -2,6 +2,23 @@
 
 All notable changes to Tessera will be documented here.
 
+## 0.6.0 - Unreleased
+
+v0.6 focuses on real-repo correctness: predictable indexing boundaries,
+non-fatal parser/read failures, stronger ignored-path defaults, and regression
+fixtures that snapshot the graph shape.
+
+### Added
+- `.tessera/config.toml` include/exclude support through `[include].paths`, `[exclude].paths`, and `[ignore].extra`.
+- Non-fatal index warnings for unreadable files, traversal errors, and parser failures.
+- Broader built-in ignored directories for generated, vendored, build, package-manager, virtualenv, and cache output.
+- Deterministic fixture tests covering symbols, references, imports, edges, and exported flags.
+- Configuration documentation at `docs/configuration.md`.
+
+### Changed
+- `tessera index` and `tessera watch` print warning summaries instead of aborting the whole indexing run for a bad source file.
+- `tessera init` now writes include/exclude config stubs into `.tessera/config.toml`.
+
 ## 0.5.0 - Unreleased
 
 v0.5 hardens Tessera for daily use: keeping indexes fresh, diagnosing local

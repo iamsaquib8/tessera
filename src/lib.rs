@@ -29,6 +29,7 @@
 pub mod bench;
 pub mod bloom;
 pub mod completions;
+pub mod config;
 pub mod db;
 pub mod doctor;
 pub mod engine;
