@@ -479,6 +479,21 @@ enum Commands {
 }
 
 fn main() -> Result<()> {
+    #[cfg(windows)]
+    {
+        return std::thread::Builder::new()
+            .name("tessera-main".to_string())
+            .stack_size(8 * 1024 * 1024)
+            .spawn(run)?
+            .join()
+            .map_err(|_| anyhow!("tessera main thread panicked"))?;
+    }
+
+    #[cfg(not(windows))]
+    run()
+}
+
+fn run() -> Result<()> {
     let cli = Cli::parse();
 
     match cli.command {

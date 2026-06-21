@@ -636,61 +636,60 @@ pub fn plan_query(task: &str, symbol: Option<&str>) -> PlanQueryResult {
         .filter(|s| !s.is_empty())
         .unwrap_or("<symbol>");
 
-    let (intent, mut steps) = if contains_any(
-        &lower,
-        &["edit", "change", "modify", "refactor", "fix"],
-    ) {
-        (
-            "prepare_edit",
-            vec![
-                plan_step(
-                    1,
-                    "validate",
-                    subject,
-                    "Confirm the target exists before spending context.",
-                    80,
-                ),
-                plan_step(
-                    2,
-                    "edit-prep",
-                    subject,
-                    "Fetch signature, related symbols, context, and tests in one bundle.",
-                    1300,
-                ),
-                plan_step(
-                    3,
-                    "impact",
-                    subject,
-                    "Check downstream callers before making the change.",
-                    500,
-                ),
-            ],
-        )
-    } else if contains_any(&lower, &["review", "pr", "diff", "changed", "regression"]) {
-        (
-            "review_changes",
-            vec![
-                PlanStep {
-                    order: 1,
-                    tool: "diff-impact".to_string(),
-                    command: "tessera diff-impact origin/main --depth 3".to_string(),
-                    reason: "Map changed symbols to high-impact callers for PR review.".to_string(),
-                    expected_tokens: 900,
-                },
-                PlanStep {
-                    order: 2,
-                    tool: "tests-for".to_string(),
-                    command: format!("tessera tests-for {subject}"),
-                    reason: "Verify whether the changed surface has focused test coverage."
-                        .to_string(),
-                    expected_tokens: 250,
-                },
-            ],
-        )
-    } else if contains_any(&lower, &["call path", "connect", "reach", "flow"]) {
-        (
-            "trace_connection",
-            vec![
+    let (intent, mut steps) =
+        if contains_any(&lower, &["edit", "change", "modify", "refactor", "fix"]) {
+            (
+                "prepare_edit",
+                vec![
+                    plan_step(
+                        1,
+                        "validate",
+                        subject,
+                        "Confirm the target exists before spending context.",
+                        80,
+                    ),
+                    plan_step(
+                        2,
+                        "edit-prep",
+                        subject,
+                        "Fetch signature, related symbols, context, and tests in one bundle.",
+                        1300,
+                    ),
+                    plan_step(
+                        3,
+                        "impact",
+                        subject,
+                        "Check downstream callers before making the change.",
+                        500,
+                    ),
+                ],
+            )
+        } else if contains_any(&lower, &["review", "pr", "diff", "changed", "regression"]) {
+            (
+                "review_changes",
+                vec![
+                    PlanStep {
+                        order: 1,
+                        tool: "diff-impact".to_string(),
+                        command: "tessera diff-impact origin/main --depth 3".to_string(),
+                        reason: "Map changed symbols to high-impact callers for PR review."
+                            .to_string(),
+                        expected_tokens: 900,
+                    },
+                    PlanStep {
+                        order: 2,
+                        tool: "tests-for".to_string(),
+                        command: format!("tessera tests-for {subject}"),
+                        reason: "Verify whether the changed surface has focused test coverage."
+                            .to_string(),
+                        expected_tokens: 250,
+                    },
+                ],
+            )
+        } else if contains_any(&lower, &["call path", "connect", "reach", "flow"]) {
+            (
+                "trace_connection",
+                vec![
                 PlanStep {
                     order: 1,
                     tool: "connect".to_string(),
@@ -709,82 +708,83 @@ pub fn plan_query(task: &str, symbol: Option<&str>) -> PlanQueryResult {
                     expected_tokens: 450,
                 },
             ],
-        )
-    } else if contains_any(&lower, &["unused", "dead", "cleanup"]) {
-        (
-            "find_cleanup_targets",
-            vec![
-                PlanStep {
-                    order: 1,
-                    tool: "unused".to_string(),
-                    command: "tessera unused --limit 50".to_string(),
-                    reason: "Find indexed symbols with no inbound refs or call edges.".to_string(),
-                    expected_tokens: 600,
-                },
-                PlanStep {
-                    order: 2,
-                    tool: "impact".to_string(),
-                    command: format!("tessera impact {subject}"),
-                    reason: "Double-check callers before removing a candidate.".to_string(),
-                    expected_tokens: 400,
-                },
-            ],
-        )
-    } else if contains_any(&lower, &["where", "definition", "find", "locate"]) {
-        (
-            "locate_symbol",
-            vec![
-                plan_step(
-                    1,
-                    "validate",
-                    subject,
-                    "Catch typos and near-misses before lookup.",
-                    80,
-                ),
-                plan_step(
-                    2,
-                    "find-definition",
-                    subject,
-                    "Jump to exact file, line, and signature.",
-                    120,
-                ),
-                plan_step(
-                    3,
-                    "signature",
-                    subject,
-                    "Fetch the public shape without function bodies.",
-                    180,
-                ),
-            ],
-        )
-    } else {
-        (
-            "understand_symbol",
-            vec![
-                plan_step(
-                    1,
-                    "validate",
-                    subject,
-                    "Confirm the indexed symbol name.",
-                    80,
-                ),
-                plan_step(
-                    2,
-                    "context-pack",
-                    subject,
-                    "Bundle body, dependencies, callers, and tests under one budget.",
-                    1200,
-                ),
-                plan_step(
-                    3,
-                    "siblings",
-                    subject,
-                    "Find adjacent symbols that share callers.",
-                    250,
-                ),
-            ],
-        )
-    };
+            )
+        } else if contains_any(&lower, &["unused", "dead", "cleanup"]) {
+            (
+                "find_cleanup_targets",
+                vec![
+                    PlanStep {
+                        order: 1,
+                        tool: "unused".to_string(),
+                        command: "tessera unused --limit 50".to_string(),
+                        reason: "Find indexed symbols with no inbound refs or call edges."
+                            .to_string(),
+                        expected_tokens: 600,
+                    },
+                    PlanStep {
+                        order: 2,
+                        tool: "impact".to_string(),
+                        command: format!("tessera impact {subject}"),
+                        reason: "Double-check callers before removing a candidate.".to_string(),
+                        expected_tokens: 400,
+                    },
+                ],
+            )
+        } else if contains_any(&lower, &["where", "definition", "find", "locate"]) {
+            (
+                "locate_symbol",
+                vec![
+                    plan_step(
+                        1,
+                        "validate",
+                        subject,
+                        "Catch typos and near-misses before lookup.",
+                        80,
+                    ),
+                    plan_step(
+                        2,
+                        "find-definition",
+                        subject,
+                        "Jump to exact file, line, and signature.",
+                        120,
+                    ),
+                    plan_step(
+                        3,
+                        "signature",
+                        subject,
+                        "Fetch the public shape without function bodies.",
+                        180,
+                    ),
+                ],
+            )
+        } else {
+            (
+                "understand_symbol",
+                vec![
+                    plan_step(
+                        1,
+                        "validate",
+                        subject,
+                        "Confirm the indexed symbol name.",
+                        80,
+                    ),
+                    plan_step(
+                        2,
+                        "context-pack",
+                        subject,
+                        "Bundle body, dependencies, callers, and tests under one budget.",
+                        1200,
+                    ),
+                    plan_step(
+                        3,
+                        "siblings",
+                        subject,
+                        "Find adjacent symbols that share callers.",
+                        250,
+                    ),
+                ],
+            )
+        };
 
     for (idx, step) in steps.iter_mut().enumerate() {
         step.order = idx + 1;
