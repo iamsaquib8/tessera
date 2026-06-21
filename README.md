@@ -110,7 +110,7 @@ Prefer not to install anything? Copy the [`/tessera` Agent Skill](skills/) into 
 cp -r skills/tessera ~/.claude/skills/tessera
 ```
 
-## v0.5 daily-use commands
+## Daily-use commands
 
 ```sh
 tessera init --mcp-configs               # generate project-local defaults and MCP snippets
@@ -121,7 +121,10 @@ tessera impact findById                  # transitive callers ranked by personal
 tessera validate findByIdd               # "did the model hallucinate this?" — yes; meant findById (0.98)
 tessera connect handleRequest writeRow   # the shortest call path from A to B
 tessera export --from findById --format mermaid   # the call subgraph, as a diagram you can paste anywhere
+tessera export --from findById --group-by language --html-out graph.html
 tessera context-pack findById            # body + deps + callers + tests in one budgeted bundle
+tessera plan-query "edit findById safely" --symbol findById
+tessera edit-prep findById
 tessera unused --kind function           # symbols with no inbound refs/call edges
 tessera completions zsh                  # shell completions for bash/zsh/fish/PowerShell
 tessera mcp-http --addr 127.0.0.1:8765   # local HTTP/SSE MCP transport
@@ -179,7 +182,7 @@ Tessera goes the other way. The graph is **pure Tree-sitter AST + static resolut
 
 - **Call-path tracing.** `tessera connect handleRequest writeRow` returns the shortest chain of calls from one symbol to another — "does A actually reach B, and how?" — a deterministic graph traversal an LLM-extracted graph can't answer reliably.
 
-- **Graph export.** `tessera export --format mermaid` (or `dot`) renders the call graph — the whole thing, or the precise forward subgraph rooted at a symbol with `--from`. Paste the Mermaid straight into a PR description or these docs.
+- **Shareable graph export.** `tessera export --format mermaid` (or `dot`) renders the call graph — the whole thing, or the precise forward subgraph rooted at a symbol with `--from`. Group by file, directory, or language; hide test nodes; filter to exported endpoints; or write a copy-button Mermaid preview with `--html-out graph.html`.
 
 - **Token-priced operations.** Every response carries `_meta` with token estimates plus cheaper alternative queries. Agents can route to the right fidelity-to-token tradeoff.
 
@@ -229,7 +232,7 @@ claude mcp add tessera tessera -- mcp --db .tessera/tessera.db
 
 Configs for **Cline, Continue.dev, Codex CLI, Zed, Aider, and custom GPTs** live in [docs/integrations.md](docs/integrations.md). Tool schemas in [docs/mcp.md](docs/mcp.md).
 
-**Exposed tools:** `find_definition` · `find_references` · `get_outline` · `expand_symbol` · `impact` · `connect` · `export` · `context_pack` · `diff_impact` · `imports` · `imported_by` · `signature` · `siblings` · `search` · `unused` · `validate` · `validate_snippet` · `tests_for` · `stats`.
+**Exposed tools:** `find_definition` · `find_references` · `get_outline` · `expand_symbol` · `impact` · `connect` · `export` · `context_pack` · `plan_query` · `edit_prep` · `diff_impact` · `imports` · `imported_by` · `signature` · `siblings` · `search` · `unused` · `validate` · `validate_snippet` · `tests_for` · `stats`.
 
 **Tip:** run `tessera doctor` when a query looks stale or an MCP client cannot connect. It prints the exact `tessera index . --db ...` or `tessera snapshot --db ...` command to repair the local setup.
 
@@ -314,7 +317,7 @@ cargo test --all-targets --all-features
 
 ## Status
 
-**v0.4 — pre-alpha.** 11 languages, JSX-aware React references, incremental indexing, PageRank-ranked impact, hallucination validator, call-path tracing (`connect`), graph export (DOT/Mermaid), a drop-in agent skill, and install via npm / Homebrew / curl / Docker / cargo — library + MCP + CLI. See [CHANGELOG.md](CHANGELOG.md) and [ROADMAP.md](ROADMAP.md).
+**v0.8 — pre-alpha.** 11 languages, JSX-aware React references, incremental indexing, PageRank-ranked impact, hallucination validator, agent workflow planning, call-path tracing (`connect`), shareable graph export (DOT/Mermaid/HTML preview), and install via npm / Homebrew / curl / Docker / cargo — library + MCP + CLI. See [CHANGELOG.md](CHANGELOG.md) and [ROADMAP.md](ROADMAP.md).
 
 ## Contributing
 

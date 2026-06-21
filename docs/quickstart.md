@@ -46,6 +46,7 @@ tessera context-pack findById --budget 1500
 tessera plan-query "edit findById safely" --symbol findById
 tessera edit-prep findById --budget 1800
 tessera diff-impact origin/main
+tessera export --from findById --group-by directory --html-out graph.html
 tessera imports src/users.ts
 tessera imported-by ./users
 tessera signature UserService

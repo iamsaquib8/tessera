@@ -421,6 +421,36 @@ fn connect_finds_call_paths_and_export_renders_graph() {
                 .and(predicate::str::contains("loadUser"))
                 .and(predicate::str::contains("->")),
         );
+
+    let html = temp.path().join("graph.html");
+    Command::cargo_bin("tessera")
+        .unwrap()
+        .args([
+            "export",
+            "--format",
+            "mermaid",
+            "--from",
+            "handler",
+            "--group-by",
+            "language",
+            "--collapse-tests",
+            "--html-out",
+            html.to_str().unwrap(),
+            "--db",
+            db.to_str().unwrap(),
+            "--json",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::function(|out: &str| {
+            let v: serde_json::Value = serde_json::from_str(out).unwrap();
+            v["group_by"] == "language"
+                && v["html_path"].is_string()
+                && v["diagram"].as_str().unwrap().contains("subgraph")
+        }));
+    let html_content = fs::read_to_string(html).unwrap();
+    assert!(html_content.contains("Tessera Graph Preview"));
+    assert!(html_content.contains("Copy Mermaid"));
 }
 
 #[test]

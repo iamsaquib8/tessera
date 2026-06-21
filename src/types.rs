@@ -1060,11 +1060,14 @@ impl Display for ConnectResult {
 pub struct ExportResult {
     pub format: String,
     pub scope: String,
+    pub group_by: String,
     pub nodes: usize,
     pub edges: usize,
     pub truncated: bool,
     /// The rendered graph in the requested format (DOT or Mermaid).
     pub diagram: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub html_path: Option<String>,
     pub meta: QueryMeta,
 }
 

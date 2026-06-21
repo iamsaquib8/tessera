@@ -186,9 +186,26 @@ fn call_tool(
             let from = args.get("from").and_then(Value::as_str);
             let depth = args.get("depth").and_then(Value::as_u64).unwrap_or(3) as usize;
             let limit = args.get("limit").and_then(Value::as_u64).unwrap_or(800) as usize;
-            serde_json::to_value(
-                query::export_conn(conn, format, from, depth, limit).map_err(to_string)?,
-            )
+            let mut options = query::ExportOptions::new(format, from, depth, limit);
+            options.group_by = match args
+                .get("group_by")
+                .and_then(Value::as_str)
+                .unwrap_or("none")
+            {
+                "file" => query::ExportGroupBy::File,
+                "directory" => query::ExportGroupBy::Directory,
+                "language" => query::ExportGroupBy::Language,
+                _ => query::ExportGroupBy::None,
+            };
+            options.collapse_tests = args
+                .get("collapse_tests")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            options.exported_only = args
+                .get("exported_only")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            serde_json::to_value(query::export_conn_with_options(conn, options).map_err(to_string)?)
         }
         "context_pack" => {
             let symbol = arg_string(&args, "symbol")?;
@@ -535,7 +552,10 @@ fn tools() -> Value {
                     "format": { "type": "string", "enum": ["mermaid", "dot"] },
                     "from": { "type": "string", "description": "Root the export at this symbol's forward call subgraph." },
                     "depth": { "type": "integer", "minimum": 1, "maximum": 12, "description": "Traversal depth when `from` is set. Default 3." },
-                    "limit": { "type": "integer", "minimum": 1, "maximum": 5000, "description": "Max edges to emit. Default 800." }
+                    "limit": { "type": "integer", "minimum": 1, "maximum": 5000, "description": "Max edges to emit. Default 800." },
+                    "group_by": { "type": "string", "enum": ["none", "file", "directory", "language"], "description": "Group rendered nodes into Mermaid subgraphs or DOT clusters." },
+                    "collapse_tests": { "type": "boolean", "description": "Hide test/spec nodes and their edges." },
+                    "exported_only": { "type": "boolean", "description": "Only include edges whose endpoints are exported symbols." }
                 }
             }
         },
