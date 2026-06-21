@@ -12,6 +12,7 @@ use tessera_codegraph::doctor::{self, DoctorOptions};
 use tessera_codegraph::indexer::{self, IndexOptions};
 use tessera_codegraph::init::{self, InitOptions};
 use tessera_codegraph::mcp;
+use tessera_codegraph::mcp_http;
 use tessera_codegraph::query;
 use tessera_codegraph::snapshot;
 use tessera_codegraph::types::{GraphEngineKind, Language, SearchOptions, UnusedOptions};
@@ -229,6 +230,9 @@ enum Commands {
         db: PathBuf,
         #[arg(long, default_value_t = 4)]
         depth: usize,
+        /// Explain ranking and matching decisions in human output.
+        #[arg(long, alias = "why")]
+        explain: bool,
         #[arg(long)]
         json: bool,
     },
@@ -237,6 +241,9 @@ enum Commands {
         symbol: String,
         #[arg(long, default_value = ".tessera/tessera.db")]
         db: PathBuf,
+        /// Explain bloom and near-miss decisions in human output.
+        #[arg(long, alias = "why")]
+        explain: bool,
         #[arg(long)]
         json: bool,
     },
@@ -282,6 +289,9 @@ enum Commands {
         limit: usize,
         #[arg(long, default_value = ".tessera/tessera.db")]
         db: PathBuf,
+        /// Explain fuzzy/glob scoring and filters in human output.
+        #[arg(long, alias = "why")]
+        explain: bool,
         #[arg(long)]
         json: bool,
     },
@@ -305,6 +315,9 @@ enum Commands {
         limit: usize,
         #[arg(long, default_value = ".tessera/tessera.db")]
         db: PathBuf,
+        /// Explain why symbols qualify as unused in human output.
+        #[arg(long, alias = "why")]
+        explain: bool,
         #[arg(long)]
         json: bool,
     },
@@ -429,6 +442,14 @@ enum Commands {
         #[arg(long, default_value = ".tessera/tessera.db")]
         db: PathBuf,
     },
+    /// Run the MCP server over local HTTP with a simple SSE readiness endpoint.
+    McpHttp {
+        /// Address to bind, for example 127.0.0.1:8765.
+        #[arg(long, default_value = "127.0.0.1:8765")]
+        addr: String,
+        #[arg(long, default_value = ".tessera/tessera.db")]
+        db: PathBuf,
+    },
     /// Start a tiny interactive query shell.
     Shell {
         #[arg(long, default_value = ".tessera/tessera.db")]
@@ -533,12 +554,26 @@ fn main() -> Result<()> {
             symbol,
             db,
             depth,
+            explain,
             json,
         } => {
-            print_result(query::impact(&db, &symbol, depth)?, json)?;
+            let result = query::impact(&db, &symbol, depth)?;
+            print_result(&result, json)?;
+            if explain && !json {
+                explain_impact(&result);
+            }
         }
-        Commands::Validate { symbol, db, json } => {
-            print_result(query::validate(&db, &symbol)?, json)?;
+        Commands::Validate {
+            symbol,
+            db,
+            explain,
+            json,
+        } => {
+            let result = query::validate(&db, &symbol)?;
+            print_result(&result, json)?;
+            if explain && !json {
+                explain_validate(&result);
+            }
         }
         Commands::ValidateSnippet {
             language,
@@ -622,6 +657,7 @@ fn main() -> Result<()> {
             path,
             limit,
             db,
+            explain,
             json,
         } => {
             let options = SearchOptions {
@@ -631,7 +667,11 @@ fn main() -> Result<()> {
                 path_prefix: path,
                 limit,
             };
-            print_result(query::search(&db, &pattern, options)?, json)?;
+            let result = query::search(&db, &pattern, options)?;
+            print_result(&result, json)?;
+            if explain && !json {
+                explain_search(&result);
+            }
         }
         Commands::Unused {
             kind,
@@ -640,6 +680,7 @@ fn main() -> Result<()> {
             path,
             limit,
             db,
+            explain,
             json,
         } => {
             let options = UnusedOptions {
@@ -649,7 +690,11 @@ fn main() -> Result<()> {
                 path_prefix: path,
                 limit,
             };
-            print_result(query::unused(&db, options)?, json)?;
+            let result = query::unused(&db, options)?;
+            print_result(&result, json)?;
+            if explain && !json {
+                explain_unused(&result);
+            }
         }
         Commands::Bench {
             path,
@@ -682,6 +727,7 @@ fn main() -> Result<()> {
             println!("snapshot written to {}", snapshot_path.display());
         }
         Commands::Mcp { db } => mcp::serve_stdio(&db)?,
+        Commands::McpHttp { addr, db } => mcp_http::serve(&addr, &db)?,
         Commands::Shell { db } => query::shell(&db)?,
     }
 
@@ -698,4 +744,56 @@ where
         println!("{value}");
     }
     Ok(())
+}
+
+fn explain_impact(result: &tessera_codegraph::types::ImpactResult) {
+    println!("\nWhy:");
+    println!("  Impact walks the reverse call graph: callee -> transitive callers.");
+    println!("  Scores combine personalised PageRank, caller fan-in/out, exported status, test-path coverage, and depth decay.");
+    if let Some(top) = result.callers.first() {
+        println!(
+            "  Top caller `{}` ranked first with pagerank {:.4}, fanout_in {}, fanout_out {}, exported={}, depth_decay {:.2}.",
+            top.symbol.qualified_name,
+            top.breakdown.pagerank,
+            top.breakdown.fanout_in,
+            top.breakdown.fanout_out,
+            top.breakdown.exported,
+            top.breakdown.depth_decay
+        );
+    }
+}
+
+fn explain_validate(result: &tessera_codegraph::types::ValidateResult) {
+    println!("\nWhy:");
+    println!("  Validate checks the Bloom filter first; a miss means the symbol is definitely absent from the indexed names.");
+    println!("  If unresolved, candidates come from trigram search and are ranked by Jaro-Winkler similarity.");
+    println!(
+        "  bloom_hit={} candidates={}",
+        result.bloom_hit,
+        result.candidates.len()
+    );
+}
+
+fn explain_search(result: &tessera_codegraph::types::SearchResult) {
+    println!("\nWhy:");
+    if result.query.contains('*') {
+        println!("  Search treated the pattern as a glob and ranked matching names deterministically by match quality and qualified name.");
+    } else {
+        println!("  Search used trigram fuzzy lookup and ranked hits by Jaro-Winkler similarity against name and qualified_name.");
+    }
+    println!("  Returned hits are also filtered by any kind, language, exported, path, and limit options supplied.");
+}
+
+fn explain_unused(result: &tessera_codegraph::types::UnusedResult) {
+    println!("\nWhy:");
+    println!("  A symbol is reported unused only when both inbound refs and inbound call edges are zero for its simple and qualified names.");
+    println!(
+        "  Test-path symbols are excluded, then kind/language/exported/path filters are applied."
+    );
+    if let Some(first) = result.symbols.first() {
+        println!(
+            "  `{}` has inbound_refs={} and inbound_edges={}.",
+            first.symbol.qualified_name, first.inbound_refs, first.inbound_edges
+        );
+    }
 }

@@ -35,6 +35,7 @@ pub mod engine;
 pub mod indexer;
 pub mod init;
 pub mod mcp;
+pub mod mcp_http;
 pub mod query;
 pub mod snapshot;
 pub mod types;

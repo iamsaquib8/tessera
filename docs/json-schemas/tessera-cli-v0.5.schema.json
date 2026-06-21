@@ -1,0 +1,107 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/iamsaquib8/tessera/schemas/tessera-cli-v0.5.schema.json",
+  "title": "Tessera CLI JSON responses v0.5",
+  "description": "Stable snapshot of the JSON response shapes emitted by `tessera ... --json` in v0.5. Query responses include `meta` with token estimates and alternative-query hints.",
+  "oneOf": [
+    { "$ref": "#/$defs/definition_result" },
+    { "$ref": "#/$defs/references_result" },
+    { "$ref": "#/$defs/outline_result" },
+    { "$ref": "#/$defs/expand_result" },
+    { "$ref": "#/$defs/impact_result" },
+    { "$ref": "#/$defs/validate_result" },
+    { "$ref": "#/$defs/validate_snippet_result" },
+    { "$ref": "#/$defs/stats_result" },
+    { "$ref": "#/$defs/search_result" },
+    { "$ref": "#/$defs/unused_result" },
+    { "$ref": "#/$defs/context_pack" },
+    { "$ref": "#/$defs/diff_impact_result" },
+    { "$ref": "#/$defs/imports_result" },
+    { "$ref": "#/$defs/imported_by_result" },
+    { "$ref": "#/$defs/signature_result" },
+    { "$ref": "#/$defs/siblings_result" },
+    { "$ref": "#/$defs/tests_for_result" },
+    { "$ref": "#/$defs/connect_result" },
+    { "$ref": "#/$defs/export_result" },
+    { "$ref": "#/$defs/doctor_result" },
+    { "$ref": "#/$defs/init_result" }
+  ],
+  "$defs": {
+    "meta": {
+      "type": "object",
+      "required": ["tokens_returned_estimate", "alternative_queries"],
+      "properties": {
+        "tokens_returned_estimate": { "type": "integer", "minimum": 0 },
+        "alternative_queries": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["tool", "tokens_estimate", "fidelity"],
+            "properties": {
+              "tool": { "type": "string" },
+              "tokens_estimate": { "type": "integer", "minimum": 0 },
+              "fidelity": { "type": "number" }
+            },
+            "additionalProperties": true
+          }
+        }
+      },
+      "additionalProperties": true
+    },
+    "symbol": {
+      "type": "object",
+      "required": ["id", "name", "qualified_name", "kind", "file_id", "path", "language", "start_line", "end_line", "signature", "exported"],
+      "properties": {
+        "id": { "type": "integer" },
+        "name": { "type": "string" },
+        "qualified_name": { "type": "string" },
+        "kind": { "type": "string" },
+        "file_id": { "type": "integer" },
+        "path": { "type": "string" },
+        "language": { "type": "string" },
+        "start_line": { "type": "integer" },
+        "end_line": { "type": "integer" },
+        "signature": { "type": "string" },
+        "exported": { "type": "boolean" }
+      },
+      "additionalProperties": true
+    },
+    "reference": {
+      "type": "object",
+      "required": ["id", "symbol_name", "from_symbol_id", "from_symbol", "path", "line", "column", "context", "kind"],
+      "properties": {
+        "id": { "type": "integer" },
+        "symbol_name": { "type": "string" },
+        "from_symbol_id": { "type": ["integer", "null"] },
+        "from_symbol": { "type": ["string", "null"] },
+        "path": { "type": "string" },
+        "line": { "type": "integer" },
+        "column": { "type": "integer" },
+        "context": { "type": "string" },
+        "kind": { "type": "string" }
+      },
+      "additionalProperties": true
+    },
+    "definition_result": { "type": "object", "required": ["matches", "meta"], "properties": { "matches": { "type": "array", "items": { "$ref": "#/$defs/symbol" } }, "meta": { "$ref": "#/$defs/meta" } }, "additionalProperties": true },
+    "references_result": { "type": "object", "required": ["references", "meta"], "properties": { "references": { "type": "array", "items": { "$ref": "#/$defs/reference" } }, "meta": { "$ref": "#/$defs/meta" } }, "additionalProperties": true },
+    "outline_result": { "type": "object", "required": ["path", "symbols", "meta"], "properties": { "path": { "type": "string" }, "symbols": { "type": "array", "items": { "$ref": "#/$defs/symbol" } }, "meta": { "$ref": "#/$defs/meta" } }, "additionalProperties": true },
+    "expand_result": { "type": "object", "required": ["symbol", "body", "dependencies", "meta"], "properties": { "symbol": { "oneOf": [{ "$ref": "#/$defs/symbol" }, { "type": "null" }] }, "body": { "type": ["string", "null"] }, "dependencies": { "type": "array", "items": { "$ref": "#/$defs/reference" } }, "meta": { "$ref": "#/$defs/meta" } }, "additionalProperties": true },
+    "impact_result": { "type": "object", "required": ["symbol", "callers", "meta"], "properties": { "symbol": { "type": "string" }, "callers": { "type": "array", "items": { "type": "object", "required": ["symbol", "depth", "criticality", "breakdown"], "properties": { "symbol": { "$ref": "#/$defs/symbol" }, "depth": { "type": "integer" }, "criticality": { "type": "number" }, "breakdown": { "type": "object" } }, "additionalProperties": true } }, "meta": { "$ref": "#/$defs/meta" } }, "additionalProperties": true },
+    "validate_result": { "type": "object", "required": ["query", "exists", "bloom_hit", "candidates", "meta"], "properties": { "query": { "type": "string" }, "exists": { "type": "boolean" }, "bloom_hit": { "type": "boolean" }, "candidates": { "type": "array" }, "meta": { "$ref": "#/$defs/meta" } }, "additionalProperties": true },
+    "validate_snippet_result": { "type": "object", "required": ["language", "total_calls", "unresolved_calls", "checks", "meta"], "properties": { "language": { "type": "string" }, "total_calls": { "type": "integer" }, "unresolved_calls": { "type": "integer" }, "checks": { "type": "array" }, "meta": { "$ref": "#/$defs/meta" } }, "additionalProperties": true },
+    "stats_result": { "type": "object", "required": ["files", "symbols", "references", "edges", "languages", "kinds", "top_fanout", "db_path", "snapshot_present", "meta"], "properties": { "files": { "type": "integer" }, "symbols": { "type": "integer" }, "references": { "type": "integer" }, "edges": { "type": "integer" }, "languages": { "type": "array" }, "kinds": { "type": "array" }, "top_fanout": { "type": "array" }, "db_path": { "type": "string" }, "snapshot_present": { "type": "boolean" }, "meta": { "$ref": "#/$defs/meta" } }, "additionalProperties": true },
+    "search_result": { "type": "object", "required": ["query", "hits", "meta"], "properties": { "query": { "type": "string" }, "hits": { "type": "array" }, "meta": { "$ref": "#/$defs/meta" } }, "additionalProperties": true },
+    "unused_result": { "type": "object", "required": ["symbols", "meta"], "properties": { "symbols": { "type": "array" }, "meta": { "$ref": "#/$defs/meta" } }, "additionalProperties": true },
+    "context_pack": { "type": "object", "required": ["symbol", "body", "dependency_signatures", "caller_signatures", "tests", "meta"], "properties": { "symbol": { "oneOf": [{ "$ref": "#/$defs/symbol" }, { "type": "null" }] }, "body": { "type": ["string", "null"] }, "dependency_signatures": { "type": "array" }, "caller_signatures": { "type": "array" }, "tests": { "type": "array" }, "meta": { "$ref": "#/$defs/meta" } }, "additionalProperties": true },
+    "diff_impact_result": { "type": "object", "required": ["from_ref", "to_ref", "changed_files", "changed_symbols", "impacted", "meta"], "properties": { "from_ref": { "type": "string" }, "to_ref": { "type": "string" }, "changed_files": { "type": "array" }, "changed_symbols": { "type": "array" }, "impacted": { "type": "array" }, "meta": { "$ref": "#/$defs/meta" } }, "additionalProperties": true },
+    "imports_result": { "type": "object", "required": ["path", "imports", "meta"], "properties": { "path": { "type": "string" }, "imports": { "type": "array" }, "meta": { "$ref": "#/$defs/meta" } }, "additionalProperties": true },
+    "imported_by_result": { "type": "object", "required": ["source", "importers", "meta"], "properties": { "source": { "type": "string" }, "importers": { "type": "array" }, "meta": { "$ref": "#/$defs/meta" } }, "additionalProperties": true },
+    "signature_result": { "type": "object", "required": ["symbol", "members", "meta"], "properties": { "symbol": { "oneOf": [{ "$ref": "#/$defs/symbol" }, { "type": "null" }] }, "members": { "type": "array" }, "meta": { "$ref": "#/$defs/meta" } }, "additionalProperties": true },
+    "siblings_result": { "type": "object", "required": ["symbol", "siblings", "meta"], "properties": { "symbol": { "type": "string" }, "siblings": { "type": "array" }, "meta": { "$ref": "#/$defs/meta" } }, "additionalProperties": true },
+    "tests_for_result": { "type": "object", "required": ["symbol", "tests", "meta"], "properties": { "symbol": { "type": "string" }, "tests": { "type": "array", "items": { "$ref": "#/$defs/symbol" } }, "meta": { "$ref": "#/$defs/meta" } }, "additionalProperties": true },
+    "connect_result": { "type": "object", "required": ["from", "to", "found", "path", "meta"], "properties": { "from": { "type": "string" }, "to": { "type": "string" }, "found": { "type": "boolean" }, "path": { "type": "array" }, "meta": { "$ref": "#/$defs/meta" } }, "additionalProperties": true },
+    "export_result": { "type": "object", "required": ["format", "scope", "nodes", "edges", "truncated", "diagram", "meta"], "properties": { "format": { "type": "string" }, "scope": { "type": "string" }, "nodes": { "type": "integer" }, "edges": { "type": "integer" }, "truncated": { "type": "boolean" }, "diagram": { "type": "string" }, "meta": { "$ref": "#/$defs/meta" } }, "additionalProperties": true },
+    "doctor_result": { "type": "object", "required": ["ok", "root", "db_path", "checks"], "properties": { "ok": { "type": "boolean" }, "root": { "type": "string" }, "db_path": { "type": "string" }, "checks": { "type": "array" } }, "additionalProperties": true },
+    "init_result": { "type": "object", "required": ["root", "created", "skipped", "next_steps"], "properties": { "root": { "type": "string" }, "created": { "type": "array", "items": { "type": "string" } }, "skipped": { "type": "array", "items": { "type": "string" } }, "next_steps": { "type": "array", "items": { "type": "string" } } }, "additionalProperties": true }
+  }
+}

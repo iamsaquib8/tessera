@@ -52,6 +52,7 @@ pub fn generate(shell: CompletionShell) -> CompletionScript {
         "bench",
         "snapshot",
         "mcp",
+        "mcp-http",
         "shell",
     ];
     let joined = commands.join(" ");

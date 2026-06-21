@@ -124,6 +124,7 @@ tessera export --from findById --format mermaid   # the call subgraph, as a diag
 tessera context-pack findById            # body + deps + callers + tests in one budgeted bundle
 tessera unused --kind function           # symbols with no inbound refs/call edges
 tessera completions zsh                  # shell completions for bash/zsh/fish/PowerShell
+tessera mcp-http --addr 127.0.0.1:8765   # local HTTP/SSE MCP transport
 ```
 
 That's it. The graph is local, the queries are deterministic, every response carries `_meta` token estimates so agents can plan their context budget.
@@ -231,6 +232,10 @@ Configs for **Cline, Continue.dev, Codex CLI, Zed, Aider, and custom GPTs** live
 **Exposed tools:** `find_definition` · `find_references` · `get_outline` · `expand_symbol` · `impact` · `connect` · `export` · `context_pack` · `diff_impact` · `imports` · `imported_by` · `signature` · `siblings` · `search` · `unused` · `validate` · `validate_snippet` · `tests_for` · `stats`.
 
 **Tip:** run `tessera doctor` when a query looks stale or an MCP client cannot connect. It prints the exact `tessera index . --db ...` or `tessera snapshot --db ...` command to repair the local setup.
+
+Start with the [first five minutes guide](docs/first-five-minutes.md), and read
+[when not to use Tessera](docs/when-not-to-use.md) for the current precision
+limits. Troubleshooting lives in [docs/troubleshooting.md](docs/troubleshooting.md).
 
 ## Use as a Rust library
 
