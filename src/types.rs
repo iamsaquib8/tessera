@@ -501,6 +501,89 @@ impl Display for ContextPack {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PlanQueryResult {
+    pub query: String,
+    pub inferred_intent: String,
+    pub steps: Vec<PlanStep>,
+    pub meta: QueryMeta,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PlanStep {
+    pub order: usize,
+    pub tool: String,
+    pub command: String,
+    pub reason: String,
+    pub expected_tokens: usize,
+}
+
+impl Display for PlanQueryResult {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        writeln!(f, "Plan for {:?} ({})", self.query, self.inferred_intent)?;
+        for step in &self.steps {
+            writeln!(
+                f,
+                "  {}. {}  ~{} tokens",
+                step.order, step.command, step.expected_tokens
+            )?;
+            writeln!(f, "     {}", step.reason)?;
+        }
+        write_meta(f, &self.meta)
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EditPrepResult {
+    pub symbol: String,
+    pub validate: ValidateResult,
+    pub signature: SignatureResult,
+    pub siblings: SiblingsResult,
+    pub context: ContextPack,
+    pub tests: TestsForResult,
+    pub next_steps: Vec<PlanStep>,
+    pub meta: QueryMeta,
+}
+
+impl Display for EditPrepResult {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        writeln!(f, "Edit prep for {}", self.symbol)?;
+        writeln!(f, "  exists: {}", self.validate.exists)?;
+        if let Some(symbol) = &self.signature.symbol {
+            writeln!(
+                f,
+                "  target: {} {} @ {}:{}",
+                symbol.kind, symbol.qualified_name, symbol.path, symbol.start_line
+            )?;
+        }
+        writeln!(
+            f,
+            "  context: body={} deps={} callers={} tests={}",
+            self.context.body.is_some(),
+            self.context.dependency_signatures.len(),
+            self.context.caller_signatures.len(),
+            self.tests.tests.len()
+        )?;
+        if !self.siblings.siblings.is_empty() {
+            writeln!(f, "  siblings:")?;
+            for sibling in self.siblings.siblings.iter().take(5) {
+                writeln!(
+                    f,
+                    "    {} ({} shared callers)",
+                    sibling.qualified_name, sibling.shared_callers
+                )?;
+            }
+        }
+        if !self.next_steps.is_empty() {
+            writeln!(f, "\nNext steps:")?;
+            for step in &self.next_steps {
+                writeln!(f, "  {}. {}", step.order, step.command)?;
+            }
+        }
+        write_meta(f, &self.meta)
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DiffImpactResult {
     pub from_ref: String,
     pub to_ref: String,

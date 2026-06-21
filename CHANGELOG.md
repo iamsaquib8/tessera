@@ -2,6 +2,17 @@
 
 All notable changes to Tessera will be documented here.
 
+## 0.7.0 - Unreleased
+
+v0.7 adds the first agent workflow layer on top of the code graph: deterministic
+tool planning and a one-call pre-edit bundle.
+
+### Added
+- **`plan-query`**: recommends an ordered, token-aware Tessera tool sequence from a natural-language task shape.
+- **`edit-prep`**: combines `validate`, `signature`, `siblings`, `context-pack`, and `tests-for` into one pre-edit bundle.
+- MCP tools `plan_query` and `edit_prep` with agent-routing descriptions.
+- Shell completion entries, docs, and end-to-end tests for the v0.7 workflow commands.
+
 ## 0.6.0 - Unreleased
 
 v0.6 focuses on real-repo correctness: predictable indexing boundaries,

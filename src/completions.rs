@@ -41,6 +41,8 @@ pub fn generate(shell: CompletionShell) -> CompletionScript {
         "search",
         "unused",
         "context-pack",
+        "plan-query",
+        "edit-prep",
         "diff-impact",
         "imports",
         "imported-by",
