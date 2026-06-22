@@ -270,9 +270,19 @@ SVG/PNG rendering, and IDE extensions remain future v0.8/v0.9 work.
 
 Goal: keep the local-first story while making Tessera useful for teams and CI.
 
-- Add HTTP/SSE MCP transport for shared services and browser-based clients.
-- Add a long-running daemon with file watching, query serving, and health
-  endpoints.
+Status: first end-to-end slice complete. Larger multi-user server features
+remain future work.
+
+Shipped:
+- HTTP/SSE MCP transport for shared services and browser-based clients.
+- Health endpoint metadata for service version, DB path, indexed root, schema,
+  snapshot presence, and advertised endpoint paths.
+- End-to-end subprocess coverage for HTTP health, SSE readiness, and MCP
+  JSON-RPC query handling.
+
+Remaining:
+- Add a long-running daemon that combines file watching, query serving, and
+  health endpoints.
 - Add multi-root and monorepo workspace support.
 - Add content-addressed index cache keyed by file hash, grammar version, and
   extractor version.

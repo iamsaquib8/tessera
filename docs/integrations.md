@@ -129,7 +129,10 @@ tessera mcp-http --addr 127.0.0.1:8765 --db .tessera/tessera.db
 ```
 
 The HTTP transport exposes `POST /mcp` for JSON-RPC, `GET /sse` as a simple
-readiness event stream, and `GET /health` for health checks.
+readiness event stream, and `GET /health` for service checks. The health
+response includes the Tessera version, DB path, indexed root, schema version,
+snapshot path, and advertised endpoint paths so CI or a wrapper service can
+fail fast before routing agent traffic to the graph.
 
 ## Tip: re-index after pulls
 
