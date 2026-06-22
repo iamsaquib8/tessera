@@ -3,6 +3,7 @@ use std::net::{TcpListener, TcpStream};
 use std::path::Path;
 
 use anyhow::Result;
+use serde_json::json;
 
 use crate::db;
 use crate::mcp;
@@ -77,18 +78,21 @@ fn handle_stream(
     let path = parts.next().unwrap_or_default();
 
     match (method, path) {
-        ("GET", "/health") => write_response(
-            stream,
-            "200 OK",
-            "application/json",
-            r#"{"ok":true,"service":"tessera-mcp-http"}"#,
-        )?,
+        ("GET", "/health") => {
+            let json = serde_json::to_string(&health_payload(conn, db_path)?)?;
+            write_response(stream, "200 OK", "application/json", &json)?;
+        }
         ("GET", "/sse") => {
-            let body = "event: ready\ndata: {\"endpoint\":\"/mcp\"}\n\n";
+            let ready = json!({
+                "endpoint": "/mcp",
+                "service": "tessera-mcp-http",
+                "version": env!("CARGO_PKG_VERSION")
+            });
+            let body = format!("event: ready\ndata: {ready}\n\n");
             write_raw(
                 stream,
                 "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-cache\r\nConnection: close\r\n\r\n",
-                body,
+                &body,
             )?;
         }
         ("POST", "/mcp") => {
@@ -104,6 +108,37 @@ fn handle_stream(
         )?,
     }
     Ok(())
+}
+
+fn health_payload(conn: &rusqlite::Connection, db_path: &Path) -> Result<serde_json::Value> {
+    let schema_version = db::get_meta(conn, "schema_version")?;
+    let root = db::get_meta(conn, "root")?;
+    let snapshot_path = snapshot_path_for(db_path);
+    let expected_schema_version = db::SCHEMA_VERSION.to_string();
+    Ok(json!({
+        "ok": schema_version.as_deref() == Some(expected_schema_version.as_str()),
+        "service": "tessera-mcp-http",
+        "version": env!("CARGO_PKG_VERSION"),
+        "protocol": "mcp-json-rpc-over-http",
+        "endpoints": {
+            "mcp": "/mcp",
+            "sse": "/sse",
+            "health": "/health"
+        },
+        "db_path": db_path.display().to_string(),
+        "root": root,
+        "schema_version": schema_version,
+        "expected_schema_version": db::SCHEMA_VERSION,
+        "snapshot_path": snapshot_path.display().to_string(),
+        "snapshot_exists": snapshot_path.exists()
+    }))
+}
+
+fn snapshot_path_for(db_path: &Path) -> std::path::PathBuf {
+    db_path
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .join("snapshot.bin")
 }
 
 fn request_complete(buffer: &[u8]) -> bool {

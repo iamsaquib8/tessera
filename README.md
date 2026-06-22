@@ -127,7 +127,7 @@ tessera plan-query "edit findById safely" --symbol findById
 tessera edit-prep findById
 tessera unused --kind function           # symbols with no inbound refs/call edges
 tessera completions zsh                  # shell completions for bash/zsh/fish/PowerShell
-tessera mcp-http --addr 127.0.0.1:8765   # local HTTP/SSE MCP transport
+tessera mcp-http --addr 127.0.0.1:8765   # HTTP/SSE MCP transport with /health
 ```
 
 That's it. The graph is local, the queries are deterministic, every response carries `_meta` token estimates so agents can plan their context budget.
@@ -317,7 +317,7 @@ cargo test --all-targets --all-features
 
 ## Status
 
-**v0.8 — pre-alpha.** 11 languages, JSX-aware React references, incremental indexing, PageRank-ranked impact, hallucination validator, agent workflow planning, call-path tracing (`connect`), shareable graph export (DOT/Mermaid/HTML preview), and install via npm / Homebrew / curl / Docker / cargo — library + MCP + CLI. See [CHANGELOG.md](CHANGELOG.md) and [ROADMAP.md](ROADMAP.md).
+**v0.9 — pre-alpha.** 11 languages, JSX-aware React references, incremental indexing, PageRank-ranked impact, hallucination validator, agent workflow planning, call-path tracing (`connect`), shareable graph export (DOT/Mermaid/HTML preview), HTTP/SSE MCP transport with health metadata, and install via npm / Homebrew / curl / Docker / cargo — library + MCP + CLI. See [CHANGELOG.md](CHANGELOG.md) and [ROADMAP.md](ROADMAP.md).
 
 ## Contributing
 

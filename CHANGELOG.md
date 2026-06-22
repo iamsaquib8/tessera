@@ -2,6 +2,20 @@
 
 All notable changes to Tessera will be documented here.
 
+## 0.9.0 - Unreleased
+
+v0.9 hardens the HTTP/SSE MCP path so Tessera can run as a shared local or CI
+service, not only as a stdio process spawned by an agent.
+
+### Added
+- Metadata-rich `GET /health` for `tessera mcp-http`, including service
+  version, DB path, indexed root, schema version, snapshot path, snapshot
+  presence, and advertised endpoint paths.
+- `GET /sse` readiness events now include the service name and Tessera version.
+- End-to-end HTTP transport coverage that boots the compiled `tessera` binary,
+  verifies `/health` and `/sse`, and runs an MCP `find_definition` query through
+  `POST /mcp`.
+
 ## 0.8.0 - Unreleased
 
 v0.8 makes exported graphs easier to inspect and share without leaving the CLI.
