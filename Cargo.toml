@@ -1,6 +1,6 @@
 [package]
 name = "tessera-codegraph"
-version = "0.8.0"
+version = "0.9.0"
 edition = "2021"
 authors = ["Saquib <saquibulhassan6@gmail.com>"]
 description = "A local, deterministic semantic code graph and MCP server for AI coding agents. 11 languages, personalized PageRank impact, hallucination validator, call-path tracing, graph export, incremental indexing."

@@ -12,6 +12,18 @@ Index first:
 tessera index .
 ```
 
+For clients or CI wrappers that cannot spawn a stdio server, Tessera also
+exposes the same JSON-RPC MCP surface over local HTTP:
+
+```sh
+tessera mcp-http --addr 127.0.0.1:8765 --db .tessera/tessera.db
+```
+
+- `POST /mcp` handles JSON-RPC MCP requests.
+- `GET /sse` emits a readiness event with the MCP endpoint and Tessera version.
+- `GET /health` returns service, version, DB, root, schema, snapshot, and
+  endpoint metadata.
+
 ## Tools
 
 ### `find_definition`

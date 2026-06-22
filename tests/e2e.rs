@@ -1,9 +1,22 @@
 use std::fs;
-use std::time::Instant;
+use std::io::{Read, Write};
+use std::net::{TcpListener, TcpStream};
+use std::process::{Child, Command as StdCommand, Stdio};
+use std::thread;
+use std::time::{Duration, Instant};
 
 use assert_cmd::Command;
 use predicates::prelude::*;
 use tempfile::TempDir;
+
+struct ChildGuard(Child);
+
+impl Drop for ChildGuard {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
 
 fn write_sample(temp: &TempDir) {
     fs::write(
@@ -965,6 +978,84 @@ function helper() {
 }
 
 #[test]
+fn mcp_http_serves_health_sse_and_json_rpc_queries() {
+    let temp = TempDir::new().unwrap();
+    fs::write(
+        temp.path().join("app.ts"),
+        r#"
+export function start() {
+    return helper();
+}
+
+function helper() {
+    return 1;
+}
+"#,
+    )
+    .unwrap();
+
+    let db = temp.path().join(".tessera/http.db");
+    Command::cargo_bin("tessera")
+        .unwrap()
+        .args([
+            "index",
+            temp.path().to_str().unwrap(),
+            "--db",
+            db.to_str().unwrap(),
+            "--full",
+        ])
+        .assert()
+        .success();
+
+    let addr = unused_local_addr();
+    let child = StdCommand::new(env!("CARGO_BIN_EXE_tessera"))
+        .args(["mcp-http", "--addr", &addr, "--db", db.to_str().unwrap()])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let _server = ChildGuard(child);
+
+    let health = wait_for_http_json(&addr, "/health");
+    assert_eq!(health["ok"], true);
+    assert_eq!(health["service"], "tessera-mcp-http");
+    assert_eq!(health["protocol"], "mcp-json-rpc-over-http");
+    assert_eq!(health["endpoints"]["mcp"], "/mcp");
+    assert_eq!(
+        health["root"],
+        temp.path().canonicalize().unwrap().display().to_string()
+    );
+    assert_eq!(health["schema_version"], "3");
+    assert_eq!(health["snapshot_exists"], true);
+
+    let sse = http_request(&addr, "GET", "/sse", None);
+    assert!(sse.contains("event: ready"));
+    assert!(sse.contains("\"endpoint\":\"/mcp\""));
+    assert!(sse.contains("\"version\""));
+
+    let response = http_request(
+        &addr,
+        "POST",
+        "/mcp",
+        Some(
+            r#"{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"find_definition","arguments":{"symbol":"start"}}}"#,
+        ),
+    );
+    let rpc: serde_json::Value = serde_json::from_str(&response).unwrap();
+    assert_eq!(rpc["id"], 7);
+    assert_eq!(rpc["error"], serde_json::Value::Null);
+    assert_eq!(
+        rpc["result"]["structuredContent"]["matches"][0]["name"],
+        "start"
+    );
+    assert_eq!(
+        rpc["result"]["structuredContent"]["matches"][0]["path"],
+        "app.ts"
+    );
+}
+
+#[test]
 fn doctor_reports_index_health_and_missing_db_guidance() {
     let temp = TempDir::new().unwrap();
     fs::write(
@@ -1214,6 +1305,60 @@ fn release_workflow_creates_release_before_publishing_assets() {
         !workflow.contains("macos-13"),
         "macos-13 runners can stay queued and block npm publishing"
     );
+}
+
+fn unused_local_addr() -> String {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.local_addr().unwrap().to_string()
+}
+
+fn wait_for_http_json(addr: &str, path: &str) -> serde_json::Value {
+    let started = Instant::now();
+    let mut last_error = String::new();
+    while started.elapsed() < Duration::from_secs(5) {
+        match try_http_request(addr, "GET", path, None).and_then(|body| {
+            serde_json::from_str::<serde_json::Value>(&body).map_err(|e| e.to_string())
+        }) {
+            Ok(value) => return value,
+            Err(error) => last_error = error,
+        }
+        thread::sleep(Duration::from_millis(50));
+    }
+    panic!("timed out waiting for http://{addr}{path}: {last_error}");
+}
+
+fn http_request(addr: &str, method: &str, path: &str, body: Option<&str>) -> String {
+    try_http_request(addr, method, path, body).unwrap()
+}
+
+fn try_http_request(
+    addr: &str,
+    method: &str,
+    path: &str,
+    body: Option<&str>,
+) -> Result<String, String> {
+    let mut stream = TcpStream::connect(addr).map_err(|e| e.to_string())?;
+    let body = body.unwrap_or_default();
+    let request = format!(
+        "{method} {path} HTTP/1.1\r\nHost: {addr}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    );
+    stream
+        .write_all(request.as_bytes())
+        .map_err(|e| e.to_string())?;
+    stream.flush().map_err(|e| e.to_string())?;
+
+    let mut response = String::new();
+    stream
+        .read_to_string(&mut response)
+        .map_err(|e| e.to_string())?;
+    let (head, body) = response
+        .split_once("\r\n\r\n")
+        .ok_or_else(|| format!("malformed HTTP response: {response}"))?;
+    if !head.starts_with("HTTP/1.1 200 OK") {
+        return Err(format!("unexpected HTTP response: {head}"));
+    }
+    Ok(body.to_string())
 }
 
 fn find_manifest_value<'a>(content: &'a str, key: &str) -> Option<&'a str> {
