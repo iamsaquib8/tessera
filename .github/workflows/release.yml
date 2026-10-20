@@ -132,3 +132,44 @@ jobs:
             exit 0
           fi
           exit $status
+
+  npm:
+    name: publish npm
+    needs: publish
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          registry-url: https://registry.npmjs.org
+      - name: Download release archives
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          gh release download "$TAG" --dir dist --pattern 'tessera-*'
+      - run: node npm/scripts/build-platform-packages.js "${TAG#v}" dist
+      - name: Publish platform packages, then the launcher
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ -z "${NODE_AUTH_TOKEN:-}" ]; then
+            echo "::notice::NPM_TOKEN not set; skipping npm."
+            exit 0
+          fi
+          version="${TAG#v}"
+          publish() {
+            name=$(node -p "require('./$1/package.json').name")
+            if npm view "$name@$version" version >/dev/null 2>&1; then
+              echo "$name@$version already published"
+            else
+              npm publish "$1" --access public --provenance
+            fi
+          }
+          for dir in npm/platforms/*/; do
+            publish "${dir%/}"
+          done
+          publish npm

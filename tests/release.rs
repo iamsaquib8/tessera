@@ -42,6 +42,23 @@ fn release_workflow_publishes_only_after_every_binary_succeeds() {
     assert!(!workflow.contains("macos-13"), "macos-13 runners can stay queued");
 }
 
+#[test]
+fn npm_launcher_uses_platform_packages_without_install_scripts() {
+    let npm: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string("npm/package.json").unwrap()).unwrap();
+    assert!(npm.get("scripts").is_none(), "no postinstall download");
+    let optional = npm["optionalDependencies"].as_object().unwrap();
+    assert_eq!(optional.len(), 7);
+    for (name, version) in optional {
+        let platform = name.trim_start_matches("tessera-codegraph-");
+        let manifest = format!("npm/platforms/{platform}/package.json");
+        let pkg: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&manifest).unwrap()).unwrap();
+        assert_eq!(&pkg["version"], version, "{manifest}");
+        assert_eq!(pkg["version"], npm["version"], "{manifest}");
+    }
+}
+
 fn find_manifest_value<'a>(content: &'a str, key: &str) -> Option<&'a str> {
     let prefix = format!("{key} = \"");
     content.lines().find_map(|line| {

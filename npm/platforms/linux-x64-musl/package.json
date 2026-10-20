@@ -1,0 +1,23 @@
+{
+  "name": "tessera-codegraph-linux-x64-musl",
+  "version": "0.9.0",
+  "description": "Prebuilt tessera binary for x86_64-unknown-linux-musl. Installed automatically by tessera-codegraph.",
+  "os": [
+    "linux"
+  ],
+  "cpu": [
+    "x64"
+  ],
+  "files": [
+    "bin/"
+  ],
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/iamsaquib8/tessera.git"
+  },
+  "preferUnplugged": true,
+  "libc": [
+    "musl"
+  ]
+}

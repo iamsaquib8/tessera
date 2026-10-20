@@ -1,3 +1,4 @@
 /target
 /.tessera
 /.claude
+/npm/platforms/*/bin/
