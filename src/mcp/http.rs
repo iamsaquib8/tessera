@@ -20,7 +20,12 @@ const MAX_BODY_BYTES: u64 = 2 * 1024 * 1024;
 
 pub fn serve_http(ws: Workspace, addr: &str) -> Result<()> {
     let server = Arc::new(Server::http(addr).map_err(|e| anyhow!("cannot bind {addr}: {e}"))?);
-    eprintln!("Tessera MCP listening on http://{addr}/mcp (health: /health)");
+    let bound = server
+        .server_addr()
+        .to_ip()
+        .map(|a| a.to_string())
+        .unwrap_or_else(|| addr.to_string());
+    eprintln!("Tessera MCP listening on http://{bound}/mcp (health: /health)");
     let state = Arc::new(ServerState::new(ws));
     start_background_indexing(&state);
     let workers: Vec<_> = (0..WORKERS)
