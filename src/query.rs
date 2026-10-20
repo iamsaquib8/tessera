@@ -9,15 +9,16 @@ use strsim::jaro_winkler;
 
 use crate::db;
 use crate::indexer;
+use crate::output::MatchKind;
 use crate::types::{
-    AlternativeQuery, ConnectResult, ContextPack, CriticalityBreakdown, DefinitionResult,
-    DiffChangedSymbol, DiffImpactResult, DiffImpactedSymbol, EditPrepResult, ExpandResult,
-    ExportResult, ImpactCaller, ImpactResult, ImportRecord, ImportedByResult, ImportsResult,
-    KindCount, Language, LanguageCount, OutlineResult, PathNode, PlanStep, QueryMeta,
-    ReferenceRecord, ReferencesResult, SearchHit, SearchOptions, SearchResult, Sibling,
-    SiblingsResult, SignatureLine, SignatureResult, SnippetReferenceCheck, StatsResult,
-    SymbolRecord, SymbolSuggestion, TestsForResult, TopFanout, UnusedOptions, UnusedResult,
-    UnusedSymbol, ValidateResult, ValidateSnippetResult,
+    ConnectResult, ContextPack, CriticalityBreakdown, DefinitionResult, DiffChangedSymbol,
+    DiffImpactResult, DiffImpactedSymbol, EditPrepResult, ExpandResult, ExportResult, ImpactCaller,
+    ImpactResult, ImportRecord, ImportedByResult, ImportsResult, KindCount, Language,
+    LanguageCount, OutlineResult, PathNode, PlanStep, QueryMeta, ReferenceRecord, ReferencesResult,
+    SearchHit, SearchOptions, SearchResult, Sibling, SiblingsResult, SignatureLine,
+    SignatureResult, SnippetReferenceCheck, StatsResult, SymbolRecord, SymbolSuggestion,
+    TestsForResult, TopFanout, UnusedOptions, UnusedResult, UnusedSymbol, ValidateResult,
+    ValidateSnippetResult,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -92,13 +93,19 @@ pub fn find_definition_conn(conn: &Connection, symbol: &str) -> Result<Definitio
     let mut matches = stmt
         .query_map(params![symbol, format!("%.{}", symbol)], db::map_symbol)?
         .collect::<rusqlite::Result<Vec<_>>>()?;
+    let mut match_kind = MatchKind::Exact;
     if matches.is_empty() {
-        matches = fuzzy_symbol_matches(conn, symbol, 5)?;
+        let ranked = ranked_fuzzy_matches(conn, symbol, 5)?;
+        if let Some((score, _)) = ranked.first() {
+            match_kind = MatchKind::Fuzzy { score: *score };
+        }
+        matches = ranked.into_iter().map(|(_, s)| s).collect();
     }
     let tokens = estimate_tokens(&matches);
     Ok(DefinitionResult {
+        match_kind,
         matches,
-        meta: meta(tokens, "get_outline", 320, 0.72),
+        meta: meta(tokens),
     })
 }
 
@@ -107,7 +114,7 @@ pub fn find_references_conn(conn: &Connection, symbol: &str) -> Result<Reference
     let tokens = estimate_tokens(&refs);
     Ok(ReferencesResult {
         references: refs,
-        meta: meta(tokens, "impact", 900, 0.84),
+        meta: meta(tokens),
     })
 }
 
@@ -136,7 +143,7 @@ pub fn get_outline_conn(conn: &Connection, path: &Path) -> Result<OutlineResult>
     Ok(OutlineResult {
         path: prefix,
         symbols,
-        meta: meta(tokens, "expand_symbol", 1200, 0.9),
+        meta: meta(tokens),
     })
 }
 
@@ -146,7 +153,7 @@ pub fn expand_symbol_conn(conn: &Connection, symbol: &str) -> Result<ExpandResul
             symbol: None,
             body: None,
             dependencies: Vec::new(),
-            meta: meta(20, "find_definition", 120, 0.65),
+            meta: meta(20),
         });
     };
     let body = read_symbol_body(conn, &symbol_record).ok();
@@ -156,7 +163,7 @@ pub fn expand_symbol_conn(conn: &Connection, symbol: &str) -> Result<ExpandResul
         symbol: Some(symbol_record),
         body,
         dependencies,
-        meta: meta(tokens, "get_outline", 320, 0.7),
+        meta: meta(tokens),
     })
 }
 
@@ -225,7 +232,7 @@ pub fn impact_conn(conn: &Connection, symbol: &str, depth: usize) -> Result<Impa
         return Ok(ImpactResult {
             symbol: symbol.to_string(),
             callers: Vec::new(),
-            meta: meta(tokens, "find_references", 700, 0.78),
+            meta: meta(tokens),
         });
     }
 
@@ -252,6 +259,11 @@ pub fn impact_conn(conn: &Connection, symbol: &str, depth: usize) -> Result<Impa
                 .or_default()
                 .push(*id);
         }
+    }
+
+    for ids in name_to_ids.values_mut() {
+        ids.sort_unstable();
+        ids.dedup();
     }
 
     let mut node_ids: Vec<i64> = frontier.keys().copied().collect();
@@ -297,6 +309,10 @@ pub fn impact_conn(conn: &Connection, symbol: &str, depth: usize) -> Result<Impa
                 }
             }
         }
+    }
+    // Stable adjacency order keeps PageRank's float sums identical run to run.
+    for adjacent in &mut walk_adj {
+        adjacent.sort_unstable();
     }
 
     // Personalised PageRank: teleport on target if known, else uniform over depth-1.
@@ -404,6 +420,9 @@ pub fn impact_conn(conn: &Connection, symbol: &str, depth: usize) -> Result<Impa
             .unwrap_or(std::cmp::Ordering::Equal)
             .then_with(|| a.depth.cmp(&b.depth))
             .then_with(|| a.symbol.path.cmp(&b.symbol.path))
+            .then_with(|| a.symbol.start_line.cmp(&b.symbol.start_line))
+            .then_with(|| a.symbol.qualified_name.cmp(&b.symbol.qualified_name))
+            .then_with(|| a.symbol.id.cmp(&b.symbol.id))
     });
     callers.truncate(100);
 
@@ -411,7 +430,7 @@ pub fn impact_conn(conn: &Connection, symbol: &str, depth: usize) -> Result<Impa
     Ok(ImpactResult {
         symbol: symbol.to_string(),
         callers,
-        meta: meta(tokens, "find_references", 700, 0.78),
+        meta: meta(tokens),
     })
 }
 
@@ -429,7 +448,7 @@ pub fn validate_conn(conn: &Connection, symbol: &str) -> Result<ValidateResult> 
         query: symbol.to_string(),
         exists,
         candidates,
-        meta: meta(tokens, "find_definition", 320, 0.8),
+        meta: meta(tokens),
     })
 }
 
@@ -464,7 +483,7 @@ pub fn validate_snippet_conn(
         total_calls: checks.len(),
         unresolved_calls: unresolved,
         checks,
-        meta: meta(tokens, "validate", 200, 0.9),
+        meta: meta(tokens),
     })
 }
 
@@ -537,7 +556,7 @@ pub fn stats_conn(conn: &Connection, db_path: &Path) -> Result<StatsResult> {
         kinds,
         top_fanout,
         db_path: db_path.to_string_lossy().to_string(),
-        meta: meta(tokens, "get_outline", 320, 0.6),
+        meta: meta(tokens),
     })
 }
 
@@ -565,7 +584,7 @@ pub fn context_pack_conn(
             caller_signatures: Vec::new(),
             tests: Vec::new(),
             budget_tokens: budget,
-            meta: meta(40, "find_definition", 120, 0.6),
+            meta: meta(40),
         });
     };
 
@@ -641,7 +660,7 @@ pub fn context_pack_conn(
         caller_signatures: caller_lines,
         tests,
         budget_tokens: budget,
-        meta: meta(tokens, "expand_symbol", 800, 0.88),
+        meta: meta(tokens),
     })
 }
 
@@ -698,7 +717,7 @@ pub fn edit_prep_conn(
         context,
         tests,
         next_steps,
-        meta: meta(tokens, "context_pack", budget, 0.92),
+        meta: meta(tokens),
     })
 }
 
@@ -842,6 +861,9 @@ pub fn diff_impact_conn(
         b.criticality
             .partial_cmp(&a.criticality)
             .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| a.symbol.path.cmp(&b.symbol.path))
+            .then_with(|| a.symbol.start_line.cmp(&b.symbol.start_line))
+            .then_with(|| a.symbol.qualified_name.cmp(&b.symbol.qualified_name))
     });
     impacted.truncate(50);
 
@@ -852,7 +874,7 @@ pub fn diff_impact_conn(
         changed_files,
         changed_symbols,
         impacted,
-        meta: meta(tokens, "impact", 900, 0.85),
+        meta: meta(tokens),
     })
 }
 
@@ -893,7 +915,7 @@ pub fn imports_conn(conn: &Connection, path: &str) -> Result<ImportsResult> {
     Ok(ImportsResult {
         path: path.to_string(),
         imports,
-        meta: meta(tokens, "get_outline", 320, 0.7),
+        meta: meta(tokens),
     })
 }
 
@@ -924,7 +946,7 @@ pub fn imported_by_conn(conn: &Connection, source: &str) -> Result<ImportedByRes
     Ok(ImportedByResult {
         source: source.to_string(),
         importers,
-        meta: meta(tokens, "imports", 200, 0.7),
+        meta: meta(tokens),
     })
 }
 
@@ -933,7 +955,7 @@ pub fn signature_conn(conn: &Connection, symbol: &str) -> Result<SignatureResult
         return Ok(SignatureResult {
             symbol: None,
             members: Vec::new(),
-            meta: meta(30, "find_definition", 120, 0.5),
+            meta: meta(30),
         });
     };
     // For container kinds, list child symbols defined inside this symbol's
@@ -982,7 +1004,7 @@ pub fn signature_conn(conn: &Connection, symbol: &str) -> Result<SignatureResult
     Ok(SignatureResult {
         symbol: Some(target),
         members,
-        meta: meta(tokens, "expand_symbol", 600, 0.8),
+        meta: meta(tokens),
     })
 }
 
@@ -1037,7 +1059,7 @@ pub fn siblings_conn(conn: &Connection, symbol: &str) -> Result<SiblingsResult> 
     Ok(SiblingsResult {
         symbol: symbol.to_string(),
         siblings,
-        meta: meta(tokens, "impact", 700, 0.75),
+        meta: meta(tokens),
     })
 }
 
@@ -1087,6 +1109,8 @@ pub fn search_conn(
             .partial_cmp(&a.score)
             .unwrap_or(std::cmp::Ordering::Equal)
             .then_with(|| a.symbol.qualified_name.cmp(&b.symbol.qualified_name))
+            .then_with(|| a.symbol.path.cmp(&b.symbol.path))
+            .then_with(|| a.symbol.start_line.cmp(&b.symbol.start_line))
     });
     hits.truncate(limit);
 
@@ -1094,7 +1118,7 @@ pub fn search_conn(
     Ok(SearchResult {
         query: pattern.to_string(),
         hits,
-        meta: meta(tokens, "find_definition", 320, 0.7),
+        meta: meta(tokens),
     })
 }
 
@@ -1144,7 +1168,7 @@ pub fn unused_conn(conn: &Connection, options: UnusedOptions) -> Result<UnusedRe
     let tokens = estimate_tokens(&unused).max(40);
     Ok(UnusedResult {
         symbols: unused,
-        meta: meta(tokens, "search", 320, 0.7),
+        meta: meta(tokens),
     })
 }
 
@@ -1181,7 +1205,7 @@ pub fn tests_for_conn(conn: &Connection, symbol: &str) -> Result<TestsForResult>
     Ok(TestsForResult {
         symbol: symbol.to_string(),
         tests,
-        meta: meta(tokens, "impact", 700, 0.78),
+        meta: meta(tokens),
     })
 }
 
@@ -1208,7 +1232,7 @@ pub fn connect_conn(
             to: to.to_string(),
             found: false,
             path: Vec::new(),
-            meta: meta(40, "find_definition", 120, 0.6),
+            meta: meta(40),
         });
     }
     let target_ids: HashSet<i64> = targets.iter().map(|s| s.id).collect();
@@ -1220,7 +1244,7 @@ pub fn connect_conn(
             to: to.to_string(),
             found: true,
             path: vec![to_node(s)],
-            meta: meta(40, "signature", 120, 0.7),
+            meta: meta(40),
         });
     }
 
@@ -1283,7 +1307,7 @@ pub fn connect_conn(
         to: to.to_string(),
         found: hit.is_some(),
         path: path_nodes,
-        meta: meta(tokens, "impact", 700, 0.8),
+        meta: meta(tokens),
     })
 }
 
@@ -1438,7 +1462,7 @@ pub fn export_conn_with_options(conn: &Connection, options: ExportOptions) -> Re
         truncated,
         diagram,
         html_path,
-        meta: meta(tokens, "impact", 900, 0.7),
+        meta: meta(tokens),
     })
 }
 
@@ -1985,6 +2009,9 @@ fn fuzzy_candidates(
         b.confidence
             .partial_cmp(&a.confidence)
             .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| a.qualified_name.cmp(&b.qualified_name))
+            .then_with(|| a.path.cmp(&b.path))
+            .then_with(|| a.line.cmp(&b.line))
     });
     suggestions.truncate(limit);
     Ok(suggestions)
@@ -1995,6 +2022,17 @@ fn fuzzy_symbol_matches(
     symbol: &str,
     limit: usize,
 ) -> Result<Vec<SymbolRecord>> {
+    Ok(ranked_fuzzy_matches(conn, symbol, limit)?
+        .into_iter()
+        .map(|(_, s)| s)
+        .collect())
+}
+
+fn ranked_fuzzy_matches(
+    conn: &Connection,
+    symbol: &str,
+    limit: usize,
+) -> Result<Vec<(f32, SymbolRecord)>> {
     // First try FTS5 (cheap, indexed). If unavailable or no hits, fall back to
     // scanning all symbol names and ranking by Jaro-Winkler.
     let escaped = escape_fts_term(symbol);
@@ -2042,9 +2080,15 @@ fn fuzzy_symbol_matches(
         })
         .filter(|(score, _)| *score >= 0.6)
         .collect();
-    ranked.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+    ranked.sort_by(|a, b| {
+        b.0.partial_cmp(&a.0)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| a.1.path.cmp(&b.1.path))
+            .then_with(|| a.1.start_line.cmp(&b.1.start_line))
+            .then_with(|| a.1.qualified_name.cmp(&b.1.qualified_name))
+    });
     ranked.truncate(limit);
-    Ok(ranked.into_iter().map(|(_, s)| s).collect())
+    Ok(ranked)
 }
 
 fn clip_to_token_budget(text: &str, budget: usize) -> String {
@@ -2178,16 +2222,29 @@ fn glob_score(pattern: &str, name: &str) -> f32 {
     0.5
 }
 
+const TEST_DIRS: &[&str] = &["test", "tests", "__tests__", "spec", "specs", "e2e"];
+
 fn is_test_path(path: &str) -> bool {
     let lower = path.to_lowercase();
-    lower.contains("/test/")
-        || lower.contains("/tests/")
-        || lower.contains("/__tests__/")
-        || lower.contains(".test.")
-        || lower.contains(".spec.")
-        || lower.ends_with("_test.go")
-        || lower.starts_with("test_")
-        || lower.contains("/test_")
+    let mut segments: Vec<&str> = lower.split('/').collect();
+    let file = segments.pop().unwrap_or_default();
+    if segments.iter().any(|segment| TEST_DIRS.contains(segment)) {
+        return true;
+    }
+    let stem = file.split('.').next().unwrap_or_default();
+    let java_stem = path
+        .rsplit('/')
+        .next()
+        .and_then(|name| name.strip_suffix(".java"))
+        .unwrap_or_default();
+    file.contains(".test.")
+        || file.contains(".spec.")
+        || stem.ends_with("_test")
+        || stem.ends_with("_spec")
+        || (file.ends_with(".py") && stem.starts_with("test_"))
+        || ["Test", "Tests", "IT"]
+            .iter()
+            .any(|suffix| java_stem.ends_with(suffix))
 }
 
 fn estimate_tokens<T: serde::Serialize>(value: &T) -> usize {
@@ -2197,13 +2254,39 @@ fn estimate_tokens<T: serde::Serialize>(value: &T) -> usize {
     (bytes / 4).max(1)
 }
 
-fn meta(tokens: usize, alt_tool: &str, alt_tokens: usize, fidelity: f32) -> QueryMeta {
-    QueryMeta {
-        tokens_returned_estimate: tokens,
-        alternative_queries: vec![AlternativeQuery {
-            tool: alt_tool.to_string(),
-            tokens_estimate: alt_tokens,
-            fidelity,
-        }],
+fn meta(tokens: usize) -> QueryMeta {
+    QueryMeta { tokens }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_path_rules() {
+        for path in [
+            "tests/a.rs",
+            "src/__tests__/a.ts",
+            "a.test.ts",
+            "a.spec.js",
+            "specs/util/util.spec.js",
+            "pkg/a_test.go",
+            "test_a.py",
+            "spec/models/user_spec.rb",
+            "src/test/java/FooTest.java",
+            "src/test/java/FooIT.java",
+            "src/main/java/FooTests.java",
+        ] {
+            assert!(is_test_path(path), "{path} should be a test path");
+        }
+        for path in [
+            "app/controllers/api/v1/test_cases_controller.rb",
+            "src/latest.ts",
+            "contest/a.py",
+            "src/main/java/FooUnit.java",
+            "src/main/java/Edit.java",
+        ] {
+            assert!(!is_test_path(path), "{path} should not be a test path");
+        }
     }
 }

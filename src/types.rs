@@ -2,6 +2,8 @@ use std::fmt::{self, Display};
 
 use serde::{Deserialize, Serialize};
 
+use crate::output::MatchKind;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Language {
@@ -145,6 +147,7 @@ pub struct IndexedReference {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DefinitionResult {
+    pub match_kind: MatchKind,
     pub matches: Vec<SymbolRecord>,
     pub meta: QueryMeta,
 }
@@ -158,6 +161,9 @@ impl Display for DefinitionResult {
                 "  hint: run `tessera search <name>` for fuzzy lookup, `tessera validate <name>` for near-misses, or re-index with `tessera index . --full` if the DB is stale."
             );
         }
+        if let MatchKind::Fuzzy { .. } = self.match_kind {
+            writeln!(f, "No exact definition; closest matches:")?;
+        }
         for symbol in &self.matches {
             writeln!(
                 f,
@@ -168,7 +174,7 @@ impl Display for DefinitionResult {
                 writeln!(f, "  {}", symbol.signature)?;
             }
         }
-        write_meta(f, &self.meta)
+        Ok(())
     }
 }
 
@@ -194,7 +200,7 @@ impl Display for ReferencesResult {
                 reference.path, reference.line, reference.column, reference.context
             )?;
         }
-        write_meta(f, &self.meta)
+        Ok(())
     }
 }
 
@@ -223,7 +229,7 @@ impl Display for OutlineResult {
                 )?;
             }
         }
-        write_meta(f, &self.meta)
+        Ok(())
     }
 }
 
@@ -258,7 +264,7 @@ impl Display for ExpandResult {
                 writeln!(f, "  {} at line {}", dep.symbol_name, dep.line)?;
             }
         }
-        write_meta(f, &self.meta)
+        Ok(())
     }
 }
 
@@ -293,7 +299,7 @@ impl Display for ImpactResult {
                 )?;
             }
         }
-        write_meta(f, &self.meta)
+        Ok(())
     }
 }
 
@@ -317,15 +323,7 @@ pub struct CriticalityBreakdown {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct QueryMeta {
-    pub tokens_returned_estimate: usize,
-    pub alternative_queries: Vec<AlternativeQuery>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AlternativeQuery {
-    pub tool: String,
-    pub tokens_estimate: usize,
-    pub fidelity: f32,
+    pub tokens: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -368,7 +366,7 @@ impl Display for ValidateResult {
                 self.query
             )?;
         }
-        write_meta(f, &self.meta)
+        Ok(())
     }
 }
 
@@ -414,7 +412,7 @@ impl Display for ValidateSnippetResult {
                 }
             }
         }
-        write_meta(f, &self.meta)
+        Ok(())
     }
 }
 
@@ -479,7 +477,7 @@ impl Display for ContextPack {
                 )?;
             }
         }
-        write_meta(f, &self.meta)
+        Ok(())
     }
 }
 
@@ -539,7 +537,7 @@ impl Display for EditPrepResult {
                 writeln!(f, "  {}. {}", step.order, step.command)?;
             }
         }
-        write_meta(f, &self.meta)
+        Ok(())
     }
 }
 
@@ -606,7 +604,7 @@ impl Display for DiffImpactResult {
                 )?;
             }
         }
-        write_meta(f, &self.meta)
+        Ok(())
     }
 }
 
@@ -635,7 +633,7 @@ impl Display for ImportsResult {
                 writeln!(f, "  {} ({}) @ line {}", imp.source, imp.kind, imp.line)?;
             }
         }
-        write_meta(f, &self.meta)
+        Ok(())
     }
 }
 
@@ -661,7 +659,7 @@ impl Display for ImportedByResult {
                 writeln!(f, "  {} @ line {}", imp.from_path, imp.line)?;
             }
         }
-        write_meta(f, &self.meta)
+        Ok(())
     }
 }
 
@@ -691,7 +689,7 @@ impl Display for SignatureResult {
                 writeln!(f, "    {:<9} {}", m.kind, m.signature)?;
             }
         }
-        write_meta(f, &self.meta)
+        Ok(())
     }
 }
 
@@ -728,7 +726,7 @@ impl Display for SiblingsResult {
                 )?;
             }
         }
-        write_meta(f, &self.meta)
+        Ok(())
     }
 }
 
@@ -794,7 +792,7 @@ impl Display for UnusedResult {
                 )?;
             }
         }
-        write_meta(f, &self.meta)
+        Ok(())
     }
 }
 
@@ -834,7 +832,7 @@ impl Display for SearchResult {
                 )?;
             }
         }
-        write_meta(f, &self.meta)
+        Ok(())
     }
 }
 
@@ -883,7 +881,7 @@ impl Display for StatsResult {
                 writeln!(f, "    {:>4} {}", tf.callers, tf.qualified_name)?;
             }
         }
-        write_meta(f, &self.meta)
+        Ok(())
     }
 }
 
@@ -926,7 +924,7 @@ impl Display for TestsForResult {
                 )?;
             }
         }
-        write_meta(f, &self.meta)
+        Ok(())
     }
 }
 
@@ -956,7 +954,7 @@ impl Display for ConnectResult {
                 "No call path from {} to {} (within search depth).",
                 self.from, self.to
             )?;
-            return write_meta(f, &self.meta);
+            return Ok(());
         }
         writeln!(
             f,
@@ -973,7 +971,7 @@ impl Display for ConnectResult {
                 arrow, node.qualified_name, node.path, node.line
             )?;
         }
-        write_meta(f, &self.meta)
+        Ok(())
     }
 }
 
@@ -998,20 +996,4 @@ impl Display for ExportResult {
         // `dot`/mermaid. Counts + truncation go to the meta line as a comment.
         write!(f, "{}", self.diagram)
     }
-}
-
-fn write_meta(f: &mut fmt::Formatter<'_>, meta: &QueryMeta) -> fmt::Result {
-    writeln!(
-        f,
-        "\n_meta: ~{} tokens returned; alternatives: {}",
-        meta.tokens_returned_estimate,
-        meta.alternative_queries
-            .iter()
-            .map(|query| format!(
-                "{} (~{} tokens, {:.2} fidelity)",
-                query.tool, query.tokens_estimate, query.fidelity
-            ))
-            .collect::<Vec<_>>()
-            .join(", ")
-    )
 }

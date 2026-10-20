@@ -35,6 +35,7 @@ pub mod indexer;
 pub mod init;
 pub mod mcp;
 pub mod mcp_http;
+pub mod output;
 pub mod query;
 pub mod types;
 pub mod walk;
@@ -49,14 +50,14 @@ use rusqlite::Connection;
 pub use indexer::{IndexMode, IndexOptions, IndexReport};
 pub use query::{ExportGroupBy, ExportOptions};
 pub use types::{
-    AlternativeQuery, ConnectResult, ContextPack, CriticalityBreakdown, DefinitionResult,
-    DiffChangedSymbol, DiffImpactResult, DiffImpactedSymbol, EditPrepResult, ExpandResult,
-    ExportResult, ImpactCaller, ImpactResult, ImportRecord, ImportedByResult, ImportsResult,
-    KindCount, Language, LanguageCount, OutlineResult, PlanStep, QueryMeta, ReferenceRecord,
-    ReferencesResult, SearchHit, SearchOptions, SearchResult, Sibling, SiblingsResult,
-    SignatureLine, SignatureResult, SnippetReferenceCheck, StatsResult, SymbolRecord,
-    SymbolSuggestion, TestsForResult, TopFanout, UnusedOptions, UnusedResult, UnusedSymbol,
-    ValidateResult, ValidateSnippetResult,
+    ConnectResult, ContextPack, CriticalityBreakdown, DefinitionResult, DiffChangedSymbol,
+    DiffImpactResult, DiffImpactedSymbol, EditPrepResult, ExpandResult, ExportResult, ImpactCaller,
+    ImpactResult, ImportRecord, ImportedByResult, ImportsResult, KindCount, Language,
+    LanguageCount, OutlineResult, PlanStep, QueryMeta, ReferenceRecord, ReferencesResult,
+    SearchHit, SearchOptions, SearchResult, Sibling, SiblingsResult, SignatureLine,
+    SignatureResult, SnippetReferenceCheck, StatsResult, SymbolRecord, SymbolSuggestion,
+    TestsForResult, TopFanout, UnusedOptions, UnusedResult, UnusedSymbol, ValidateResult,
+    ValidateSnippetResult,
 };
 
 /// High-level handle to a Tessera index backed by one SQLite connection.
