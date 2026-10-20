@@ -309,6 +309,41 @@ pub fn replace_skipped(conn: &Connection, skipped: &[(String, u64, i64, &str)]) 
     Ok(())
 }
 
+pub fn upsert_skipped(
+    conn: &Connection,
+    path: &str,
+    size_bytes: u64,
+    mtime_ns: i64,
+    reason: &str,
+) -> Result<()> {
+    conn.prepare_cached(
+        "INSERT OR REPLACE INTO skipped_files(path, size_bytes, mtime_ns, reason) VALUES (?1, ?2, ?3, ?4)",
+    )?
+    .execute(params![path, size_bytes as i64, mtime_ns, reason])?;
+    Ok(())
+}
+
+pub fn delete_skipped(conn: &Connection, path: &str) -> Result<()> {
+    conn.prepare_cached("DELETE FROM skipped_files WHERE path = ?1")?
+        .execute(params![path])?;
+    Ok(())
+}
+
+pub fn indexed_stats(conn: &Connection) -> Result<HashMap<String, (u64, i64)>> {
+    let mut stmt = conn.prepare(
+        "SELECT path, size_bytes, mtime_ns FROM files
+         UNION ALL
+         SELECT path, size_bytes, mtime_ns FROM skipped_files WHERE reason != 'excluded'",
+    )?;
+    let rows = stmt.query_map([], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            (row.get::<_, i64>(1)? as u64, row.get::<_, i64>(2)?),
+        ))
+    })?;
+    Ok(rows.collect::<rusqlite::Result<HashMap<_, _>>>()?)
+}
+
 pub fn insert_file(
     conn: &Connection,
     path: &str,

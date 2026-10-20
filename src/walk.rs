@@ -62,6 +62,14 @@ impl SkipReason {
     }
 }
 
+#[derive(Debug)]
+pub enum FileStatus {
+    Missing,
+    Unsupported,
+    Skipped(Skipped),
+    Source(SourceFile),
+}
+
 #[derive(Debug, Default)]
 pub struct Discovery {
     pub files: Vec<SourceFile>,
@@ -161,68 +169,114 @@ pub fn discover(root: &Path, config: &TesseraConfig, opts: &WalkOptions) -> Resu
             continue;
         };
         let rel_path = relative_path(root, path);
-        if !config.includes_path(&rel_path)
-            || config.excludes_path(&rel_path)
-            || excludes.is_match(&rel_path)
-        {
-            discovery.skipped.push(Skipped {
-                rel_path,
-                reason: SkipReason::Excluded,
-                size: 0,
-                mtime_ns: 0,
-            });
-            continue;
+        match classify(rel_path, path, language, config, &excludes, opts) {
+            Ok(FileStatus::Source(file)) => discovery.files.push(file),
+            Ok(FileStatus::Skipped(skipped)) => discovery.skipped.push(skipped),
+            Ok(_) => {}
+            Err(warning) => discovery.warnings.push(warning),
         }
-        let metadata = match entry.metadata() {
-            Ok(metadata) => metadata,
-            Err(error) => {
-                discovery.warnings.push(IndexWarning {
-                    path: rel_path,
-                    message: error.to_string(),
-                });
-                continue;
-            }
-        };
-        let mtime_ns = metadata
-            .modified()
-            .ok()
-            .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
-            .map(|d| d.as_nanos() as i64)
-            .unwrap_or(0);
-        let skip = |discovery: &mut Discovery, reason| {
-            discovery.skipped.push(Skipped {
-                rel_path: rel_path.clone(),
-                reason,
-                size: metadata.len(),
-                mtime_ns,
-            })
-        };
-        let name = entry.file_name().to_string_lossy();
-        if minified_name(&name) {
-            skip(&mut discovery, SkipReason::Minified);
-            continue;
-        }
-        if metadata.len() > opts.max_file_bytes {
-            skip(&mut discovery, SkipReason::TooLarge);
-            continue;
-        }
-        if opts.sniff_content && read_head(path).is_some_and(|head| minified_content(&head)) {
-            skip(&mut discovery, SkipReason::Minified);
-            continue;
-        }
-        discovery.files.push(SourceFile {
-            rel_path,
-            abs_path: path.to_path_buf(),
-            language,
-            size: metadata.len(),
-            mtime_ns,
-        });
     }
     discovery.files.sort_by(|a, b| a.rel_path.cmp(&b.rel_path));
     discovery
         .skipped
         .sort_by(|a, b| a.rel_path.cmp(&b.rel_path));
     Ok(discovery)
+}
+
+pub fn describe(
+    root: &Path,
+    rel_path: &str,
+    config: &TesseraConfig,
+    opts: &WalkOptions,
+) -> Result<FileStatus> {
+    let path = root.join(rel_path);
+    if !path.is_file() {
+        return Ok(FileStatus::Missing);
+    }
+    let in_skipped_dir = Path::new(rel_path)
+        .components()
+        .any(|c| ALWAYS_SKIP.contains(&c.as_os_str().to_string_lossy().as_ref()));
+    let Some(language) = path
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .and_then(Language::from_extension)
+        .filter(|_| !in_skipped_dir)
+    else {
+        return Ok(FileStatus::Unsupported);
+    };
+    let mut patterns = opts.excludes.clone();
+    patterns.extend(config.exclude_globs.iter().cloned());
+    let excludes = glob_set(&patterns)?;
+    classify(
+        rel_path.to_string(),
+        &path,
+        language,
+        config,
+        &excludes,
+        opts,
+    )
+    .map_err(|warning| anyhow::anyhow!("{}: {}", warning.path, warning.message))
+}
+
+fn classify(
+    rel_path: String,
+    path: &Path,
+    language: Language,
+    config: &TesseraConfig,
+    excludes: &GlobSet,
+    opts: &WalkOptions,
+) -> std::result::Result<FileStatus, IndexWarning> {
+    if !config.includes_path(&rel_path)
+        || config.excludes_path(&rel_path)
+        || excludes.is_match(&rel_path)
+    {
+        return Ok(FileStatus::Skipped(Skipped {
+            rel_path,
+            reason: SkipReason::Excluded,
+            size: 0,
+            mtime_ns: 0,
+        }));
+    }
+    let metadata = match path.metadata() {
+        Ok(metadata) => metadata,
+        Err(error) => {
+            return Err(IndexWarning {
+                path: rel_path,
+                message: error.to_string(),
+            })
+        }
+    };
+    let mtime_ns = metadata
+        .modified()
+        .ok()
+        .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
+        .map(|d| d.as_nanos() as i64)
+        .unwrap_or(0);
+    let name = path.file_name().unwrap_or_default().to_string_lossy();
+    let reason = if minified_name(&name) {
+        Some(SkipReason::Minified)
+    } else if metadata.len() > opts.max_file_bytes {
+        Some(SkipReason::TooLarge)
+    } else if opts.sniff_content && read_head(path).is_some_and(|head| minified_content(&head)) {
+        Some(SkipReason::Minified)
+    } else {
+        None
+    };
+    Ok(match reason {
+        Some(reason) => FileStatus::Skipped(Skipped {
+            rel_path,
+            reason,
+            size: metadata.len(),
+            mtime_ns,
+        }),
+        None => FileStatus::Source(SourceFile {
+            rel_path,
+            abs_path: path.to_path_buf(),
+            language,
+            size: metadata.len(),
+            mtime_ns,
+        }),
+    })
 }
 
 pub fn is_minified(name: &str, head: &[u8]) -> bool {
