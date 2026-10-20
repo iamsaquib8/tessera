@@ -272,6 +272,7 @@ impl Display for ExpandResult {
 pub struct ImpactResult {
     pub symbol: String,
     pub callers: Vec<ImpactCaller>,
+    pub capped: bool,
     pub meta: QueryMeta,
 }
 

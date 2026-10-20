@@ -670,7 +670,8 @@ fn run() -> Result<()> {
                 path_prefix: path,
                 limit,
             };
-            let result = query::search(&db, &pattern, options)?;
+            let result =
+                query::search_conn(&tessera_codegraph::db::open_ro(&db)?, &pattern, options)?;
             print_result(&result, json)?;
             if explain && !json {
                 explain_search(&result);

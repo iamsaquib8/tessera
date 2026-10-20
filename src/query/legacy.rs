@@ -87,7 +87,7 @@ pub fn find_definition_conn(conn: &Connection, symbol: &str) -> Result<Definitio
             END,
             length(s.qualified_name),
             f.path
-        LIMIT 25
+        LIMIT 1000
         ",
     )?;
     let mut matches = stmt
@@ -133,7 +133,7 @@ pub fn get_outline_conn(conn: &Connection, path: &Path) -> Result<OutlineResult>
         JOIN files f ON f.id = s.file_id
         WHERE f.path = ?1 OR f.path LIKE ?2
         ORDER BY f.path, s.start_line
-        LIMIT 1000
+        LIMIT 100000
         ",
     )?;
     let symbols = stmt
@@ -180,6 +180,7 @@ pub fn impact_conn(conn: &Connection, symbol: &str, depth: usize) -> Result<Impa
     let mut frontier: HashMap<i64, (usize, SymbolRecord)> = HashMap::new();
     let mut queue: VecDeque<(String, usize)> = VecDeque::new();
     let mut queried_names: HashSet<String> = HashSet::new();
+    let mut capped = false;
 
     let seed_name = |name: String, queue: &mut VecDeque<(String, usize)>| {
         if name.is_empty() {
@@ -222,6 +223,7 @@ pub fn impact_conn(conn: &Connection, symbol: &str, depth: usize) -> Result<Impa
                 }
             }
             if frontier.len() >= MAX_FRONTIER {
+                capped = true;
                 break 'outer;
             }
         }
@@ -232,6 +234,7 @@ pub fn impact_conn(conn: &Connection, symbol: &str, depth: usize) -> Result<Impa
         return Ok(ImpactResult {
             symbol: symbol.to_string(),
             callers: Vec::new(),
+            capped,
             meta: meta(tokens),
         });
     }
@@ -424,12 +427,12 @@ pub fn impact_conn(conn: &Connection, symbol: &str, depth: usize) -> Result<Impa
             .then_with(|| a.symbol.qualified_name.cmp(&b.symbol.qualified_name))
             .then_with(|| a.symbol.id.cmp(&b.symbol.id))
     });
-    callers.truncate(100);
 
     let tokens = estimate_tokens(&callers);
     Ok(ImpactResult {
         symbol: symbol.to_string(),
         callers,
+        capped,
         meta: meta(tokens),
     })
 }
@@ -865,7 +868,6 @@ pub fn diff_impact_conn(
             .then_with(|| a.symbol.start_line.cmp(&b.symbol.start_line))
             .then_with(|| a.symbol.qualified_name.cmp(&b.symbol.qualified_name))
     });
-    impacted.truncate(50);
 
     let tokens = estimate_tokens(&changed_symbols) + estimate_tokens(&impacted);
     Ok(DiffImpactResult {
@@ -893,7 +895,7 @@ pub fn imports_conn(conn: &Connection, path: &str) -> Result<ImportsResult> {
         JOIN files f ON f.id = i.file_id
         WHERE f.path = ?1 OR f.path LIKE ?2
         ORDER BY f.path, i.line
-        LIMIT 500
+        LIMIT 100000
         ",
     )?;
     let like = if path.ends_with('/') || path.ends_with("**") {
@@ -928,7 +930,7 @@ pub fn imported_by_conn(conn: &Connection, source: &str) -> Result<ImportedByRes
         JOIN files f ON f.id = i.file_id
         WHERE i.source = ?1 OR i.source LIKE ?2
         ORDER BY f.path, i.line
-        LIMIT 500
+        LIMIT 100000
         ",
     )?;
     let like = format!("%{source}%");
@@ -1062,6 +1064,8 @@ pub fn siblings_conn(conn: &Connection, symbol: &str) -> Result<SiblingsResult> 
         meta: meta(tokens),
     })
 }
+
+pub const SEARCH_SCAN_LIMIT: usize = 500;
 
 pub fn search_conn(
     conn: &Connection,
@@ -1538,11 +1542,6 @@ pub fn export_with_options(db_path: &Path, options: ExportOptions) -> Result<Exp
     export_conn_with_options(&conn, options)
 }
 
-pub fn search(db_path: &Path, pattern: &str, options: SearchOptions) -> Result<SearchResult> {
-    let conn = db::open_ro(db_path)?;
-    search_conn(&conn, pattern, options)
-}
-
 pub fn unused(db_path: &Path, options: UnusedOptions) -> Result<UnusedResult> {
     let conn = db::open_ro(db_path)?;
     unused_conn(&conn, options)
@@ -1604,7 +1603,7 @@ fn plan_step(
     }
 }
 
-fn references_for_symbol(
+pub(crate) fn references_for_symbol(
     conn: &Connection,
     symbol: &str,
     limit: usize,
@@ -1616,13 +1615,13 @@ fn references_for_symbol(
         FROM refs r
         JOIN files f ON f.id = r.file_id
         LEFT JOIN symbols s ON s.id = r.from_symbol_id
-        WHERE r.symbol_name = ?1 OR r.symbol_name LIKE ?2
-        ORDER BY f.path, r.line
-        LIMIT ?3
+        WHERE r.symbol_name = ?1
+        ORDER BY f.path, r.line, r.column
+        LIMIT ?2
         ",
     )?;
     let rows = stmt.query_map(
-        params![symbol, format!("%.{}", symbol), limit as i64],
+        params![super::common::bare_name(symbol), limit as i64],
         db::map_reference,
     )?;
     let refs = rows.collect::<rusqlite::Result<Vec<_>>>()?;
@@ -1659,13 +1658,13 @@ fn callers_for_symbol(conn: &Connection, symbol: &str, limit: usize) -> Result<V
         FROM edges e
         JOIN symbols s ON s.id = e.from_symbol_id
         JOIN files f ON f.id = s.file_id
-        WHERE e.to_symbol_name = ?1 OR e.to_symbol_name LIKE ?2
+        WHERE e.to_symbol_name = ?1
         ORDER BY f.path, s.start_line
-        LIMIT ?3
+        LIMIT ?2
         ",
     )?;
     let rows = stmt.query_map(
-        params![symbol, format!("%.{}", symbol), limit as i64],
+        params![super::common::bare_name(symbol), limit as i64],
         db::map_symbol,
     )?;
     let symbols = rows.collect::<rusqlite::Result<Vec<_>>>()?;
@@ -1958,7 +1957,7 @@ fn html_escape(value: &str) -> String {
         .replace('"', "&quot;")
 }
 
-fn read_symbol_body(conn: &Connection, symbol: &SymbolRecord) -> Result<String> {
+pub(crate) fn read_symbol_body(conn: &Connection, symbol: &SymbolRecord) -> Result<String> {
     let path = db::get_meta(conn, "root")?
         .map(|root| PathBuf::from(root).join(&symbol.path))
         .unwrap_or_else(|| PathBuf::from(&symbol.path));
@@ -2224,7 +2223,7 @@ fn glob_score(pattern: &str, name: &str) -> f32 {
 
 const TEST_DIRS: &[&str] = &["test", "tests", "__tests__", "spec", "specs", "e2e"];
 
-fn is_test_path(path: &str) -> bool {
+pub fn is_test_path(path: &str) -> bool {
     let lower = path.to_lowercase();
     let mut segments: Vec<&str> = lower.split('/').collect();
     let file = segments.pop().unwrap_or_default();

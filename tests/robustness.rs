@@ -4,6 +4,7 @@ use std::thread;
 
 use support::index_fixture;
 use tessera_codegraph::indexer::IndexOptions;
+use tessera_codegraph::query::{BlastArgs, FindArgs, RefsArgs};
 use tessera_codegraph::Index;
 
 #[test]
@@ -34,7 +35,12 @@ fn concurrent_index_and_query() {
     });
     let mut errors = Vec::new();
     for _ in 0..200 {
-        let result = Index::open(&db).and_then(|index| index.find_references("loadUser"));
+        let result = Index::open(&db).and_then(|index| {
+            index.refs(&RefsArgs {
+                target: "loadUser".to_string(),
+                ..RefsArgs::default()
+            })
+        });
         if let Err(error) = result {
             errors.push(error.to_string());
         }
@@ -67,7 +73,13 @@ fn impact_output_is_deterministic() {
     let runs: Vec<String> = (0..5)
         .map(|_| {
             let index = Index::open(&db).unwrap();
-            serde_json::to_string(&index.impact("sharedHelper", 4).unwrap()).unwrap()
+            let blast = index
+                .blast(&BlastArgs {
+                    symbol: Some("sharedHelper".to_string()),
+                    ..BlastArgs::default()
+                })
+                .unwrap();
+            serde_json::to_string(&blast).unwrap()
         })
         .collect();
     assert!(runs.iter().all(|run| run == &runs[0]), "{runs:#?}");
@@ -77,18 +89,25 @@ fn impact_output_is_deterministic() {
 fn fuzzy_definitions_are_labelled() {
     let (_temp, db) = index_fixture("typescript");
     let index = Index::open(&db).unwrap();
-    let result = index.find_definition("findByIdd").unwrap();
+    let find = |name: &str| {
+        index
+            .find(&FindArgs {
+                symbol: Some(name.to_string()),
+                ..FindArgs::default()
+            })
+            .unwrap()
+    };
+    let result = find("findByIdd");
     assert!(!result.matches.is_empty());
     assert!(matches!(
-        result.match_kind,
+        result.matches[0].match_kind,
         tessera_codegraph::output::MatchKind::Fuzzy { .. }
     ));
     assert!(result
         .to_string()
-        .starts_with("No exact definition; closest matches:"));
-    let exact = index.find_definition("findById").unwrap();
+        .starts_with("No exact definition of findByIdd; closest matches:"));
     assert_eq!(
-        exact.match_kind,
+        find("findById").matches[0].match_kind,
         tessera_codegraph::output::MatchKind::Exact
     );
 }
