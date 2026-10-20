@@ -3,15 +3,17 @@ source: tests/golden.rs
 expression: graph_dump(& db)
 ---
 {
+  "bindings": [],
   "edges": [
-    "app/models.py User.display -call-> format_name",
-    "app/service.py cached_load -call-> load",
-    "app/service.py load -call-> User",
-    "app/service.py load -call-> display",
-    "app/service.py load -call-> load",
-    "app/util.py format_name -call-> strip",
-    "tests/test_service.py test_load -call-> load"
+    "app/models.py User.display -call-> format_name [name]",
+    "app/service.py cached_load -call-> load [name]",
+    "app/service.py load -call-> User [name]",
+    "app/service.py load -call-> display [name]",
+    "app/service.py load -call-> load [name]",
+    "app/util.py format_name -call-> strip [name]",
+    "tests/test_service.py test_load -call-> load [name]"
   ],
+  "hints": [],
   "imports": [
     "app/models.py:1 from app.util",
     "app/service.py:1 from functools",
@@ -19,14 +21,15 @@ expression: graph_dump(& db)
     "app/service.py:4 from .models",
     "tests/test_service.py:1 from app.service"
   ],
+  "modules": [],
   "refs": [
-    "app/models.py:9:16 call format_name <- User.display",
-    "app/service.py:14:12 call load <- cached_load",
-    "app/service.py:8:12 call User <- load",
-    "app/service.py:8:17 call load <- load",
-    "app/service.py:9:12 call display <- load",
-    "app/util.py:2:12 call strip <- format_name",
-    "tests/test_service.py:5:12 call load <- test_load"
+    "app/models.py:9:16 call format_name/1 <- User.display",
+    "app/service.py:14:12 call load/1 <- cached_load",
+    "app/service.py:8:12 call User/1 <- load",
+    "app/service.py:8:17 call util.load/1 <- load",
+    "app/service.py:9:12 call user.display/0 <- load",
+    "app/util.py:2:12 call name.strip/0 <- format_name",
+    "tests/test_service.py:5:12 call load/1 <- test_load"
   ],
   "symbols": [
     "app/i18n.py:1-2 function greet [exported] | def greet():  #x éééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééé",

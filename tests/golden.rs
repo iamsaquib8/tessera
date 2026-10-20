@@ -54,7 +54,7 @@ fn golden_typescript_generic_cast() {
         "missing g: {symbols:?}"
     );
     let edges = dump["edges"].as_array().unwrap();
-    for expected in ["cast.ts g -call-> f", "cast.ts h -call-> g"] {
+    for expected in ["cast.ts g -call-> f [name]", "cast.ts h -call-> g [name]"] {
         assert!(
             edges.iter().any(|e| e.as_str().unwrap() == expected),
             "missing {expected}: {edges:?}"

@@ -3,34 +3,37 @@ source: tests/golden.rs
 expression: graph_dump(& db)
 ---
 {
+  "bindings": [],
   "edges": [
-    "src/api/handler.ts handler -call-> loadUser",
-    "src/users/repo.ts UserRepo.findById -call-> formatName",
-    "src/users/repo.ts UserRepo.findById -call-> lookup",
-    "src/users/repo.ts UserRepo.lookup -call-> get",
-    "src/users/repo.ts loadUser -call-> findById",
-    "src/util/format.ts formatName -call-> trim",
-    "src/util/format.ts loadUser -call-> formatName"
+    "src/api/handler.ts handler -call-> loadUser [name]",
+    "src/users/repo.ts UserRepo.findById -call-> formatName [name]",
+    "src/users/repo.ts UserRepo.findById -call-> lookup [name]",
+    "src/users/repo.ts UserRepo.lookup -call-> get [name]",
+    "src/users/repo.ts loadUser -call-> findById [name]",
+    "src/util/format.ts formatName -call-> trim [name]",
+    "src/util/format.ts loadUser -call-> formatName [name]"
   ],
+  "hints": [],
   "imports": [
     "src/api/handler.ts:1 import ../users/repo",
     "src/api/handler.ts:2 import ./types",
     "src/users/repo.ts:1 import ../util/format",
     "test/repo.test.ts:1 import ../src/users/repo"
   ],
+  "modules": [],
   "refs": [
-    "src/api/handler.ts:4:42 call loadUser <- handler",
-    "src/users/repo.ts:11:12 call get <- UserRepo.lookup",
-    "src/users/repo.ts:17:10 call findById <- loadUser",
-    "src/users/repo.ts:7:12 call formatName <- UserRepo.findById",
-    "src/users/repo.ts:7:23 call lookup <- UserRepo.findById",
-    "src/util/format.ts:2:10 call trim <- formatName",
-    "src/util/format.ts:6:10 call formatName <- loadUser",
-    "test/repo.test.ts:3:1 call describe <- <none>",
-    "test/repo.test.ts:4:3 call it <- <none>",
-    "test/repo.test.ts:5:12 call loadUser <- <none>",
-    "test/repo.test.ts:5:5 call expect <- <none>",
-    "test/repo.test.ts:5:5 call toBe <- <none>"
+    "src/api/handler.ts:4:42 call loadUser/1 <- handler",
+    "src/users/repo.ts:11:12 call other.get/1 <- UserRepo.lookup",
+    "src/users/repo.ts:17:10 call repo.findById/1 <- loadUser",
+    "src/users/repo.ts:7:12 call formatName/1 <- UserRepo.findById",
+    "src/users/repo.ts:7:23 call this.lookup/1 <- UserRepo.findById",
+    "src/util/format.ts:2:10 call name.trim/0 <- formatName",
+    "src/util/format.ts:6:10 call formatName/1 <- loadUser",
+    "test/repo.test.ts:3:1 call describe/2 <- <none>",
+    "test/repo.test.ts:4:3 call it/2 <- <none>",
+    "test/repo.test.ts:5:12 call loadUser/1 <- <none>",
+    "test/repo.test.ts:5:5 call expect/1 <- <none>",
+    "test/repo.test.ts:5:5 call other.toBe/1 <- <none>"
   ],
   "symbols": [
     "src/api/handler.ts:4-4 function handler [exported] | handler = (req: Request) => loadUser(req.id)",

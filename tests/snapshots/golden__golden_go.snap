@@ -3,23 +3,26 @@ source: tests/golden.rs
 expression: graph_dump(& db)
 ---
 {
+  "bindings": [],
   "edges": [
-    "api/handler.go Handle -call-> Load",
-    "store/store.go Load -call-> Get",
-    "store/store.go Load -call-> New",
-    "store/store_test.go TestLoad -call-> Fatal",
-    "store/store_test.go TestLoad -call-> Load"
+    "api/handler.go Handle -call-> Load [name]",
+    "store/store.go Load -call-> Get [name]",
+    "store/store.go Load -call-> New [name]",
+    "store/store_test.go TestLoad -call-> Fatal [name]",
+    "store/store_test.go TestLoad -call-> Load [name]"
   ],
+  "hints": [],
   "imports": [
     "api/handler.go:3 import example.com/app/store",
     "store/store_test.go:3 import testing"
   ],
+  "modules": [],
   "refs": [
-    "api/handler.go:6:9 call Load <- Handle",
-    "store/store.go:16:9 call Get <- Load",
-    "store/store.go:16:9 call New <- Load",
-    "store/store_test.go:6:5 call Load <- TestLoad",
-    "store/store_test.go:7:3 call Fatal <- TestLoad"
+    "api/handler.go:6:9 call store.Load/1 <- Handle",
+    "store/store.go:16:9 call New/0 <- Load",
+    "store/store.go:16:9 call other.Get/1 <- Load",
+    "store/store_test.go:6:5 call Load/1 <- TestLoad",
+    "store/store_test.go:7:3 call t.Fatal/1 <- TestLoad"
   ],
   "symbols": [
     "api/handler.go:5-7 function Handle [exported] | func Handle(id string) string {",

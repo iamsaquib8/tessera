@@ -3,12 +3,14 @@ source: tests/golden.rs
 expression: graph_dump(& db)
 ---
 {
+  "bindings": [],
   "edges": [
-    "src/App.tsx App -call-> useUser",
-    "src/App.tsx App -jsx-> UserCard",
-    "src/components/UserCard.tsx UserCard -jsx-> Avatar",
-    "src/hooks/useUser.ts useUser -call-> useState"
+    "src/App.tsx App -call-> useUser [name]",
+    "src/App.tsx App -jsx-> UserCard [name]",
+    "src/components/UserCard.tsx UserCard -jsx-> Avatar [name]",
+    "src/hooks/useUser.ts useUser -call-> useState [name]"
   ],
+  "hints": [],
   "imports": [
     "src/App.test.tsx:1 import ./App",
     "src/App.tsx:1 import ./components/UserCard",
@@ -17,15 +19,16 @@ expression: graph_dump(& db)
     "src/components/UserCard.tsx:2 import ./Avatar",
     "src/hooks/useUser.ts:1 import react"
   ],
+  "modules": [],
   "refs": [
-    "src/App.test.tsx:3:1 call it <- <none>",
+    "src/App.test.tsx:3:1 call it/2 <- <none>",
     "src/App.test.tsx:4:10 jsx App <- <none>",
-    "src/App.test.tsx:4:3 call render <- <none>",
-    "src/App.tsx:5:16 call useUser <- App",
+    "src/App.test.tsx:4:3 call render/1 <- <none>",
+    "src/App.tsx:5:16 call useUser/1 <- App",
     "src/App.tsx:6:10 jsx UserCard <- App",
-    "src/components/UserCard.tsx:12:25 call memo <- <none>",
+    "src/components/UserCard.tsx:12:25 call React.memo/1 <- <none>",
     "src/components/UserCard.tsx:8:5 jsx Avatar <- UserCard",
-    "src/hooks/useUser.ts:4:18 call useState <- useUser"
+    "src/hooks/useUser.ts:4:18 call useState/1 <- useUser"
   ],
   "symbols": [
     "src/App.tsx:4-7 function App [exported] | function App() {",

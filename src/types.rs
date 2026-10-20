@@ -126,6 +126,9 @@ pub struct IndexedSymbol {
     pub end_line: usize,
     pub signature: String,
     pub exported: bool,
+    pub container: Option<String>,
+    pub arity: Option<(u16, Option<u16>)>,
+    pub default_export: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -143,6 +146,113 @@ pub struct IndexedReference {
     pub column: usize,
     pub context: String,
     pub kind: String,
+    pub receiver: Receiver,
+    pub receiver_name: Option<String>,
+    pub arg_count: Option<u16>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Receiver {
+    #[default]
+    None,
+    This,
+    Super,
+    Name,
+    Other,
+}
+
+impl Receiver {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::This => "this",
+            Self::Super => "super",
+            Self::Name => "name",
+            Self::Other => "other",
+        }
+    }
+
+    pub fn parse(value: &str) -> Self {
+        match value {
+            "this" => Self::This,
+            "super" => Self::Super,
+            "name" => Self::Name,
+            "other" => Self::Other,
+            _ => Self::None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BindingKind {
+    Named,
+    Default,
+    Namespace,
+    Require,
+    RequireMember,
+    ReExport,
+    ReExportAll,
+    JavaSingle,
+    JavaWildcard,
+    JavaStatic,
+}
+
+impl BindingKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Named => "named",
+            Self::Default => "default",
+            Self::Namespace => "namespace",
+            Self::Require => "require",
+            Self::RequireMember => "require_member",
+            Self::ReExport => "re_export",
+            Self::ReExportAll => "re_export_all",
+            Self::JavaSingle => "java_single",
+            Self::JavaWildcard => "java_wildcard",
+            Self::JavaStatic => "java_static",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct IndexedBinding {
+    pub local: String,
+    pub imported: Option<String>,
+    pub source: String,
+    pub kind: BindingKind,
+    pub line: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HintOrigin {
+    Declared,
+    New,
+    Param,
+    Field,
+    Return,
+}
+
+impl HintOrigin {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Declared => "declared",
+            Self::New => "new",
+            Self::Param => "param",
+            Self::Field => "field",
+            Self::Return => "return",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct IndexedTypeHint {
+    pub scope: Option<String>,
+    pub name: String,
+    pub type_name: String,
+    pub origin: HintOrigin,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

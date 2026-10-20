@@ -3,25 +3,28 @@ source: tests/golden.rs
 expression: graph_dump(& db)
 ---
 {
+  "bindings": [],
   "edges": [
-    "src/Users/UserService.php UserService.__construct -new-> UserRepository",
-    "src/Users/UserService.php UserService.load -call-> findById",
-    "src/Users/UserService.php UserService.load -call-> trim",
-    "src/Util/Strings.php Strings.trim -call-> trim",
-    "tests/UserServiceTest.php UserServiceTest.testLoad -call-> load",
-    "tests/UserServiceTest.php UserServiceTest.testLoad -new-> UserService"
+    "src/Users/UserService.php UserService.__construct -new-> UserRepository [name]",
+    "src/Users/UserService.php UserService.load -call-> findById [name]",
+    "src/Users/UserService.php UserService.load -call-> trim [name]",
+    "src/Util/Strings.php Strings.trim -call-> trim [name]",
+    "tests/UserServiceTest.php UserServiceTest.testLoad -call-> load [name]",
+    "tests/UserServiceTest.php UserServiceTest.testLoad -new-> UserService [name]"
   ],
+  "hints": [],
   "imports": [
     "src/Users/UserService.php:5 use App/Util/Strings",
     "tests/UserServiceTest.php:3 use App/Users/UserService"
   ],
+  "modules": [],
   "refs": [
     "src/Users/UserService.php:13:23 new UserRepository <- UserService.__construct",
-    "src/Users/UserService.php:18:16 call trim <- UserService.load",
-    "src/Users/UserService.php:18:30 call findById <- UserService.load",
-    "src/Util/Strings.php:9:16 call trim <- Strings.trim",
+    "src/Users/UserService.php:18:16 call Strings.trim/1 <- UserService.load",
+    "src/Users/UserService.php:18:30 call other.findById/1 <- UserService.load",
+    "src/Util/Strings.php:9:16 call trim/1 <- Strings.trim",
     "tests/UserServiceTest.php:9:10 new UserService <- UserServiceTest.testLoad",
-    "tests/UserServiceTest.php:9:9 call load <- UserServiceTest.testLoad"
+    "tests/UserServiceTest.php:9:9 call other.load/1 <- UserServiceTest.testLoad"
   ],
   "symbols": [
     "src/Users/UserRepository.php:5-11 class UserRepository [exported] | class UserRepository",

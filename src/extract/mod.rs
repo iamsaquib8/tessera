@@ -1,7 +1,10 @@
 use anyhow::{anyhow, Result};
 use tree_sitter::{Node, Parser};
 
-use crate::types::{IndexedImport, IndexedReference, IndexedSymbol, Language};
+use crate::types::{
+    IndexedBinding, IndexedImport, IndexedReference, IndexedSymbol, IndexedTypeHint, Language,
+    Receiver,
+};
 
 mod lang;
 
@@ -12,6 +15,9 @@ pub struct ParsedFile {
     pub symbols: Vec<IndexedSymbol>,
     pub references: Vec<IndexedReference>,
     pub imports: Vec<IndexedImport>,
+    pub bindings: Vec<IndexedBinding>,
+    pub hints: Vec<IndexedTypeHint>,
+    pub module: Option<String>,
     pub has_errors: bool,
 }
 
@@ -23,6 +29,11 @@ pub trait LanguageSupport: Sync {
     fn import(&self, cx: &Cx<'_>, node: Node<'_>) -> Option<IndexedImport>;
     fn skip_ref_names(&self) -> &'static [&'static str] {
         &[]
+    }
+    fn bindings(&self, _cx: &Cx<'_>, _node: Node<'_>, _out: &mut Vec<IndexedBinding>) {}
+    fn hints(&self, _cx: &Cx<'_>, _node: Node<'_>, _out: &mut Vec<IndexedTypeHint>) {}
+    fn module(&self, _cx: &Cx<'_>, _node: Node<'_>) -> Option<String> {
+        None
     }
 }
 
@@ -41,6 +52,9 @@ pub fn parse_file(language: Language, content: &str) -> Result<ParsedFile> {
         symbols: Vec::new(),
         references: Vec::new(),
         imports: Vec::new(),
+        bindings: Vec::new(),
+        hints: Vec::new(),
+        module: None,
         has_errors: tree.root_node().has_error(),
     };
     let mut cx = Cx::new(language, content);
@@ -65,6 +79,11 @@ pub fn parse_file(language: Language, content: &str) -> Result<ParsedFile> {
         }
         if let Some(import) = support.import(&cx, node) {
             out.imports.push(import);
+        }
+        support.bindings(&cx, node, &mut out.bindings);
+        support.hints(&cx, node, &mut out.hints);
+        if out.module.is_none() {
+            out.module = support.module(&cx, node);
         }
         if cursor.goto_first_child() {
             continue;
@@ -151,6 +170,9 @@ impl<'a> Cx<'a> {
             end_line: node.end_position().row + 1,
             signature: self.signature(node),
             exported,
+            container: self.current_scope().map(ToOwned::to_owned),
+            arity: None,
+            default_export: false,
         }
     }
 
@@ -166,6 +188,9 @@ impl<'a> Cx<'a> {
                 .map(|line| line.trim().to_string())
                 .unwrap_or_default(),
             kind: kind.to_string(),
+            receiver: Receiver::None,
+            receiver_name: None,
+            arg_count: None,
         }
     }
 
@@ -176,7 +201,43 @@ impl<'a> Cx<'a> {
         node: Node<'_>,
     ) -> Option<IndexedReference> {
         let name = self.called_name(callee)?;
-        Some(self.reference(name, kind, node))
+        let mut reference = self.reference(name, kind, node);
+        let receiver = receiver_node(callee).or_else(|| {
+            ["object", "receiver", "scope"]
+                .iter()
+                .find_map(|field| node.child_by_field_name(field))
+        });
+        if let Some(receiver) = receiver {
+            let (kind, name) = self.classify_receiver(receiver);
+            reference.receiver = kind;
+            reference.receiver_name = name;
+        }
+        reference.arg_count = node
+            .child_by_field_name("arguments")
+            .map(|args| args.named_child_count() as u16);
+        Some(reference)
+    }
+
+    pub fn classify_receiver(&self, node: Node<'_>) -> (Receiver, Option<String>) {
+        let text = self.text(node);
+        match (node.kind(), text.as_str()) {
+            (_, "this" | "self" | "$this") => (Receiver::This, None),
+            (_, "super") => (Receiver::Super, None),
+            (
+                "identifier"
+                | "property_identifier"
+                | "type_identifier"
+                | "constant"
+                | "name"
+                | "variable_name"
+                | "field_identifier",
+                _,
+            ) => (
+                Receiver::Name,
+                Some(text.trim_start_matches('$').to_string()),
+            ),
+            _ => (Receiver::Other, None),
+        }
     }
 
     pub fn import(&self, source: String, kind: &str, node: Node<'_>) -> Option<IndexedImport> {
@@ -217,6 +278,21 @@ impl<'a> Cx<'a> {
             _ => Some(last_identifier(&self.text(node))).filter(|name| !name.is_empty()),
         }
     }
+}
+
+fn receiver_node(callee: Node<'_>) -> Option<Node<'_>> {
+    let field = match callee.kind() {
+        "member_expression" | "attribute" => "object",
+        "field_expression" => "value",
+        "selector_expression" => "operand",
+        "member_access_expression" => "expression",
+        "scoped_identifier" => "path",
+        "qualified_identifier" => "scope",
+        _ => return None,
+    };
+    callee
+        .child_by_field_name(field)
+        .or_else(|| callee.child_by_field_name("argument"))
 }
 
 pub fn strip_quotes(s: String) -> String {

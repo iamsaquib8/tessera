@@ -3,22 +3,25 @@ source: tests/golden.rs
 expression: graph_dump(& db)
 ---
 {
+  "bindings": [],
   "edges": [
-    "src/main.c main -call-> lookup",
-    "src/main.c main -call-> store_load",
-    "src/store.c store_load -call-> lookup",
-    "tests/test_store.c test_store_load -call-> store_load"
+    "src/main.c main -call-> lookup [name]",
+    "src/main.c main -call-> store_load [name]",
+    "src/store.c store_load -call-> lookup [name]",
+    "tests/test_store.c test_store_load -call-> store_load [name]"
   ],
+  "hints": [],
   "imports": [
     "src/main.c:1 include store.h",
     "src/store.c:1 include store.h",
     "tests/test_store.c:1 include ../src/store.h"
   ],
+  "modules": [],
   "refs": [
-    "src/main.c:5:25 call store_load <- main",
-    "src/main.c:5:36 call lookup <- main",
-    "src/store.c:9:33 call lookup <- store_load",
-    "tests/test_store.c:3:36 call store_load <- test_store_load"
+    "src/main.c:5:25 call store_load/1 <- main",
+    "src/main.c:5:36 call lookup/1 <- main",
+    "src/store.c:9:33 call lookup/1 <- store_load",
+    "tests/test_store.c:3:36 call store_load/1 <- test_store_load"
   ],
   "symbols": [
     "src/i18n.c:1-3 function greet [exported] | const char *greet(void) { //x éééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééé",

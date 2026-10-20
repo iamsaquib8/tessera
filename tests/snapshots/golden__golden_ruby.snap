@@ -3,30 +3,33 @@ source: tests/golden.rs
 expression: graph_dump(& db)
 ---
 {
+  "bindings": [],
   "edges": [
-    "app/controllers/api/v1/test_cases_controller.rb TestCasesController.index -call-> new",
-    "app/models/user.rb User -call-> has_many",
-    "app/models/user.rb User.display_name -call-> format",
-    "app/services/name_formatter.rb NameFormatter.format -call-> strip",
-    "app/services/user_loader.rb UserLoader.load -call-> display_name",
-    "app/services/user_loader.rb UserLoader.load -call-> new"
+    "app/controllers/api/v1/test_cases_controller.rb TestCasesController.index -call-> new [name]",
+    "app/models/user.rb User -call-> has_many [name]",
+    "app/models/user.rb User.display_name -call-> format [name]",
+    "app/services/name_formatter.rb NameFormatter.format -call-> strip [name]",
+    "app/services/user_loader.rb UserLoader.load -call-> display_name [name]",
+    "app/services/user_loader.rb UserLoader.load -call-> new [name]"
   ],
+  "hints": [],
   "imports": [
     "app/services/user_loader.rb:1 require name_formatter",
     "spec/services/user_loader_spec.rb:1 require spec_helper"
   ],
+  "modules": [],
   "refs": [
-    "app/controllers/api/v1/test_cases_controller.rb:3:5 call new <- TestCasesController.index",
-    "app/models/user.rb:2:3 call has_many <- User",
-    "app/models/user.rb:5:5 call format <- User.display_name",
-    "app/services/name_formatter.rb:3:5 call strip <- NameFormatter.format",
-    "app/services/user_loader.rb:5:12 call new <- UserLoader.load",
-    "app/services/user_loader.rb:6:5 call display_name <- UserLoader.load",
-    "spec/services/user_loader_spec.rb:3:1 call describe <- <none>",
-    "spec/services/user_loader_spec.rb:4:3 call it <- <none>",
-    "spec/services/user_loader_spec.rb:5:12 call new <- <none>",
-    "spec/services/user_loader_spec.rb:5:5 call expect <- <none>",
-    "spec/services/user_loader_spec.rb:5:5 call to <- <none>"
+    "app/controllers/api/v1/test_cases_controller.rb:3:5 call UserLoader.new <- TestCasesController.index",
+    "app/models/user.rb:2:3 call has_many/1 <- User",
+    "app/models/user.rb:5:5 call NameFormatter.format/1 <- User.display_name",
+    "app/services/name_formatter.rb:3:5 call name.strip <- NameFormatter.format",
+    "app/services/user_loader.rb:5:12 call User.new/1 <- UserLoader.load",
+    "app/services/user_loader.rb:6:5 call user.display_name <- UserLoader.load",
+    "spec/services/user_loader_spec.rb:3:1 call RSpec.describe/1 <- <none>",
+    "spec/services/user_loader_spec.rb:4:3 call it/1 <- <none>",
+    "spec/services/user_loader_spec.rb:5:12 call UserLoader.new <- <none>",
+    "spec/services/user_loader_spec.rb:5:5 call expect/1 <- <none>",
+    "spec/services/user_loader_spec.rb:5:5 call other.to/1 <- <none>"
   ],
   "symbols": [
     "app/controllers/api/v1/test_cases_controller.rb:1-5 class TestCasesController [exported] | class TestCasesController",

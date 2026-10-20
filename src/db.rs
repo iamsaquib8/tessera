@@ -9,10 +9,11 @@ use rusqlite::{params, Connection, OpenFlags, OptionalExtension};
 
 use crate::extract::truncate_chars;
 use crate::types::{
-    IndexedImport, IndexedReference, IndexedSymbol, Language, ReferenceRecord, SymbolRecord,
+    IndexedBinding, IndexedImport, IndexedReference, IndexedSymbol, IndexedTypeHint, Language,
+    ReferenceRecord, SymbolRecord,
 };
 
-pub const SCHEMA_VERSION: i64 = 5;
+pub const SCHEMA_VERSION: i64 = 6;
 /// `PRAGMA application_id` of every Tessera index ("TSSR").
 pub const APPLICATION_ID: i64 = 0x5453_5352;
 
@@ -167,6 +168,7 @@ fn create_schema(conn: &Connection) -> Result<()> {
             size_bytes INTEGER NOT NULL,
             mtime_ns INTEGER NOT NULL,
             parse_errors INTEGER NOT NULL DEFAULT 0,
+            module TEXT,
             indexed_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
         );
 
@@ -191,7 +193,11 @@ fn create_schema(conn: &Connection) -> Result<()> {
             start_line INTEGER NOT NULL,
             end_line INTEGER NOT NULL,
             signature TEXT NOT NULL,
-            exported INTEGER NOT NULL DEFAULT 0
+            exported INTEGER NOT NULL DEFAULT 0,
+            container TEXT,
+            arity_min INTEGER,
+            arity_max INTEGER,
+            default_export INTEGER NOT NULL DEFAULT 0
         );
 
         CREATE INDEX idx_symbols_name ON symbols(name);
@@ -206,7 +212,10 @@ fn create_schema(conn: &Connection) -> Result<()> {
             line INTEGER NOT NULL,
             column INTEGER NOT NULL,
             context TEXT NOT NULL,
-            kind TEXT NOT NULL
+            kind TEXT NOT NULL,
+            receiver TEXT NOT NULL DEFAULT 'none',
+            receiver_name TEXT,
+            arg_count INTEGER
         );
 
         CREATE INDEX idx_refs_symbol ON refs(symbol_name);
@@ -220,6 +229,9 @@ fn create_schema(conn: &Connection) -> Result<()> {
             to_symbol_id INTEGER REFERENCES symbols(id) ON DELETE SET NULL,
             kind TEXT NOT NULL,
             confidence TEXT NOT NULL DEFAULT 'name',
+            resolver TEXT,
+            ambiguous_group INTEGER,
+            ref_id INTEGER REFERENCES refs(id) ON DELETE CASCADE,
             weight REAL NOT NULL DEFAULT 1.0
         );
 
@@ -234,6 +246,30 @@ fn create_schema(conn: &Connection) -> Result<()> {
             line INTEGER NOT NULL,
             kind TEXT NOT NULL
         );
+
+        CREATE TABLE import_bindings (
+            id INTEGER PRIMARY KEY,
+            file_id INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,
+            local TEXT NOT NULL,
+            imported TEXT,
+            source TEXT NOT NULL,
+            kind TEXT NOT NULL,
+            line INTEGER NOT NULL
+        );
+
+        CREATE INDEX idx_bindings_file ON import_bindings(file_id);
+        CREATE INDEX idx_bindings_source ON import_bindings(source);
+
+        CREATE TABLE type_hints (
+            id INTEGER PRIMARY KEY,
+            file_id INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,
+            scope TEXT,
+            name TEXT NOT NULL,
+            type_name TEXT NOT NULL,
+            origin TEXT NOT NULL
+        );
+
+        CREATE INDEX idx_hints_file ON type_hints(file_id);
 
         CREATE INDEX idx_imports_file ON imports(file_id);
         CREATE INDEX idx_imports_source ON imports(source);
@@ -262,6 +298,8 @@ pub fn reset(conn: &Connection) -> Result<()> {
     conn.execute_batch(
         "
         DELETE FROM imports;
+        DELETE FROM import_bindings;
+        DELETE FROM type_hints;
         DELETE FROM edges;
         DELETE FROM refs;
         DELETE FROM symbols;
@@ -432,8 +470,9 @@ pub fn insert_symbols(
 ) -> Result<Vec<i64>> {
     let mut insert = conn.prepare_cached(
         "INSERT INTO symbols(
-            name, qualified_name, kind, file_id, start_line, end_line, signature, exported
-         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            name, qualified_name, kind, file_id, start_line, end_line, signature, exported,
+            container, arity_min, arity_max, default_export
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
     )?;
     let mut ids = Vec::with_capacity(symbols.len());
     for symbol in symbols {
@@ -445,11 +484,55 @@ pub fn insert_symbols(
             symbol.start_line as i64,
             symbol.end_line as i64,
             symbol.signature,
-            i64::from(symbol.exported)
+            i64::from(symbol.exported),
+            symbol.container,
+            symbol.arity.map(|(min, _)| min),
+            symbol.arity.and_then(|(_, max)| max),
+            i64::from(symbol.default_export)
         ])?;
         ids.push(conn.last_insert_rowid());
     }
     Ok(ids)
+}
+
+pub fn insert_bindings(conn: &Connection, file_id: i64, bindings: &[IndexedBinding]) -> Result<()> {
+    let mut insert = conn.prepare_cached(
+        "INSERT INTO import_bindings(file_id, local, imported, source, kind, line)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+    )?;
+    for b in bindings {
+        insert.execute(params![
+            file_id,
+            b.local,
+            b.imported,
+            b.source,
+            b.kind.as_str(),
+            b.line as i64
+        ])?;
+    }
+    Ok(())
+}
+
+pub fn insert_hints(conn: &Connection, file_id: i64, hints: &[IndexedTypeHint]) -> Result<()> {
+    let mut insert = conn.prepare_cached(
+        "INSERT INTO type_hints(file_id, scope, name, type_name, origin) VALUES (?1, ?2, ?3, ?4, ?5)",
+    )?;
+    for h in hints {
+        insert.execute(params![
+            file_id,
+            h.scope,
+            h.name,
+            h.type_name,
+            h.origin.as_str()
+        ])?;
+    }
+    Ok(())
+}
+
+pub fn set_file_module(conn: &Connection, file_id: i64, module: Option<&str>) -> Result<()> {
+    conn.prepare_cached("UPDATE files SET module = ?2 WHERE id = ?1")?
+        .execute(params![file_id, module])?;
+    Ok(())
 }
 
 pub fn insert_imports(conn: &Connection, file_id: i64, imports: &[IndexedImport]) -> Result<usize> {
@@ -469,11 +552,14 @@ pub fn insert_references(
     symbol_ids: &HashMap<String, i64>,
 ) -> Result<usize> {
     let mut insert_ref = conn.prepare_cached(
-        "INSERT INTO refs(symbol_name, from_symbol_id, file_id, line, column, context, kind)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+        "INSERT INTO refs(
+            symbol_name, from_symbol_id, file_id, line, column, context, kind,
+            receiver, receiver_name, arg_count
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
     )?;
     let mut insert_edge = conn.prepare_cached(
-        "INSERT INTO edges(from_symbol_id, to_symbol_name, kind, weight) VALUES (?1, ?2, ?3, 1.0)",
+        "INSERT INTO edges(from_symbol_id, to_symbol_name, kind, ref_id, weight)
+         VALUES (?1, ?2, ?3, ?4, 1.0)",
     )?;
     for reference in refs {
         let from_symbol_id = reference
@@ -487,13 +573,18 @@ pub fn insert_references(
             reference.line as i64,
             reference.column as i64,
             truncate_chars(&reference.context, CONTEXT_MAX_CHARS),
-            reference.kind
+            reference.kind,
+            reference.receiver.as_str(),
+            reference.receiver_name,
+            reference.arg_count
         ])?;
+        let ref_id = conn.last_insert_rowid();
         if let Some(from_symbol_id) = from_symbol_id {
             insert_edge.execute(params![
                 from_symbol_id,
                 reference.symbol_name,
-                reference.kind
+                reference.kind,
+                ref_id
             ])?;
         }
     }
@@ -707,6 +798,9 @@ mod tests {
             column: 1,
             context: "x".repeat(10_000),
             kind: "call".to_string(),
+            receiver: crate::types::Receiver::None,
+            receiver_name: None,
+            arg_count: None,
         };
         insert_references(&conn, file_id, &[reference], &HashMap::new()).unwrap();
         let context: String = conn

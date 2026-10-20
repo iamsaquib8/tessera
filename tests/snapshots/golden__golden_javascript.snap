@@ -3,11 +3,13 @@ source: tests/golden.rs
 expression: graph_dump(& db)
 ---
 {
+  "bindings": [],
   "edges": [
-    "lib/email_worker.js EmailWorker.perform -call-> slugify",
-    "lib/util.js slugify -call-> toLowerCase",
-    "lib/worker.js BaseWorker.run -call-> perform"
+    "lib/email_worker.js EmailWorker.perform -call-> slugify [name]",
+    "lib/util.js slugify -call-> toLowerCase [name]",
+    "lib/worker.js BaseWorker.run -call-> perform [name]"
   ],
+  "hints": [],
   "imports": [
     "app.js:1 require express",
     "app.js:2 require ./lib/email_worker",
@@ -15,24 +17,25 @@ expression: graph_dump(& db)
     "lib/email_worker.js:2 require ./util",
     "specs/util.spec.js:1 require ../lib/util"
   ],
+  "modules": [],
   "refs": [
-    "app.js:1:17 call require <- <none>",
-    "app.js:2:21 call require <- <none>",
-    "app.js:4:13 call express <- <none>",
-    "app.js:6:1 call get <- <none>",
-    "app.js:7:3 call run <- <none>",
-    "app.js:8:3 call send <- <none>",
-    "lib/email_worker.js:1:20 call require <- <none>",
-    "lib/email_worker.js:2:21 call require <- <none>",
-    "lib/email_worker.js:6:12 call slugify <- EmailWorker.perform",
-    "lib/util.js:2:10 call toLowerCase <- slugify",
-    "lib/worker.js:3:12 call perform <- BaseWorker.run",
-    "specs/util.spec.js:1:21 call require <- <none>",
-    "specs/util.spec.js:3:1 call describe <- <none>",
-    "specs/util.spec.js:4:3 call it <- <none>",
-    "specs/util.spec.js:5:12 call slugify <- <none>",
-    "specs/util.spec.js:5:5 call expect <- <none>",
-    "specs/util.spec.js:5:5 call toBe <- <none>"
+    "app.js:1:17 call require/1 <- <none>",
+    "app.js:2:21 call require/1 <- <none>",
+    "app.js:4:13 call express/0 <- <none>",
+    "app.js:6:1 call app.get/2 <- <none>",
+    "app.js:7:3 call other.run/0 <- <none>",
+    "app.js:8:3 call res.send/1 <- <none>",
+    "lib/email_worker.js:1:20 call require/1 <- <none>",
+    "lib/email_worker.js:2:21 call require/1 <- <none>",
+    "lib/email_worker.js:6:12 call slugify/1 <- EmailWorker.perform",
+    "lib/util.js:2:10 call s.toLowerCase/0 <- slugify",
+    "lib/worker.js:3:12 call this.perform/0 <- BaseWorker.run",
+    "specs/util.spec.js:1:21 call require/1 <- <none>",
+    "specs/util.spec.js:3:1 call describe/2 <- <none>",
+    "specs/util.spec.js:4:3 call it/2 <- <none>",
+    "specs/util.spec.js:5:12 call slugify/1 <- <none>",
+    "specs/util.spec.js:5:5 call expect/1 <- <none>",
+    "specs/util.spec.js:5:5 call other.toBe/1 <- <none>"
   ],
   "symbols": [
     "app.js:11-13 function slugify | function slugify(x) {",

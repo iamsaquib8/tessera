@@ -358,6 +358,9 @@ fn index_one(
     report.references_indexed +=
         db::insert_references(tx, file_id, &parsed.references, &ids_by_name)?;
     db::insert_imports(tx, file_id, &parsed.imports)?;
+    db::insert_bindings(tx, file_id, &parsed.bindings)?;
+    db::insert_hints(tx, file_id, &parsed.hints)?;
+    db::set_file_module(tx, file_id, parsed.module.as_deref())?;
     report.files_indexed += 1;
     report.symbols_indexed += symbol_ids.len();
     Ok(FileOutcome::Indexed(file_id))
