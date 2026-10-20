@@ -1,145 +1,139 @@
-# Integrations
+# Agent integrations
 
-Tessera speaks **MCP** (Model Context Protocol). Any agent that supports MCP can call its tools. Index once per repo (or via a post-clone hook), then point your agent at the binary.
+Tessera never calls a language model, so it works with any model:
+Claude, GPT, Gemini, Grok, DeepSeek, Qwen, or a local one. What matters is
+the **agent** you run. Every agent that speaks MCP gets the eight tools
+below; agents with hook systems also get automatic checks before and after
+edits (arriving in v0.12, see the [roadmap](../ROADMAP.md)).
+
+The sourced, per-agent matrix of config paths, hook events and trust steps
+lives in [agents.md](agents.md).
+
+## The command every agent runs
 
 ```sh
-cd path/to/your/repo
-tessera index .
+tessera mcp            # stdio; run from the repository, or pass --root
+tessera mcp --http 127.0.0.1:8765   # Streamable HTTP for clients that need a URL
 ```
 
-**Exposed tools** (all of them, in every client below): `find_definition` · `find_references` · `get_outline` · `expand_symbol` · `impact` · `connect` · `export` · `context_pack` · `plan_query` · `edit_prep` · `diff_impact` · `imports` · `imported_by` · `signature` · `siblings` · `search` · `unused` · `validate` · `validate_snippet` · `tests_for` · `stats`. Schemas in [mcp.md](mcp.md).
+The server finds the repository root itself, answers at once, indexes in the
+background, and re-indexes files as they change.
 
 ## Claude Code
 
-Either edit `~/.claude.json` directly, or run from your repo root:
-
 ```sh
-claude mcp add tessera tessera -- mcp --db .tessera/tessera.db
+claude mcp add tessera -- tessera mcp
 ```
 
-Restart Claude Code; the tools appear as `mcp__tessera__*`. Confirm with `/mcp` in the session.
+Or commit a project `.mcp.json`:
+
+```json
+{ "mcpServers": { "tessera": { "command": "tessera", "args": ["mcp"] } } }
+```
+
+DeepSeek users can run Claude Code against DeepSeek's Anthropic-compatible
+API (`ANTHROPIC_BASE_URL=https://api.deepseek.com/anthropic`); everything here
+applies unchanged.
 
 ## Cursor
 
-Add to `~/.cursor/mcp.json` (global) or `.cursor/mcp.json` (per-project):
+`.cursor/mcp.json` (project) or `~/.cursor/mcp.json` (all projects):
 
 ```json
-{
-  "mcpServers": {
-    "tessera": {
-      "command": "tessera",
-      "args": ["mcp", "--db", "${workspaceFolder}/.tessera/tessera.db"]
-    }
-  }
-}
+{ "mcpServers": { "tessera": { "command": "tessera", "args": ["mcp"] } } }
 ```
 
-Reload the window. Tessera shows up under **Settings → MCP**.
+## OpenAI Codex CLI
 
-## Cline (VS Code)
-
-Open the Cline panel → `…` menu → **MCP Servers** → **Configure MCP Servers**, then add:
-
-```json
-{
-  "mcpServers": {
-    "tessera": {
-      "command": "tessera",
-      "args": ["mcp", "--db", ".tessera/tessera.db"],
-      "disabled": false,
-      "autoApprove": ["find_definition", "find_references", "get_outline", "search", "validate"]
-    }
-  }
-}
+```sh
+codex mcp add tessera -- tessera mcp
 ```
 
-The `autoApprove` list is optional — those are the read-only queries safe to run without a prompt.
-
-## Continue.dev (VS Code / JetBrains)
-
-In `~/.continue/config.json` (or workspace `.continue/config.json`):
-
-```json
-{
-  "experimental": {
-    "modelContextProtocolServers": [
-      {
-        "transport": {
-          "type": "stdio",
-          "command": "tessera",
-          "args": ["mcp", "--db", ".tessera/tessera.db"]
-        }
-      }
-    ]
-  }
-}
-```
-
-## Codex CLI (OpenAI)
-
-In `~/.codex/config.toml`:
+or in `~/.codex/config.toml`:
 
 ```toml
-[[mcp_servers]]
-name = "tessera"
+[mcp_servers.tessera]
 command = "tessera"
-args = ["mcp", "--db", ".tessera/tessera.db"]
+args = ["mcp"]
 ```
 
-## Zed
+## Gemini CLI and Google Antigravity
 
-In `~/.config/zed/settings.json`:
+Gemini CLI, `.gemini/settings.json`:
 
 ```json
-{
-  "context_servers": {
-    "tessera": {
-      "command": {
-        "path": "tessera",
-        "args": ["mcp", "--db", ".tessera/tessera.db"]
-      }
-    }
-  }
-}
+{ "mcpServers": { "tessera": { "command": "tessera", "args": ["mcp"] } } }
 ```
 
-## Aider
+Antigravity (`agy`), `.agents/mcp_config.json`:
 
-Aider doesn't speak MCP yet, but you can drop Tessera into its shell-out workflow:
+```json
+{ "mcpServers": { "tessera": { "command": "tessera", "args": ["mcp"] } } }
+```
+
+## GitHub Copilot
+
+VS Code agent mode, `.vscode/mcp.json` (note the key is `servers`):
+
+```json
+{ "servers": { "tessera": { "type": "stdio", "command": "tessera", "args": ["mcp"] } } }
+```
+
+Copilot CLI: `copilot mcp add tessera -- tessera mcp`.
+
+## Grok Build, Qwen Code, Kiro, Junie, Augment, Warp
+
+These read an `mcpServers` map in their own settings file. The command is
+always `tessera` with args `["mcp"]`. File locations are in
+[agents.md](agents.md):
+
+| Agent | File |
+| --- | --- |
+| Grok Build | `.grok/config.toml` (`[mcp_servers.tessera]`), or it reads `.mcp.json` |
+| Qwen Code | `.qwen/settings.json` |
+| Kiro | `.kiro/settings/mcp.json` |
+| JetBrains Junie | `.junie/mcp/mcp.json` |
+| Augment (Auggie) | `~/.augment/settings.json` |
+| Warp | `.warp/.mcp.json`, or it reads `.mcp.json` |
+
+## OpenCode and Kilo Code
+
+`opencode.json` (Kilo: `kilo.jsonc`) uses an `mcp` map with a command array:
+
+```json
+{ "mcp": { "tessera": { "type": "local", "command": ["tessera", "mcp"] } } }
+```
+
+## Cline, Continue, Zed, Goose, Amp
+
+| Agent | Config |
+| --- | --- |
+| Cline | `cline mcp add`, or `cline_mcp_settings.json` with `"type": "stdio"` |
+| Continue | `.continue/mcpServers/tessera.yaml` |
+| Zed | `context_servers` → `{ "tessera": { "command": "tessera", "args": ["mcp"] } }` |
+| Goose | `extensions:` in `~/.config/goose/config.yaml`, type `stdio`, `cmd: tessera`, `args: [mcp]` |
+| Amp | `amp mcp add tessera -- tessera mcp` |
+
+## Aider and anything without MCP
+
+Run the CLI directly. Aider appends the edited file's name to its lint
+command, so you can point the lint loop at Tessera per language and failures
+reach the model:
 
 ```sh
-aider --read-only-cmd "tessera get-outline {file}" \
-      --pre-prompt "Use \`tessera impact {symbol}\` before editing any function."
+aider --lint-cmd "python: tessera --quiet verify --language python --snippet" \
+      --lint-cmd "typescript: tessera --quiet verify --language typescript --snippet"
 ```
 
-For richer integration, point Aider at `tessera search` and `tessera impact` from its `/run` hook.
+## Every agent: a git backstop
 
-## GPT / ChatGPT (custom GPTs, no MCP)
-
-Build a simple wrapper that exposes the CLI as HTTP — e.g. `tessera mcp` behind a stdio→HTTP shim like [`mcp-proxy`](https://github.com/sparfenyuk/mcp-proxy) — and register it as a custom GPT action. The tool schemas in [mcp.md](mcp.md) map 1:1 to OpenAPI function specs.
-
-## Custom / library
-
-Any process can spawn `tessera mcp --db <path>` and talk JSON-RPC over stdio. Or skip MCP entirely and use the [Rust library](../README.md#use-as-a-rust-library) — `Index::open(...).impact(...)` is exactly the same query path the MCP server uses.
-
-For local clients that need HTTP instead of stdio, run:
+Whatever the agent, a broken edit should not reach a commit. Until
+`tessera init --git-hook` lands (v0.12), add this to `.git/hooks/pre-commit`:
 
 ```sh
-tessera mcp-http --addr 127.0.0.1:8765 --db .tessera/tessera.db
+#!/bin/sh
+tessera --quiet index >/dev/null
 ```
 
-The HTTP transport exposes `POST /mcp` for JSON-RPC, `GET /sse` as a simple
-readiness event stream, and `GET /health` for service checks. The health
-response includes the Tessera version, DB path, indexed root, schema version,
-snapshot path, and advertised endpoint paths so CI or a wrapper service can
-fail fast before routing agent traffic to the graph.
-
-## Tip: re-index after pulls
-
-Add this to a git hook (`.git/hooks/post-merge`, `post-checkout`):
-
-```sh
-tessera index .   # incremental by default — sha-diff skips unchanged files
-```
-
-A 950-file Java repo with one changed file re-indexes in ~70 ms.
+This keeps the index fresh for the next session. Commit-blocking checks come
+with `verify --staged` in v0.12.

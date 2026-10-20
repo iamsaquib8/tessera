@@ -1,8 +1,96 @@
 # Changelog
 
-All notable changes to Tessera will be documented here.
+All notable changes to Tessera are documented here.
 
-## 0.9.0 - Unreleased
+## 0.10.0 - Unreleased
+
+The foundation release. Tessera is repositioned as deterministic edit safety
+for AI coding agents, and the basics are rebuilt so they can be trusted on
+real repositories. Versions 0.5 to 0.9 never shipped as GitHub releases, npm,
+or Homebrew packages (0.8.0 reached crates.io only); their changes are
+included here.
+
+### Breaking
+
+- The CLI is now fourteen commands built on eight operations. The old command
+  names are removed:
+
+  | Before | Now |
+  | --- | --- |
+  | `find-definition`, `signature`, `expand-symbol`, `get-outline`, `imports` | `find` (`--body`, `--path`) |
+  | `find-references`, `tests-for`, `imported-by` | `refs` (`--tests`; pass a file path for importers) |
+  | `impact`, `diff-impact`, `siblings` | `blast` (`--diff`) |
+  | `validate`, `validate-snippet` | `verify` (`--snippet`) |
+  | `context-pack`, `edit-prep` | `context` |
+  | `connect` | `path` |
+  | `unused` | `search --unused` |
+  | `stats`, `doctor` | `status` |
+  | `mcp-http` | `mcp --http` |
+  | `plan-query`, `snapshot`, `bench`, `shell` | removed |
+
+- MCP tools are now `find`, `search`, `refs`, `blast`, `verify`, `context`,
+  `path`, `status`. Results are compact text by default (`format: "json"` for
+  JSON).
+- `--db` defaults to `<root>/.tessera/tessera.db`, where the root is found by
+  walking up to `.tessera/` or `.git`. Global flags are `--root`, `--db`,
+  `--json`, and `--quiet`.
+- Exit codes: `0` success, `1` verify found problems, `2` usage error, `3`
+  index error.
+- The library API is `Index::{find, search, refs, blast, path, context,
+  verify, status, export}`.
+- MSRV is Rust 1.90.
+
+### Added
+
+- **No setup step.** Queries index on first use and re-index changed files
+  first. The MCP server indexes in the background and watches files.
+- **Discovery.** `.gitignore`, `.ignore`, and `.tesseraignore` are honoured;
+  minified and oversized files are skipped; `index --exclude <glob>` excludes
+  are remembered; `[exclude].globs` and `[index].max_file_bytes` are new
+  config keys.
+- **Output.** Pagination with `total`, `truncated`, and `next_cursor`
+  everywhere. Fuzzy matches are labelled. Byte-identical output across runs.
+- **`refs <file>`** lists the files that import it.
+- **`status`** reports freshness, skipped files, and any older `tessera`
+  shadowing this one on `PATH`.
+- **MCP 2026-07-28** (stateless, `server/discover`) alongside initialize-based
+  clients; spec error codes; HTTP header validation; Origin check.
+- **Distribution.**
+  - Draft-then-publish releases with SHA256SUMS and build provenance.
+  - Static musl Linux builds.
+  - npm platform packages with no postinstall step.
+  - A Homebrew formula rendered on each release.
+  - A checksum-verifying `install.sh`.
+  - cargo-binstall metadata.
+  - Smoke tests on every channel.
+- Golden extraction fixtures for all 11 languages, plus MCP conformance,
+  robustness, and perf-budget suites.
+
+### Fixed
+
+- Indexing no longer crashes on repositories above ~32k files
+  (`too many SQL variables`).
+- Long non-ASCII lines no longer panic, and deeply nested files no longer
+  overflow the stack.
+- `.ts` files are parsed with the TypeScript grammar; angle-bracket casts no
+  longer swallow the rest of the file.
+- Invalid UTF-8 files are indexed lossily with a warning instead of skipped,
+  and BOMs are stripped.
+- Java packages named `build`, `out`, `target`, or `vendor` are indexed.
+- Test-file detection no longer treats `test_cases_controller.rb` as a test,
+  and does recognise `_spec.rb`, `FooIT.java`, and top-level `tests/`.
+- MCP no longer replies to notifications, answers `ping`, and returns
+  `-32601` and `-32602` instead of `-32000` for everything.
+- Silent caps on references (250), impact callers (100), and imports (500)
+  are gone.
+
+### Removed
+
+- The bloom filter, the unused memory-mapped snapshot, the placeholder Cozo
+  engine, the built-in `bench` (replaced by `tessera-bench` in v0.11), and the
+  made-up "alternative query" token and fidelity numbers.
+
+## 0.9.0 - never published
 
 v0.9 hardens the HTTP/SSE MCP path so Tessera can run as a shared local or CI
 service, not only as a stdio process spawned by an agent.
@@ -16,7 +104,7 @@ service, not only as a stdio process spawned by an agent.
   verifies `/health` and `/sse`, and runs an MCP `find_definition` query through
   `POST /mcp`.
 
-## 0.8.0 - Unreleased
+## 0.8.0 - crates.io only
 
 v0.8 makes exported graphs easier to inspect and share without leaving the CLI.
 
@@ -27,7 +115,7 @@ v0.8 makes exported graphs easier to inspect and share without leaving the CLI.
 - MCP `export` arguments for grouping and graph filters.
 - README, quickstart, and MCP docs for the v0.8 graph export workflow.
 
-## 0.7.0 - Unreleased
+## 0.7.0 - never published
 
 v0.7 adds the first agent workflow layer on top of the code graph: deterministic
 tool planning and a one-call pre-edit bundle.
@@ -38,7 +126,7 @@ tool planning and a one-call pre-edit bundle.
 - MCP tools `plan_query` and `edit_prep` with agent-routing descriptions.
 - Shell completion entries, docs, and end-to-end tests for the v0.7 workflow commands.
 
-## 0.6.0 - Unreleased
+## 0.6.0 - never published
 
 v0.6 focuses on real-repo correctness: predictable indexing boundaries,
 non-fatal parser/read failures, stronger ignored-path defaults, and regression
@@ -55,7 +143,7 @@ fixtures that snapshot the graph shape.
 - `tessera index` and `tessera watch` print warning summaries instead of aborting the whole indexing run for a bad source file.
 - `tessera init` now writes include/exclude config stubs into `.tessera/config.toml`.
 
-## 0.5.0 - Unreleased
+## 0.5.0 - never published
 
 v0.5 hardens Tessera for daily use: keeping indexes fresh, diagnosing local
 setup, reducing empty-result confusion, and documenting the first-run path.

@@ -1,75 +1,71 @@
 ---
 name: tessera
-description: Use when navigating or reasoning about an unfamiliar or large codebase - finding where a symbol is defined, who calls it, what a change impacts, whether a symbol actually exists (catching hallucinated names), tracing how two functions connect, or visualising the call graph. Answers deterministically over a local Tree-sitter graph instead of burning context on grep + file reads. Supports TypeScript/TSX, JavaScript, Python, Go, Rust, Java, C, C++, C#, Ruby, PHP.
+description: Use before and after editing code in a repository - to see what a change affects (callers ranked by impact, tests to run), to find definitions and call sites without grep, to read one budgeted context bundle before editing a symbol, and to verify that newly written code only calls functions that exist. Deterministic local index, no LLM; works with TypeScript/JavaScript/React, Java, Python, Go, Rust, C, C++, C#, Ruby, PHP.
 ---
 
-# Tessera — deterministic code navigation
+# Tessera: check before and after you edit
 
-Tessera indexes a repo into a local semantic graph (Tree-sitter → SQLite) and
-answers structural questions in milliseconds, for a fraction of the tokens that
-`grep` + reading files costs. Unlike an LLM-extracted graph, every answer is
-**ground truth from the parser** — same input, same answer, zero tokens to build
-the graph.
+Tessera keeps a local, deterministic index of the repository (tree-sitter →
+SQLite). Use it instead of grep and opening files to answer structural
+questions, and use it to check your own edits.
 
-## When to reach for this
+## Setup (once)
 
-- "Where is `X` defined?" → `find-definition`
-- "Who calls `X`? What breaks if I change it?" → `impact` (PageRank-ranked)
-- "Does `X` exist, or did I hallucinate it?" → `validate`
-- "How does `A` reach `B`?" → `connect`
-- "Show me the call graph around `X`" → `export`
-- "What does this file/dir contain?" → `get-outline`
-- Before editing a symbol: `context-pack` (body + deps + callers + tests in one call)
+Check `tessera --version`. If it is missing, try these in order:
 
-Prefer these over `grep -r` + opening files: they return only the structural
-answer, with a token estimate, and never miss a cross-file caller.
+1. `npx --yes tessera-codegraph <command>` (no install; needs Node 18+). Use
+   this prefix in place of `tessera` below.
+2. `curl -fsSL https://raw.githubusercontent.com/iamsaquib8/tessera/main/install.sh | sh`
+   (verifies the checksum; installs to `~/.local/bin`).
+3. `brew install iamsaquib8/tessera/tessera`.
 
-## Setup (once per machine)
+There is no index step: the first command builds `.tessera/` and later
+commands refresh only what changed. If results look wrong, run
+`tessera status`.
 
-Check if it's installed: `tessera --version`. If not, install (no Rust needed):
+## The loop
 
-```sh
-npm i -g tessera-codegraph          # or: npx tessera-codegraph <cmd>
-# or  brew install iamsaquib8/tessera/tessera
-# or  curl -fsSL https://raw.githubusercontent.com/iamsaquib8/tessera/main/install.sh | sh
-# or  cargo install tessera-codegraph
-```
-
-## Workflow
-
-1. **Index** the repo (incremental; re-run anytime — unchanged files are reused in ~ms):
-   ```sh
-   tessera index . 
-   ```
-2. **Query.** Add `--json` for machine-readable output. Every command prints a
-   `_meta` line with a token estimate and a cheaper alternative.
-   ```sh
-   tessera find-definition parseConfig
-   tessera impact parseConfig          # transitive callers, ranked by criticality
-   tessera validate prseConfig         # ✗ + "maybe parseConfig (0.97)"
-   tessera connect handleRequest writeRow   # shortest call path A → B
-   tessera export --from parseConfig --format mermaid   # subgraph as Mermaid
-   tessera context-pack parseConfig    # everything needed to edit it, token-budgeted
-   ```
-
-## Best practice for agents
-
-- **Validate before trusting a symbol name** you're about to reference in code:
-  `tessera validate <name>` catches hallucinations deterministically and suggests
-  the real name. This is the one check an LLM-extracted graph cannot do reliably —
-  its own graph may contain the hallucination.
-- **Use `impact` before refactoring** to enumerate every affected caller instead
-  of guessing.
-- **Re-index after edits** (`tessera index .`) — it's incremental and cheap.
-
-## MCP server (richer integration)
-
-Tessera also speaks MCP, exposing all of the above as tools (`find_definition`,
-`impact`, `validate`, `connect`, `export`, `context_pack`, …):
+**Before editing a symbol:**
 
 ```sh
-tessera mcp --db .tessera/tessera.db
+tessera blast <symbol>        # who is affected, ranked, and which tests to run
+tessera context <symbol>      # body + what it calls + who calls it + tests
 ```
 
-Wire it into Claude Code / Cursor / Cline / Codex / Zed per
-[docs/integrations.md](https://github.com/iamsaquib8/tessera/blob/main/docs/integrations.md).
+**Finding things:**
+
+```sh
+tessera find <symbol> --body  # definition (name, Class.method, or A::B)
+tessera find --path <file>    # outline of a file or directory
+tessera refs <symbol>         # every call site
+tessera refs <file>           # files that import this file
+tessera search 'load*'        # fuzzy or glob search; --unused for dead functions
+tessera path <from> <to>      # does A reach B, and how
+```
+
+**After writing code that calls project functions:**
+
+```sh
+tessera verify --snippet <file> --language typescript
+# or: printf '%s' "$CODE" | tessera verify --snippet - --language python
+```
+
+`verify` exits 1 and names the closest real symbol for anything that does not
+exist. Fix those before saying the task is done.
+
+## Reading results
+
+- Results are paginated. `[25 of 140 shown; more with cursor o:25]` means:
+  re-run with `--cursor o:25` if you need more.
+- `No exact definition of X; closest matches:` means X does not exist; use
+  one of the suggestions.
+- Matching is by name for now, so common names (`get`, `run`) can show extra
+  callers. Check the file paths.
+- Add `--json` for machine-readable output.
+
+## Prefer MCP when available
+
+If the agent supports MCP, register `tessera mcp` once. The same eight tools
+(`find`, `search`, `refs`, `blast`, `verify`, `context`, `path`, `status`)
+become available without shell calls, and the server keeps the index fresh as
+files change.

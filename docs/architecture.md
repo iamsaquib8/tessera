@@ -1,116 +1,70 @@
 # Architecture
 
-Tessera turns source code into a small local graph plus a memory-mapped projection:
-
 ```text
-source files
-  -> tree-sitter parsers (TS/TSX/JS, Python, Go, Rust, Java, C, C++, C#, Ruby, PHP)
-  -> symbols, references, edges, exports
-  -> SQLite (WAL, trigram FTS, bloom filter blob)
-  -> memory-mapped snapshot (.tessera/snapshot.bin)
-  -> CLI, MCP server, library API, doctor/init/watch polish
+ files on disk
+   │  walk.rs        gitignore-aware discovery, minified/size skips, sorted output
+   ▼
+ extract/        tree-sitter 0.26, one module per language behind LanguageSupport,
+   │             iterative walk → symbols, references, imports
+   ▼
+ db.rs           SQLite (WAL, FTS5 trigram), schema in PRAGMA user_version;
+   │             a version mismatch rebuilds the cache
+   ▼
+ fresh.rs        stat-walk freshness check; index_files re-indexes only changed paths
+   ▼
+ query/          eight operations: find search refs blast path context verify status
+   │             every list paginated, sorted by a stable key, measured in tokens
+   ├─▶ main.rs   CLI (clap): global --root --db --json --quiet; exit codes 0/1/2/3
+   ├─▶ mcp/      dual-era MCP: stdio + Streamable HTTP, background index, file watcher
+   └─▶ lib.rs    Index, the Rust library API
 ```
 
-## Storage
+## Indexing
 
-SQLite is the default store. WAL mode is enabled so the graph can support concurrent reads while agents query it. A bincode-serialised snapshot lives next to the DB and is mmap'd by the MCP server for hot-path queries.
+1. `walk::discover` lists source files using the `ignore` crate. It follows
+   `.gitignore`, `.ignore` and `.tesseraignore`, never follows symlinks, and
+   returns paths with forward slashes, sorted.
+2. Each file is read (invalid UTF-8 is decoded lossily with a warning, and a
+   BOM is stripped). Its SHA-256 is compared with the stored one, so unchanged
+   files are skipped.
+3. `extract::parse_file` runs the language's tree-sitter grammar and walks the
+   tree with a cursor. This is not recursive, so deeply nested input cannot
+   overflow the stack. Each language module turns nodes into symbols (with
+   qualified names from the enclosing scope), references (calls, `new`, JSX),
+   and imports.
+4. `db` writes everything in one transaction with cached prepared statements.
+   Caller edges use the symbol ids returned for the same file. Stale rows are
+   deleted through a temp table, so repositories with any number of files work.
 
-Core tables:
+## Freshness
 
-- `files`: relative path, language, content hash, line count
-- `symbols`: name, qualified name, kind, line range, signature, exported flag
-- `refs`: call/reference sites and one-line context
-- `edges`: caller-to-callee relationships with weights
-- `symbols_fts`: FTS5 virtual table with the `trigram` tokenizer for fuzzy lookup
-- `meta` / `meta_blob`: index metadata + serialized Bloom filter
+`fresh::check` compares each discovered file's size and mtime with the stored
+values, including files that were skipped. This takes one stat walk with no
+file reads: under 100 ms on 10,000 files. `fresh::ensure` re-indexes only when
+something changed. Every CLI query calls it first. The MCP server runs it in
+the background and then keeps the index current with a `notify` watcher that
+calls `index_files` for the paths that changed.
 
-## Parsing
+## Queries
 
-Tree-sitter provides fast syntax trees without requiring a language server. The parser extracts:
+- `find`: definitions by exact name or qualified name, with a fuzzy fallback
+  (labelled as fuzzy). With a path, it gives the file outline plus imports.
+- `refs`: references by name, or, for a file path, the files whose imports
+  resolve to it.
+- `blast`: breadth-first walk over callers, ranked by personalised PageRank
+  with the teleport set to the edited symbol. With `--diff`, the symbols in
+  git-changed hunks are the seeds.
+- `context`: the body, callees, callers, tests, and sibling symbols, trimmed
+  to a token budget.
+- `verify`: symbol existence, and per-call checks on a parsed snippet that
+  skip standard globals and calls on untyped receivers.
 
-- Top-level and nested functions, methods, classes (TS/JS, Python)
-- Function-like variable declarations (TS/JS) — including React function components
-- JSX elements (`<Component />`, `<Foo.Bar />`) as references of kind `jsx`. The TSX grammar is used for both `.ts` and `.tsx` files; lowercase intrinsic elements (`<div>`) are skipped.
-- Functions, methods, structs, interfaces (Go), with Go method receivers qualified by their receiver type
-- Functions, methods, structs, enums, traits, modules, and `impl` blocks (Rust)
-- Classes, interfaces, records, enums, methods, constructors, method invocations, and `new` expressions (Java)
-- C and C++ functions, class methods, constructors, `new`, includes, and calls
-- C# classes, methods, constructors, using directives, and invocation expressions
-- Ruby classes, methods, requires, and calls
-- PHP functions, methods, namespace uses, object creation, and calls
-- Call expressions and Rust macro invocations
+Ties are broken by path, line, and name, and the PageRank adjacency list is
+sorted, so the same index always produces byte-identical output.
 
-Exported detection is language-aware:
+## What is not here yet
 
-- JS/TS/TSX: ancestor has an `export_statement`
-- Python: all top-level names treated as exported
-- Go: identifier starts with an uppercase ASCII letter
-- Rust: declaration node has a `visibility_modifier` child starting with `pub`
-- Java: declaration carries a `public` modifier child (package-private = not exported)
-
-## Incremental indexing
-
-`tessera index` defaults to an incremental path:
-
-1. Walk the repo, hashing each file with SHA-256.
-2. For each file, look up the existing row in `files`. If the sha matches, skip.
-3. If it differs, `DELETE FROM files WHERE id = ?` (cascades to `symbols`, `refs`, `edges`, FTS). Re-parse and re-insert.
-4. After the walk, drop any `files` row whose id was never visited.
-
-All inserts happen inside one transaction. `--full` keeps the previous "blow away and rebuild" behaviour.
-
-`tessera watch` wraps the same incremental indexer in a polling loop. It
-fingerprints supported source files, waits for the debounce window after a
-change, and then runs the normal incremental path. `--once` runs one pass and
-exits for smoke tests and CI.
-
-## Snapshot
-
-After indexing, Tessera writes `.tessera/snapshot.bin`: a bincode archive containing every symbol, the call adjacency list, and a name-to-id reverse index. The MCP server `mmap`s this file at startup so `find_definition`, `find_references`, and `impact` can avoid SQLite on the hot path. SQLite remains the source of truth — the snapshot is a derived view that can be rebuilt at any time via `tessera snapshot`.
-
-## Querying
-
-Queries are deterministic SQL and graph traversals. They intentionally return compact structures instead of full files whenever possible.
-
-`impact` runs a personalised PageRank on the reverse call graph:
-
-```text
-walk graph     : callee -> caller (reverse of call direction)
-teleport vector: 1.0 at the symbol being changed, 0 elsewhere
-update         : rank_new[v] = (1 - α) * teleport[v]
-                              + α * Σ_{u -> v} rank_old[u] / out_deg(u)
-α              : 0.85
-iterations     : 25
-```
-
-Each caller's normalised PageRank lands in `criticality` (0–100). The `breakdown` object exposes the components an agent or human might want to audit (`fanout_in`, `fanout_out`, `exported`, `test_coverage`, `depth_decay`, raw `pagerank`).
-
-Workflow tools layer on top of the same graph:
-
-- `context_pack` bundles body, dependency signatures, callers, and tests.
-- `diff_impact` maps git hunks to changed symbols and impacted callers.
-- `imports` / `imported_by` expose module-level edges.
-- `signature` returns API shape without bodies.
-- `siblings` finds symbols with shared callers.
-- `search` provides fuzzy and glob symbol lookup.
-- `connect` finds shortest call paths.
-- `export` emits Mermaid or DOT call graphs.
-- `unused` reports zero-inbound symbols with filters.
-
-`doctor` is intentionally diagnostic rather than a graph query. It checks root
-path, DB existence, schema metadata, snapshot freshness, parser smoke tests,
-ignored-path rules, and the MCP command to paste into agent configs. `init`
-creates project-local defaults and optional MCP config snippets.
-
-## Hallucination validator
-
-`validate` walks two layers:
-
-1. **Bloom filter** in `meta_blob.bloom_symbols`. Built at index time over every `name` and `qualified_name`. A miss returns early — the symbol is definitely not in the graph.
-2. **Trigram FTS5** for cheap fuzzy candidate lookup, re-ranked by Jaro-Winkler distance against the user's query.
-
-`validate_snippet` parses an agent-supplied code blob with the same Tree-sitter pipeline that powers indexing, extracts every call/macro target, and runs the same two-layer check per call.
-
-## Graph engine
-
-The default backend is SQLite + petgraph-style adjacency lists. A feature-gated `cozo` backend mirrors call edges into an embedded Datalog database so impact becomes a recursive Datalog rule. Both engines implement the `GraphEngine` trait in `src/engine.rs`.
+References resolve **by name**: `repo.save()` and `cache.save()` both point at
+every `save`. Import- and scope-aware resolution with confidence per edge is
+the v0.11 milestone. Until then, `refs` and `blast` say "name-level matching"
+in their output. See [when not to use Tessera](when-not-to-use.md).

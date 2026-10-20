@@ -143,11 +143,8 @@ fn write_file(
     Ok(())
 }
 
-fn config_toml(db_path: &Path) -> String {
-    format!(
-        "# Tessera project defaults\n[index]\ndb = \"{}\"\nwatch_poll_ms = 500\nwatch_debounce_ms = 250\n\n[include]\n# Empty means all supported source files under the root.\npaths = []\n\n[exclude]\n# Relative path prefixes to skip after built-in ignores.\npaths = []\n\n[ignore]\n# Built-in ignores already cover .git, node_modules, target, dist, build, out, coverage, vendor, .next, virtualenvs, caches, and .tessera.\nextra = []\n",
-        db_path.display()
-    )
+fn config_toml(_db_path: &Path) -> String {
+    "# Tessera project settings. Everything here is optional; see docs/configuration.md.\n\n[index]\n# max_file_bytes = 1_048_576\n\n[include]\n# Only index these path prefixes. Empty means everything.\npaths = []\n\n[exclude]\n# Path prefixes and glob patterns to skip, on top of .gitignore and built-in skips.\npaths = []\nglobs = []\n\n[ignore]\n# Directory or file names to skip anywhere in the tree.\nextra = []\n".to_string()
 }
 
 fn codex_mcp(db_path: &Path) -> String {
