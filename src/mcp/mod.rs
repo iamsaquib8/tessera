@@ -20,6 +20,34 @@ use protocol::{
 
 const INSTRUCTIONS: &str = "Tessera answers code-navigation questions from a local, deterministic graph of this repository. Before editing a symbol, call `blast` (who is affected) or `context` (body, callers, tests). After writing code that calls project APIs, call `verify` with the snippet. Use `refs` instead of grep for call sites and `find` instead of opening files to locate definitions. Results are paginated; pass `cursor` to continue.";
 
+const WATCH_DEBOUNCE: std::time::Duration = std::time::Duration::from_millis(200);
+
+/// Builds or refreshes the index off the request thread, then keeps it fresh.
+pub fn start_background_indexing(state: &ServerState) {
+    let ws = state.ws.clone();
+    let building = state.building_handle();
+    if crate::db::open_ro(&ws.db_path).is_err() {
+        *building.lock().unwrap_or_else(|e| e.into_inner()) =
+            Some(format!("first index of {}", ws.root.display()));
+    }
+    std::thread::spawn(move || {
+        if let Err(error) = crate::fresh::ensure(&ws) {
+            eprintln!("tessera: indexing failed: {error:#}");
+        }
+        *building.lock().unwrap_or_else(|e| e.into_inner()) = None;
+        match crate::watch::start(ws.clone(), WATCH_DEBOUNCE) {
+            Ok(guard) => {
+                let _ = crate::fresh::ensure(&ws);
+                let _guard = guard;
+                loop {
+                    std::thread::park();
+                }
+            }
+            Err(error) => eprintln!("tessera: file watching unavailable: {error:#}"),
+        }
+    });
+}
+
 pub struct ServerState {
     pub ws: Workspace,
     building: Arc<Mutex<Option<String>>>,

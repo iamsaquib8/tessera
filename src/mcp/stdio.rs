@@ -2,11 +2,12 @@ use std::io::{self, BufRead, Write};
 
 use anyhow::Result;
 
-use super::{handle, Outcome, ServerState};
+use super::{handle, start_background_indexing, Outcome, ServerState};
 use crate::workspace::Workspace;
 
 pub fn serve_stdio(ws: Workspace) -> Result<()> {
     let state = ServerState::new(ws);
+    start_background_indexing(&state);
     let stdin = io::stdin();
     let mut stdout = io::stdout();
     for line in stdin.lock().lines() {

@@ -192,11 +192,8 @@ enum Commands {
     },
     /// Keep the index fresh while files change.
     Watch {
-        /// Poll interval in milliseconds.
-        #[arg(long, default_value_t = 500)]
-        poll_ms: u64,
         /// Wait this long after a change before re-indexing.
-        #[arg(long, default_value_t = 250)]
+        #[arg(long, default_value_t = 200)]
         debounce_ms: u64,
         /// Index once and exit.
         #[arg(long)]
@@ -520,7 +517,6 @@ fn run() -> Result<u8> {
             }
         }
         Commands::Watch {
-            poll_ms,
             debounce_ms,
             once,
             full,
@@ -529,7 +525,6 @@ fn run() -> Result<u8> {
                 &ws.root,
                 &ws.db_path,
                 WatchOptions {
-                    poll_interval: Duration::from_millis(poll_ms),
                     debounce: Duration::from_millis(debounce_ms),
                     index_options: IndexOptions {
                         full,
@@ -539,13 +534,10 @@ fn run() -> Result<u8> {
                 },
             )?;
         }
-        Commands::Mcp { http } => {
-            fresh::ensure(&ws)?;
-            match http {
-                Some(addr) => mcp::serve_http(ws, &addr)?,
-                None => mcp::serve_stdio(ws)?,
-            }
-        }
+        Commands::Mcp { http } => match http {
+            Some(addr) => mcp::serve_http(ws, &addr)?,
+            None => mcp::serve_stdio(ws)?,
+        },
         Commands::Completions { shell } => {
             clap_complete::generate(
                 shell,

@@ -10,7 +10,7 @@ use super::protocol::{
     error_response, result_response, RpcError, HEADER_MISMATCH, INVALID_REQUEST, METHOD_NOT_FOUND,
     PROTOCOL_VERSIONS, UNSUPPORTED_VERSION,
 };
-use super::{dispatch, parse, requested_version, ServerState};
+use super::{dispatch, parse, requested_version, start_background_indexing, ServerState};
 use crate::db;
 use crate::fresh;
 use crate::workspace::Workspace;
@@ -22,6 +22,7 @@ pub fn serve_http(ws: Workspace, addr: &str) -> Result<()> {
     let server = Arc::new(Server::http(addr).map_err(|e| anyhow!("cannot bind {addr}: {e}"))?);
     eprintln!("Tessera MCP listening on http://{addr}/mcp (health: /health)");
     let state = Arc::new(ServerState::new(ws));
+    start_background_indexing(&state);
     let workers: Vec<_> = (0..WORKERS)
         .map(|_| {
             let server = Arc::clone(&server);
