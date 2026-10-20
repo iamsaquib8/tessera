@@ -111,3 +111,123 @@ fn fuzzy_definitions_are_labelled() {
         tessera_codegraph::output::MatchKind::Exact
     );
 }
+
+#[test]
+fn adversarial_inputs_never_abort_indexing() {
+    let temp = tempfile::TempDir::new().unwrap();
+    let root = temp.path().join("repo");
+    std::fs::create_dir_all(&root).unwrap();
+    let write = |name: &str, bytes: &[u8]| std::fs::write(root.join(name), bytes).unwrap();
+    write("huge_line.js", &vec![b'a'; 1_000_000]);
+    write(
+        "latin1.py",
+        b"def caf\xe9():\n    return 1\n\ndef plain():\n    return caf\xe9()\n",
+    );
+    write(
+        "bom.ts",
+        "\u{feff}export function withBom() { return 1; }\n".as_bytes(),
+    );
+    write(
+        "Crlf.java",
+        b"public class Crlf {\r\n  public void run() {}\r\n}\r\n",
+    );
+    write("empty.go", b"");
+    write(
+        "nested.js",
+        format!("const x = {}{};\n", "[".repeat(50_000), "]".repeat(50_000)).as_bytes(),
+    );
+    write("my file é.ts", b"export function spaced() { return 1; }\n");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        write("locked.ts", b"export function locked() {}\n");
+        std::fs::set_permissions(
+            root.join("locked.ts"),
+            std::fs::Permissions::from_mode(0o000),
+        )
+        .unwrap();
+    }
+
+    let db = temp.path().join("t.db");
+    let report = Index::build(&root, &db, IndexOptions::default()).unwrap();
+    assert!(
+        report.files_skipped >= 1,
+        "huge single-line file should be skipped"
+    );
+    let index = Index::open(&db).unwrap();
+    let find = |name: &str| {
+        index
+            .find(&FindArgs {
+                symbol: Some(name.to_string()),
+                ..FindArgs::default()
+            })
+            .unwrap()
+    };
+    for name in ["plain", "withBom", "Crlf", "spaced"] {
+        let result = find(name);
+        assert!(
+            matches!(
+                result.matches.first().map(|m| m.match_kind),
+                Some(tessera_codegraph::output::MatchKind::Exact)
+            ),
+            "{name} not indexed: {}",
+            result
+        );
+    }
+    let bom = find("withBom");
+    assert_eq!(bom.matches[0].symbol.start_line, 1);
+    #[cfg(unix)]
+    {
+        assert!(report.warnings.iter().any(|w| w.path == "locked.ts"));
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(
+            root.join("locked.ts"),
+            std::fs::Permissions::from_mode(0o644),
+        )
+        .unwrap();
+    }
+}
+
+#[test]
+fn graph_is_identical_across_rebuilds() {
+    for lang in [
+        "typescript",
+        "tsx",
+        "javascript",
+        "python",
+        "go",
+        "rust",
+        "java",
+        "c",
+        "cpp",
+        "csharp",
+        "ruby",
+        "php",
+    ] {
+        let (_a, first) = index_fixture(lang);
+        let (_b, second) = index_fixture(lang);
+        assert_eq!(
+            support::graph_dump(&first),
+            support::graph_dump(&second),
+            "{lang}"
+        );
+    }
+}
+
+#[test]
+fn cli_blast_json_is_byte_identical_across_runs() {
+    let temp = tempfile::TempDir::new().unwrap();
+    support::copy_dir(&support::fixture_dir("typescript"), temp.path());
+    let run = || {
+        std::process::Command::new(env!("CARGO_BIN_EXE_tessera"))
+            .args(["--quiet", "--json", "blast", "formatName"])
+            .current_dir(temp.path())
+            .output()
+            .unwrap()
+            .stdout
+    };
+    let first = run();
+    for _ in 0..4 {
+        assert_eq!(run(), first);
+    }
+}

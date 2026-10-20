@@ -202,8 +202,8 @@ fn index_one(
     report: &mut IndexReport,
 ) -> Result<FileOutcome> {
     let rel_path = &file.rel_path;
-    let content = match fs::read_to_string(&file.abs_path) {
-        Ok(content) => content,
+    let bytes = match fs::read(&file.abs_path) {
+        Ok(bytes) => bytes,
         Err(error) => {
             report.warnings.push(IndexWarning {
                 path: rel_path.clone(),
@@ -212,6 +212,20 @@ fn index_one(
             return Ok(FileOutcome::Failed);
         }
     };
+    let content = match String::from_utf8(bytes) {
+        Ok(content) => content,
+        Err(error) => {
+            report.warnings.push(IndexWarning {
+                path: rel_path.clone(),
+                message: "not valid UTF-8; indexed with replacement characters".to_string(),
+            });
+            String::from_utf8_lossy(error.as_bytes()).into_owned()
+        }
+    };
+    let content = content
+        .strip_prefix('\u{feff}')
+        .map(ToOwned::to_owned)
+        .unwrap_or(content);
     let name = file
         .abs_path
         .file_name()
