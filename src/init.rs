@@ -115,9 +115,9 @@ pub fn run(options: InitOptions) -> Result<InitResult> {
         created,
         skipped,
         next_steps: vec![
-            format!("tessera index . --db {}", options.db_path.display()),
-            format!("tessera doctor --db {}", options.db_path.display()),
-            "tessera impact <symbol>".to_string(),
+            "tessera status".to_string(),
+            "tessera find <symbol>".to_string(),
+            "tessera blast <symbol>".to_string(),
         ],
     })
 }

@@ -1,30 +1,234 @@
 use std::io::Read;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::process::ExitCode;
 use std::time::Duration;
 
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 use clap::{CommandFactory, Parser, Subcommand, ValueEnum};
+use serde::Serialize;
 
-use tessera_codegraph::doctor::{self, DoctorOptions};
-use tessera_codegraph::indexer::{self, IndexOptions};
+use tessera_codegraph::fresh::{self, Freshness};
+use tessera_codegraph::indexer::{self, IndexMode, IndexOptions, IndexReport};
 use tessera_codegraph::init::{self, InitOptions};
-use tessera_codegraph::mcp;
-use tessera_codegraph::mcp_http;
-use tessera_codegraph::query;
-use tessera_codegraph::types::{Language, SearchOptions, UnusedOptions};
+use tessera_codegraph::query::{
+    self, BlastArgs, ContextArgs, FindArgs, PathArgs, RefsArgs, SearchArgs, VerifyArgs,
+};
+use tessera_codegraph::types::Language;
 use tessera_codegraph::watch::{self, WatchOptions};
-use tessera_codegraph::{ExportGroupBy, ExportOptions};
+use tessera_codegraph::{mcp, mcp_http, ExportGroupBy, ExportOptions, Index, Workspace};
+
+const EXIT_FINDINGS: u8 = 1;
+const EXIT_USAGE: u8 = 2;
+const EXIT_INDEX: u8 = 3;
 
 #[derive(Debug, Parser)]
-#[command(name = "tessera")]
-#[command(version)]
-#[command(about = "Semantic code graph and MCP server for AI coding agents")]
+#[command(name = "tessera", version)]
+#[command(
+    about = "Deterministic edit safety for AI coding agents: blast radius before an edit, verification after it."
+)]
 struct Cli {
+    /// Repository root. Defaults to the nearest ancestor with .tessera/ or .git.
+    #[arg(long, global = true, value_name = "DIR")]
+    root: Option<PathBuf>,
+    /// Index database. Defaults to <root>/.tessera/tessera.db.
+    #[arg(long, global = true, value_name = "FILE")]
+    db: Option<PathBuf>,
+    /// Print machine-readable JSON.
+    #[arg(long, global = true)]
+    json: bool,
+    /// Suppress progress messages on stderr.
+    #[arg(long, short, global = true)]
+    quiet: bool,
     #[command(subcommand)]
     command: Commands,
 }
 
-#[derive(Debug, Clone, ValueEnum)]
+#[derive(Debug, Subcommand)]
+enum Commands {
+    /// Write project defaults and agent MCP snippets.
+    Init {
+        /// Create MCP config snippets under .tessera/mcp/.
+        #[arg(long)]
+        mcp_configs: bool,
+        /// Create git hooks that refresh the index.
+        #[arg(long)]
+        git_hooks: bool,
+        /// Overwrite files that already exist.
+        #[arg(long)]
+        force: bool,
+    },
+    /// Show index health, freshness, and setup problems.
+    Status,
+    /// Find a symbol's definition, signature, and body, or outline a file.
+    Find {
+        /// Symbol name: `name`, `Class.method`, or `A::B`.
+        symbol: Option<String>,
+        /// Outline a file or directory instead of looking up a symbol.
+        #[arg(long)]
+        path: Option<String>,
+        /// Include each definition's source body.
+        #[arg(long)]
+        body: bool,
+        #[command(flatten)]
+        page: PageArgs,
+    },
+    /// Search symbols by fuzzy or glob pattern.
+    Search {
+        /// Pattern, e.g. `findBy*` or `usr`.
+        pattern: String,
+        /// Only these kinds (function, method, class, …); repeatable.
+        #[arg(long = "kind")]
+        kinds: Vec<String>,
+        /// Only these languages; repeatable.
+        #[arg(long = "language")]
+        languages: Vec<String>,
+        /// Only symbols under this path prefix.
+        #[arg(long)]
+        path: Option<String>,
+        /// Only exported symbols.
+        #[arg(long, conflicts_with = "internal")]
+        exported: bool,
+        /// Only non-exported symbols.
+        #[arg(long)]
+        internal: bool,
+        /// Only functions and methods with no inbound references.
+        #[arg(long)]
+        unused: bool,
+        #[command(flatten)]
+        page: PageArgs,
+    },
+    /// List references to a symbol, or the files importing a file.
+    Refs {
+        /// Symbol name or repo-relative file path.
+        target: String,
+        /// Only references from test files.
+        #[arg(long)]
+        tests: bool,
+        #[command(flatten)]
+        page: PageArgs,
+    },
+    /// Rank everything a change to a symbol or diff can affect, plus tests to run.
+    Blast {
+        /// Symbol to analyse.
+        symbol: Option<String>,
+        /// Analyse the changes since this git revision instead.
+        #[arg(long, value_name = "REV", conflicts_with = "symbol")]
+        diff: Option<String>,
+        /// End revision for --diff (default HEAD).
+        #[arg(long, value_name = "REV", requires = "diff")]
+        to: Option<String>,
+        /// Caller traversal depth.
+        #[arg(long, default_value_t = 4)]
+        depth: usize,
+        #[command(flatten)]
+        page: PageArgs,
+    },
+    /// Check that symbols or calls in a snippet exist. Exits 1 on problems.
+    Verify {
+        /// Symbol name to check.
+        symbol: Option<String>,
+        /// Code to check: a file path, or `-` for stdin.
+        #[arg(long, value_name = "FILE|-")]
+        snippet: Option<String>,
+        /// Language of the snippet.
+        #[arg(long, value_enum)]
+        language: Option<LangArg>,
+    },
+    /// One budgeted bundle to read before editing a symbol.
+    Context {
+        /// Symbol name.
+        symbol: String,
+        /// Approximate token budget.
+        #[arg(long, default_value_t = 2_000)]
+        budget: usize,
+    },
+    /// Shortest call path from one symbol to another.
+    Path {
+        /// Starting symbol.
+        from: String,
+        /// Target symbol.
+        to: String,
+        /// Maximum path length.
+        #[arg(long, default_value_t = 8)]
+        depth: usize,
+    },
+    /// Export the call graph as Mermaid or Graphviz DOT.
+    Export {
+        /// Output format.
+        #[arg(long, value_enum, default_value_t = GraphFormat::Mermaid)]
+        format: GraphFormat,
+        /// Only the forward call subgraph rooted at this symbol.
+        #[arg(long)]
+        from: Option<String>,
+        /// Traversal depth with --from.
+        #[arg(long, default_value_t = 3)]
+        depth: usize,
+        /// Maximum edges to emit.
+        #[arg(long, default_value_t = 800)]
+        limit: usize,
+        /// Group nodes into clusters.
+        #[arg(long, value_enum, default_value_t = GraphGroupArg::None)]
+        group_by: GraphGroupArg,
+        /// Hide test files.
+        #[arg(long)]
+        collapse_tests: bool,
+        /// Only edges between exported symbols.
+        #[arg(long)]
+        exported_only: bool,
+        /// Also write a self-contained HTML preview.
+        #[arg(long, value_name = "FILE")]
+        html_out: Option<PathBuf>,
+    },
+    /// Build or refresh the index. Queries do this automatically.
+    Index {
+        /// Repository to index (defaults to --root or the discovered root).
+        path: Option<PathBuf>,
+        /// Rebuild from scratch.
+        #[arg(long)]
+        full: bool,
+        /// Glob (relative to the root) to skip; repeatable.
+        #[arg(long = "exclude", value_name = "GLOB")]
+        exclude: Vec<String>,
+    },
+    /// Keep the index fresh while files change.
+    Watch {
+        /// Poll interval in milliseconds.
+        #[arg(long, default_value_t = 500)]
+        poll_ms: u64,
+        /// Wait this long after a change before re-indexing.
+        #[arg(long, default_value_t = 250)]
+        debounce_ms: u64,
+        /// Index once and exit.
+        #[arg(long)]
+        once: bool,
+        /// Rebuild from scratch on each pass.
+        #[arg(long)]
+        full: bool,
+    },
+    /// Run the MCP server (stdio by default).
+    Mcp {
+        /// Serve over HTTP on this address instead, e.g. 127.0.0.1:8765.
+        #[arg(long, value_name = "ADDR")]
+        http: Option<String>,
+    },
+    /// Print a shell completion script.
+    Completions {
+        #[arg(value_enum)]
+        shell: clap_complete::Shell,
+    },
+}
+
+#[derive(Debug, clap::Args)]
+struct PageArgs {
+    /// Maximum results per page.
+    #[arg(long, default_value_t = 50)]
+    limit: usize,
+    /// Continue from a previous page's cursor.
+    #[arg(long)]
+    cursor: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
 enum LangArg {
     Typescript,
     Tsx,
@@ -59,16 +263,14 @@ impl From<LangArg> for Language {
     }
 }
 
-#[derive(Debug, Clone, ValueEnum, Default)]
+#[derive(Debug, Clone, Copy, ValueEnum)]
 enum GraphFormat {
-    #[default]
     Mermaid,
     Dot,
 }
 
-#[derive(Debug, Clone, Copy, ValueEnum, Default)]
+#[derive(Debug, Clone, Copy, ValueEnum)]
 enum GraphGroupArg {
-    #[default]
     None,
     File,
     Directory,
@@ -86,515 +288,192 @@ impl From<GraphGroupArg> for ExportGroupBy {
     }
 }
 
-impl GraphFormat {
-    fn as_str(&self) -> &'static str {
-        match self {
-            GraphFormat::Mermaid => "mermaid",
-            GraphFormat::Dot => "dot",
+#[derive(Debug)]
+struct UsageError(String);
+
+impl std::fmt::Display for UsageError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for UsageError {}
+
+fn usage(message: &str) -> anyhow::Error {
+    UsageError(message.to_string()).into()
+}
+
+fn main() -> ExitCode {
+    // Deeply nested sources need more stack than Windows' 1 MiB main thread.
+    let result = std::thread::Builder::new()
+        .stack_size(8 * 1024 * 1024)
+        .spawn(run)
+        .map_err(anyhow::Error::from)
+        .and_then(|handle| {
+            handle
+                .join()
+                .map_err(|_| anyhow!("tessera main thread panicked"))?
+        });
+    match result {
+        Ok(code) => ExitCode::from(code),
+        Err(error) if error.downcast_ref::<UsageError>().is_some() => {
+            eprintln!("error: {error}");
+            ExitCode::from(EXIT_USAGE)
+        }
+        Err(error) => {
+            eprintln!("error: {error:#}");
+            ExitCode::from(EXIT_INDEX)
         }
     }
 }
 
-#[derive(Debug, Subcommand)]
-enum Commands {
-    /// Index a repository into a SQLite semantic graph (incremental by default).
-    Index {
-        /// Repository or directory to index.
-        path: PathBuf,
-        /// SQLite database path.
-        #[arg(long, default_value = ".tessera/tessera.db")]
-        db: PathBuf,
-        /// Re-index from scratch instead of using the sha-diff incremental path.
-        #[arg(long)]
-        full: bool,
-        /// Glob (relative to the repo root) to skip; repeatable, e.g. `--exclude 'legacy/**'`.
-        #[arg(long = "exclude", value_name = "GLOB")]
-        exclude: Vec<String>,
-    },
-    /// Watch a repository and incrementally re-index when source files change.
-    Watch {
-        /// Repository or directory to watch.
-        path: PathBuf,
-        /// SQLite database path.
-        #[arg(long, default_value = ".tessera/tessera.db")]
-        db: PathBuf,
-        /// Re-index from scratch instead of using the sha-diff incremental path.
-        #[arg(long)]
-        full: bool,
-        /// Poll interval in milliseconds.
-        #[arg(long, default_value_t = 500)]
-        poll_ms: u64,
-        /// Debounce interval in milliseconds after a detected change.
-        #[arg(long, default_value_t = 250)]
-        debounce_ms: u64,
-        /// Run one indexing pass and exit. Useful for smoke tests and CI.
-        #[arg(long)]
-        once: bool,
-    },
-    /// Check local Tessera setup and print actionable diagnostics.
-    Doctor {
-        /// Repository root to inspect.
-        #[arg(long, default_value = ".")]
-        root: PathBuf,
-        /// SQLite database path.
-        #[arg(long, default_value = ".tessera/tessera.db")]
-        db: PathBuf,
-        #[arg(long)]
-        json: bool,
-    },
-    /// Create project-local Tessera defaults and optional integration snippets.
-    Init {
-        /// Repository root to initialize.
-        #[arg(default_value = ".")]
-        root: PathBuf,
-        /// SQLite database path to write into generated snippets.
-        #[arg(long, default_value = ".tessera/tessera.db")]
-        db: PathBuf,
-        /// Create local git hooks that run `tessera index .`.
-        #[arg(long)]
-        git_hooks: bool,
-        /// Create MCP config snippets under `.tessera/mcp/`.
-        #[arg(long)]
-        mcp_configs: bool,
-        /// Overwrite existing generated files.
-        #[arg(long)]
-        force: bool,
-        #[arg(long)]
-        json: bool,
-    },
-    /// Print shell completion script.
-    Completions {
-        #[arg(value_enum)]
-        shell: clap_complete::Shell,
-    },
-    /// Find symbol definitions by name.
-    FindDefinition {
-        symbol: String,
-        #[arg(long, default_value = ".tessera/tessera.db")]
-        db: PathBuf,
-        #[arg(long)]
-        json: bool,
-    },
-    /// Find call/reference sites for a symbol.
-    FindReferences {
-        symbol: String,
-        #[arg(long, default_value = ".tessera/tessera.db")]
-        db: PathBuf,
-        #[arg(long)]
-        json: bool,
-    },
-    /// Return a token-cheap semantic outline for a file or directory.
-    GetOutline {
-        path: PathBuf,
-        #[arg(long, default_value = ".tessera/tessera.db")]
-        db: PathBuf,
-        #[arg(long)]
-        json: bool,
-    },
-    /// Return a symbol body plus immediate dependencies.
-    ExpandSymbol {
-        symbol: String,
-        #[arg(long, default_value = ".tessera/tessera.db")]
-        db: PathBuf,
-        #[arg(long)]
-        json: bool,
-    },
-    /// Return transitive callers ranked by personalised PageRank.
-    Impact {
-        symbol: String,
-        #[arg(long, default_value = ".tessera/tessera.db")]
-        db: PathBuf,
-        #[arg(long, default_value_t = 4)]
-        depth: usize,
-        /// Explain ranking and matching decisions in human output.
-        #[arg(long, alias = "why")]
-        explain: bool,
-        #[arg(long)]
-        json: bool,
-    },
-    /// Check whether a symbol exists in the graph; suggest near-misses if not.
-    Validate {
-        symbol: String,
-        #[arg(long, default_value = ".tessera/tessera.db")]
-        db: PathBuf,
-        /// Explain lookup and near-miss decisions in human output.
-        #[arg(long, alias = "why")]
-        explain: bool,
-        #[arg(long)]
-        json: bool,
-    },
-    /// Parse a code snippet and validate every call against the graph.
-    ValidateSnippet {
-        #[arg(long, value_enum)]
-        language: LangArg,
-        /// Read the snippet from this file. If omitted, read from stdin.
-        #[arg(long)]
-        file: Option<PathBuf>,
-        #[arg(long, default_value = ".tessera/tessera.db")]
-        db: PathBuf,
-        #[arg(long)]
-        json: bool,
-    },
-    /// Print index statistics.
-    Stats {
-        #[arg(long, default_value = ".tessera/tessera.db")]
-        db: PathBuf,
-        #[arg(long)]
-        json: bool,
-    },
-    /// Fuzzy / glob search across indexed symbols, filterable by kind,
-    /// language, exported, and path prefix.
-    Search {
-        /// Substring, identifier, or `glob*` pattern.
-        pattern: String,
-        /// Filter by symbol kind (function, method, class, struct, …).
-        /// Repeat or comma-separate to allow multiple.
-        #[arg(long, value_delimiter = ',')]
-        kind: Vec<String>,
-        /// Filter by language (typescript, java, python, …).
-        #[arg(long, value_delimiter = ',')]
-        language: Vec<String>,
-        /// Only show exported symbols (`--exported`) or only non-exported
-        /// (`--exported=false`).
-        #[arg(long, num_args = 0..=1, default_missing_value = "true")]
-        exported: Option<bool>,
-        /// Match symbols whose file path starts with this prefix.
-        #[arg(long)]
-        path: Option<String>,
-        #[arg(long, default_value_t = 50)]
-        limit: usize,
-        #[arg(long, default_value = ".tessera/tessera.db")]
-        db: PathBuf,
-        /// Explain fuzzy/glob scoring and filters in human output.
-        #[arg(long, alias = "why")]
-        explain: bool,
-        #[arg(long)]
-        json: bool,
-    },
-    /// Find indexed symbols with no inbound references or call edges.
-    Unused {
-        /// Filter by symbol kind (function, method, class, struct, ...).
-        /// Repeat or comma-separate to allow multiple.
-        #[arg(long, value_delimiter = ',')]
-        kind: Vec<String>,
-        /// Filter by language (typescript, java, python, ...).
-        #[arg(long, value_delimiter = ',')]
-        language: Vec<String>,
-        /// Only show exported symbols (`--exported`) or only non-exported
-        /// (`--exported=false`).
-        #[arg(long, num_args = 0..=1, default_missing_value = "true")]
-        exported: Option<bool>,
-        /// Match symbols whose file path starts with this prefix.
-        #[arg(long)]
-        path: Option<String>,
-        #[arg(long, default_value_t = 50)]
-        limit: usize,
-        #[arg(long, default_value = ".tessera/tessera.db")]
-        db: PathBuf,
-        /// Explain why symbols qualify as unused in human output.
-        #[arg(long, alias = "why")]
-        explain: bool,
-        #[arg(long)]
-        json: bool,
-    },
-    /// Bundle body + dep signatures + caller signatures + tests for an agent
-    /// to "understand" a symbol in one tool call.
-    ContextPack {
-        symbol: String,
-        /// Token budget (default 1500).
-        #[arg(long, default_value_t = 1500)]
-        budget: usize,
-        #[arg(long, default_value = ".tessera/tessera.db")]
-        db: PathBuf,
-        #[arg(long)]
-        json: bool,
-    },
-    /// Bundle validation, signature, siblings, context, and tests before editing.
-    EditPrep {
-        symbol: String,
-        /// Token budget for the embedded context pack (default 1800).
-        #[arg(long, default_value_t = 1800)]
-        budget: usize,
-        #[arg(long, default_value = ".tessera/tessera.db")]
-        db: PathBuf,
-        #[arg(long)]
-        json: bool,
-    },
-    /// Map a git range to changed symbols + their PageRank-impacted callers.
-    DiffImpact {
-        /// Base git ref (e.g. `main`, `origin/main`, `HEAD~5`).
-        from: String,
-        /// Tip ref (defaults to `HEAD`).
-        #[arg(long)]
-        to: Option<String>,
-        #[arg(long, default_value_t = 3)]
-        depth: usize,
-        #[arg(long, default_value = ".tessera/tessera.db")]
-        db: PathBuf,
-        #[arg(long)]
-        json: bool,
-    },
-    /// List the imports declared in a file or directory.
-    Imports {
-        path: String,
-        #[arg(long, default_value = ".tessera/tessera.db")]
-        db: PathBuf,
-        #[arg(long)]
-        json: bool,
-    },
-    /// List files that import a given module / source path.
-    ImportedBy {
-        source: String,
-        #[arg(long, default_value = ".tessera/tessera.db")]
-        db: PathBuf,
-        #[arg(long)]
-        json: bool,
-    },
-    /// Return just the signature (and, for containers, member signatures) of a symbol.
-    Signature {
-        symbol: String,
-        #[arg(long, default_value = ".tessera/tessera.db")]
-        db: PathBuf,
-        #[arg(long)]
-        json: bool,
-    },
-    /// Symbols that share callers with the target — the cluster to refactor together.
-    Siblings {
-        symbol: String,
-        #[arg(long, default_value = ".tessera/tessera.db")]
-        db: PathBuf,
-        #[arg(long)]
-        json: bool,
-    },
-    /// Return the minimal set of tests whose call graph touches the symbol.
-    TestsFor {
-        symbol: String,
-        #[arg(long, default_value = ".tessera/tessera.db")]
-        db: PathBuf,
-        #[arg(long)]
-        json: bool,
-    },
-    /// Find the shortest call path from one symbol to another (A calls … calls B).
-    Connect {
-        from: String,
-        to: String,
-        #[arg(long, default_value_t = 8)]
-        depth: usize,
-        #[arg(long, default_value = ".tessera/tessera.db")]
-        db: PathBuf,
-        #[arg(long)]
-        json: bool,
-    },
-    /// Export the call graph as Graphviz DOT or Mermaid (whole graph, or a
-    /// neighbourhood with `--from`).
-    Export {
-        /// Output format.
-        #[arg(long, value_enum, default_value_t = GraphFormat::Mermaid)]
-        format: GraphFormat,
-        /// Restrict to the forward call subgraph rooted at this symbol.
-        #[arg(long)]
-        from: Option<String>,
-        /// Traversal depth when `--from` is given.
-        #[arg(long, default_value_t = 3)]
-        depth: usize,
-        /// Maximum number of edges to emit.
-        #[arg(long, default_value_t = 800)]
-        limit: usize,
-        /// Group rendered graph nodes.
-        #[arg(long, value_enum, default_value_t = GraphGroupArg::None)]
-        group_by: GraphGroupArg,
-        /// Hide test/spec nodes and their edges from the export.
-        #[arg(long)]
-        collapse_tests: bool,
-        /// Only include edges whose endpoints are exported symbols.
-        #[arg(long)]
-        exported_only: bool,
-        /// Write a self-contained Mermaid preview HTML file.
-        #[arg(long)]
-        html_out: Option<PathBuf>,
-        #[arg(long, default_value = ".tessera/tessera.db")]
-        db: PathBuf,
-        #[arg(long)]
-        json: bool,
-    },
-    /// Run the MCP server over stdio.
-    Mcp {
-        #[arg(long, default_value = ".tessera/tessera.db")]
-        db: PathBuf,
-    },
-    /// Run the MCP server over local HTTP with a simple SSE readiness endpoint.
-    McpHttp {
-        /// Address to bind, for example 127.0.0.1:8765.
-        #[arg(long, default_value = "127.0.0.1:8765")]
-        addr: String,
-        #[arg(long, default_value = ".tessera/tessera.db")]
-        db: PathBuf,
-    },
-}
-
-fn main() -> Result<()> {
-    #[cfg(windows)]
-    {
-        return std::thread::Builder::new()
-            .name("tessera-main".to_string())
-            .stack_size(8 * 1024 * 1024)
-            .spawn(run)?
-            .join()
-            .map_err(|_| anyhow!("tessera main thread panicked"))?;
-    }
-
-    #[cfg(not(windows))]
-    run()
-}
-
-fn run() -> Result<()> {
+fn run() -> Result<u8> {
     let cli = Cli::parse();
+    let cwd = std::env::current_dir()?;
+    let ws = Workspace::resolve(cli.root.as_deref(), cli.db.as_deref(), &cwd);
+    let out = Output {
+        json: cli.json,
+        quiet: cli.quiet,
+    };
 
     match cli.command {
-        Commands::Index {
-            path,
-            db,
-            full,
-            exclude,
-        } => {
-            let options = IndexOptions {
-                full,
-                excludes: exclude,
-            };
-            let report = indexer::index_path_with(&path, &db, options)?;
-            let mode = match report.mode {
-                indexer::IndexMode::Full => "full",
-                indexer::IndexMode::Incremental => "incremental",
-            };
-            println!(
-                "[{mode}] indexed {} files (+{} reused, -{} removed, {} skipped), {} symbols, {} references into {} in {}ms",
-                report.files_indexed,
-                report.files_reused,
-                report.files_removed,
-                report.files_skipped,
-                report.symbols_indexed,
-                report.references_indexed,
-                db.display(),
-                report.elapsed_ms
-            );
-            print_index_warnings(&report.warnings);
-        }
-        Commands::Watch {
-            path,
-            db,
-            full,
-            poll_ms,
-            debounce_ms,
-            once,
-        } => {
-            let options = WatchOptions {
-                poll_interval: Duration::from_millis(poll_ms),
-                debounce: Duration::from_millis(debounce_ms),
-                index_options: IndexOptions {
-                    full,
-                    excludes: Vec::new(),
-                },
-                once,
-            };
-            watch::watch_path(&path, &db, options)?;
-        }
-        Commands::Doctor { root, db, json } => {
-            let result = doctor::run(DoctorOptions { root, db_path: db })?;
-            print_result(result, json)?;
-        }
         Commands::Init {
-            root,
-            db,
-            git_hooks,
             mcp_configs,
+            git_hooks,
             force,
-            json,
         } => {
             let result = init::run(InitOptions {
-                root,
-                db_path: db,
+                root: ws.root.clone(),
+                db_path: ws.db_path.clone(),
                 git_hooks,
                 mcp_configs,
                 force,
             })?;
-            print_result(result, json)?;
+            out.print(&result)?;
         }
-        Commands::Completions { shell } => {
-            clap_complete::generate(
-                shell,
-                &mut Cli::command(),
-                "tessera",
-                &mut std::io::stdout(),
-            );
-        }
-        Commands::FindDefinition { symbol, db, json } => {
-            print_result(query::find_definition(&db, &symbol)?, json)?;
-        }
-        Commands::FindReferences { symbol, db, json } => {
-            print_result(query::find_references(&db, &symbol)?, json)?;
-        }
-        Commands::GetOutline { path, db, json } => {
-            print_result(query::get_outline(&db, &path)?, json)?;
-        }
-        Commands::ExpandSymbol { symbol, db, json } => {
-            print_result(query::expand_symbol(&db, &symbol)?, json)?;
-        }
-        Commands::Impact {
+        Commands::Status => out.print(&query::status(&ws)?)?,
+        Commands::Find {
             symbol,
-            db,
-            depth,
-            explain,
-            json,
+            path,
+            body,
+            page,
         } => {
-            let result = query::impact(&db, &symbol, depth)?;
-            print_result(&result, json)?;
-            if explain && !json {
-                explain_impact(&result);
+            if symbol.is_none() && path.is_none() {
+                return Err(usage("pass a symbol name, or --path <file-or-dir>"));
             }
-        }
-        Commands::Validate {
-            symbol,
-            db,
-            explain,
-            json,
-        } => {
-            let result = query::validate(&db, &symbol)?;
-            print_result(&result, json)?;
-            if explain && !json {
-                explain_validate(&result);
-            }
-        }
-        Commands::ValidateSnippet {
-            language,
-            file,
-            db,
-            json,
-        } => {
-            let code = match file {
-                Some(path) => std::fs::read_to_string(path)?,
-                None => {
-                    let mut buf = String::new();
-                    std::io::stdin().read_to_string(&mut buf)?;
-                    buf
-                }
+            let Some(index) = open_fresh(&ws, &out)? else {
+                return Ok(0);
             };
-            let result = query::validate_snippet(&db, &code, language.into())?;
-            print_result(result, json)?;
+            out.print(&index.find(&FindArgs {
+                symbol,
+                path,
+                include_body: body,
+                limit: page.limit,
+                cursor: page.cursor,
+            })?)?;
         }
-        Commands::Stats { db, json } => {
-            print_result(query::stats(&db)?, json)?;
+        Commands::Search {
+            pattern,
+            kinds,
+            languages,
+            path,
+            exported,
+            internal,
+            unused,
+            page,
+        } => {
+            let Some(index) = open_fresh(&ws, &out)? else {
+                return Ok(0);
+            };
+            out.print(&index.search(&SearchArgs {
+                pattern,
+                kinds,
+                languages,
+                path,
+                exported: (exported || internal).then_some(exported),
+                unused,
+                limit: page.limit,
+                cursor: page.cursor,
+            })?)?;
         }
-        Commands::TestsFor { symbol, db, json } => {
-            print_result(query::tests_for(&db, &symbol)?, json)?;
+        Commands::Refs {
+            target,
+            tests,
+            page,
+        } => {
+            let Some(index) = open_fresh(&ws, &out)? else {
+                return Ok(0);
+            };
+            out.print(&index.refs(&RefsArgs {
+                target,
+                tests_only: tests,
+                limit: page.limit,
+                cursor: page.cursor,
+            })?)?;
         }
-        Commands::Connect {
-            from,
+        Commands::Blast {
+            symbol,
+            diff,
             to,
             depth,
-            db,
-            json,
+            page,
         } => {
-            print_result(query::connect(&db, &from, &to, depth)?, json)?;
+            if symbol.is_none() && diff.is_none() {
+                return Err(usage("pass a symbol, or --diff <rev>"));
+            }
+            let Some(index) = open_fresh(&ws, &out)? else {
+                return Ok(0);
+            };
+            out.print(&index.blast(&BlastArgs {
+                symbol,
+                diff_from: diff,
+                diff_to: to,
+                depth,
+                limit: page.limit,
+                cursor: page.cursor,
+            })?)?;
+        }
+        Commands::Verify {
+            symbol,
+            snippet,
+            language,
+        } => {
+            if symbol.is_none() && snippet.is_none() {
+                return Err(usage(
+                    "pass a symbol, or --snippet <file|-> with --language",
+                ));
+            }
+            if snippet.is_some() && language.is_none() {
+                return Err(usage("--snippet needs --language"));
+            }
+            let snippet = snippet.map(|source| read_snippet(&source)).transpose()?;
+            let Some(index) = open_fresh(&ws, &out)? else {
+                return Ok(0);
+            };
+            let result = index.verify(&VerifyArgs {
+                symbol,
+                snippet,
+                language: language.map(Language::from),
+            })?;
+            out.print(&result)?;
+            if !result.ok {
+                return Ok(EXIT_FINDINGS);
+            }
+        }
+        Commands::Context { symbol, budget } => {
+            let Some(index) = open_fresh(&ws, &out)? else {
+                return Ok(0);
+            };
+            out.print(&index.context(&ContextArgs {
+                symbol,
+                budget_tokens: budget,
+            })?)?;
+        }
+        Commands::Path { from, to, depth } => {
+            let Some(index) = open_fresh(&ws, &out)? else {
+                return Ok(0);
+            };
+            out.print(&index.path(&PathArgs { from, to, depth })?)?;
         }
         Commands::Export {
             format,
@@ -605,181 +484,205 @@ fn run() -> Result<()> {
             collapse_tests,
             exported_only,
             html_out,
-            db,
-            json,
         } => {
-            let mut options = ExportOptions::new(format.as_str(), from.as_deref(), depth, limit);
+            let Some(index) = open_fresh(&ws, &out)? else {
+                return Ok(0);
+            };
+            let format = match format {
+                GraphFormat::Mermaid => "mermaid",
+                GraphFormat::Dot => "dot",
+            };
+            let mut options = ExportOptions::new(format, from.as_deref(), depth, limit);
             options.group_by = group_by.into();
             options.collapse_tests = collapse_tests;
             options.exported_only = exported_only;
             options.html_out = html_out;
-            print_result(query::export_with_options(&db, options)?, json)?;
+            out.print(&index.export(options)?)?;
         }
-        Commands::ContextPack {
-            symbol,
-            budget,
-            db,
-            json,
-        } => {
-            print_result(query::context_pack(&db, &symbol, budget)?, json)?;
-        }
-        Commands::EditPrep {
-            symbol,
-            budget,
-            db,
-            json,
-        } => {
-            print_result(query::edit_prep(&db, &symbol, budget)?, json)?;
-        }
-        Commands::DiffImpact {
-            from,
-            to,
-            depth,
-            db,
-            json,
-        } => {
-            print_result(query::diff_impact(&db, &from, to.as_deref(), depth)?, json)?;
-        }
-        Commands::Imports { path, db, json } => {
-            print_result(query::imports(&db, &path)?, json)?;
-        }
-        Commands::ImportedBy { source, db, json } => {
-            print_result(query::imported_by(&db, &source)?, json)?;
-        }
-        Commands::Signature { symbol, db, json } => {
-            print_result(query::signature(&db, &symbol)?, json)?;
-        }
-        Commands::Siblings { symbol, db, json } => {
-            print_result(query::siblings(&db, &symbol)?, json)?;
-        }
-        Commands::Search {
-            pattern,
-            kind,
-            language,
-            exported,
+        Commands::Index {
             path,
-            limit,
-            db,
-            explain,
-            json,
+            full,
+            exclude,
         } => {
-            let options = SearchOptions {
-                kinds: kind,
-                languages: language,
-                exported,
-                path_prefix: path,
-                limit,
-            };
-            let result =
-                query::search_conn(&tessera_codegraph::db::open_ro(&db)?, &pattern, options)?;
-            print_result(&result, json)?;
-            if explain && !json {
-                explain_search(&result);
+            let root = path.map(|p| cwd.join(p)).unwrap_or_else(|| ws.root.clone());
+            let report = indexer::index_path_with(
+                &root,
+                &ws.db_path,
+                IndexOptions {
+                    full,
+                    excludes: exclude,
+                },
+            )?;
+            if out.json {
+                out.print_json(&IndexSummary::from(&report))?;
+            } else {
+                print_report(&report, &ws.db_path);
             }
         }
-        Commands::Unused {
-            kind,
-            language,
-            exported,
-            path,
-            limit,
-            db,
-            explain,
-            json,
+        Commands::Watch {
+            poll_ms,
+            debounce_ms,
+            once,
+            full,
         } => {
-            let options = UnusedOptions {
-                kinds: kind,
-                languages: language,
-                exported,
-                path_prefix: path,
-                limit,
-            };
-            let result = query::unused(&db, options)?;
-            print_result(&result, json)?;
-            if explain && !json {
-                explain_unused(&result);
+            watch::watch_path(
+                &ws.root,
+                &ws.db_path,
+                WatchOptions {
+                    poll_interval: Duration::from_millis(poll_ms),
+                    debounce: Duration::from_millis(debounce_ms),
+                    index_options: IndexOptions {
+                        full,
+                        excludes: Vec::new(),
+                    },
+                    once,
+                },
+            )?;
+        }
+        Commands::Mcp { http } => {
+            fresh::ensure(&ws)?;
+            match http {
+                Some(addr) => mcp_http::serve(&addr, &ws.db_path)?,
+                None => mcp::serve_stdio(&ws.db_path)?,
             }
         }
-        Commands::Mcp { db } => mcp::serve_stdio(&db)?,
-        Commands::McpHttp { addr, db } => mcp_http::serve(&addr, &db)?,
+        Commands::Completions { shell } => {
+            clap_complete::generate(
+                shell,
+                &mut Cli::command(),
+                "tessera",
+                &mut std::io::stdout(),
+            );
+        }
     }
-
-    Ok(())
+    Ok(0)
 }
 
-fn print_result<T>(value: T, json: bool) -> Result<()>
-where
-    T: serde::Serialize + std::fmt::Display,
-{
-    if json {
-        println!("{}", serde_json::to_string_pretty(&value)?);
-    } else {
-        println!("{value}");
-    }
-    Ok(())
+struct Output {
+    json: bool,
+    quiet: bool,
 }
 
-fn explain_impact(result: &tessera_codegraph::types::ImpactResult) {
-    println!("\nWhy:");
-    println!("  Impact walks the reverse call graph: callee -> transitive callers.");
-    println!("  Scores combine personalised PageRank, caller fan-in/out, exported status, test-path coverage, and depth decay.");
-    if let Some(top) = result.callers.first() {
-        println!(
-            "  Top caller `{}` ranked first with pagerank {:.4}, fanout_in {}, fanout_out {}, exported={}, depth_decay {:.2}.",
-            top.symbol.qualified_name,
-            top.breakdown.pagerank,
-            top.breakdown.fanout_in,
-            top.breakdown.fanout_out,
-            top.breakdown.exported,
-            top.breakdown.depth_decay
+impl Output {
+    fn print<T: Serialize + std::fmt::Display>(&self, value: &T) -> Result<()> {
+        if self.json {
+            self.print_json(value)
+        } else {
+            print!("{value}");
+            Ok(())
+        }
+    }
+
+    fn print_json<T: Serialize>(&self, value: &T) -> Result<()> {
+        println!("{}", serde_json::to_string_pretty(value)?);
+        Ok(())
+    }
+
+    fn progress(&self, message: &str) {
+        if !self.quiet {
+            eprintln!("{message}");
+        }
+    }
+}
+
+fn open_fresh(ws: &Workspace, out: &Output) -> Result<Option<Index>> {
+    if fresh::check(ws)? != Freshness::Fresh {
+        out.progress(&format!("indexing {} …", ws.root.display()));
+        if let Some(report) = fresh::ensure(ws)? {
+            out.progress(&format!(
+                "indexed {} files, {} symbols in {}ms",
+                report.files_indexed + report.files_reused,
+                report.symbols_indexed,
+                report.elapsed_ms
+            ));
+            if !report.warnings.is_empty() {
+                out.progress(&format!(
+                    "{} file(s) could not be indexed; run `tessera index` to see them",
+                    report.warnings.len()
+                ));
+            }
+        }
+    }
+    let index = Index::open(&ws.db_path)?;
+    if index.status()?.files == 0 {
+        let message = format!(
+            "No supported source files found under {}.",
+            ws.root.display()
         );
+        if out.json {
+            out.print_json(&serde_json::json!({ "files": 0, "message": message }))?;
+        } else {
+            println!("{message}");
+        }
+        return Ok(None);
     }
+    Ok(Some(index))
 }
 
-fn explain_validate(result: &tessera_codegraph::types::ValidateResult) {
-    println!("\nWhy:");
-    println!("  Validate looks the name up in the symbol table.");
-    println!("  If unresolved, candidates come from trigram search and are ranked by Jaro-Winkler similarity.");
-    println!(
-        "  exists={} candidates={}",
-        result.exists,
-        result.candidates.len()
-    );
-}
-
-fn explain_search(result: &tessera_codegraph::types::SearchResult) {
-    println!("\nWhy:");
-    if result.query.contains('*') {
-        println!("  Search treated the pattern as a glob and ranked matching names deterministically by match quality and qualified name.");
+fn read_snippet(source: &str) -> Result<String> {
+    if source == "-" {
+        let mut code = String::new();
+        std::io::stdin().read_to_string(&mut code)?;
+        Ok(code)
     } else {
-        println!("  Search used trigram fuzzy lookup and ranked hits by Jaro-Winkler similarity against name and qualified_name.");
+        std::fs::read_to_string(source)
+            .map_err(|error| anyhow!("cannot read snippet file {source}: {error}"))
     }
-    println!("  Returned hits are also filtered by any kind, language, exported, path, and limit options supplied.");
 }
 
-fn explain_unused(result: &tessera_codegraph::types::UnusedResult) {
-    println!("\nWhy:");
-    println!("  A symbol is reported unused only when both inbound refs and inbound call edges are zero for its simple and qualified names.");
+#[derive(Serialize)]
+struct IndexSummary {
+    mode: &'static str,
+    files_indexed: usize,
+    files_reused: usize,
+    files_removed: usize,
+    files_skipped: usize,
+    symbols: usize,
+    references: usize,
+    elapsed_ms: u128,
+    warnings: usize,
+}
+
+impl From<&IndexReport> for IndexSummary {
+    fn from(report: &IndexReport) -> Self {
+        Self {
+            mode: mode_name(report.mode),
+            files_indexed: report.files_indexed,
+            files_reused: report.files_reused,
+            files_removed: report.files_removed,
+            files_skipped: report.files_skipped,
+            symbols: report.symbols_indexed,
+            references: report.references_indexed,
+            elapsed_ms: report.elapsed_ms,
+            warnings: report.warnings.len(),
+        }
+    }
+}
+
+fn mode_name(mode: IndexMode) -> &'static str {
+    match mode {
+        IndexMode::Full => "full",
+        IndexMode::Incremental => "incremental",
+    }
+}
+
+fn print_report(report: &IndexReport, db: &Path) {
     println!(
-        "  Test-path symbols are excluded, then kind/language/exported/path filters are applied."
+        "[{}] indexed {} files (+{} reused, -{} removed, {} skipped), {} symbols, {} references into {} in {}ms",
+        mode_name(report.mode),
+        report.files_indexed,
+        report.files_reused,
+        report.files_removed,
+        report.files_skipped,
+        report.symbols_indexed,
+        report.references_indexed,
+        db.display(),
+        report.elapsed_ms
     );
-    if let Some(first) = result.symbols.first() {
-        println!(
-            "  `{}` has inbound_refs={} and inbound_edges={}.",
-            first.symbol.qualified_name, first.inbound_refs, first.inbound_edges
-        );
+    for warning in report.warnings.iter().take(5) {
+        eprintln!("warning: {}: {}", warning.path, warning.message);
     }
-}
-
-fn print_index_warnings(warnings: &[indexer::IndexWarning]) {
-    if warnings.is_empty() {
-        return;
-    }
-    eprintln!("indexed with {} warning(s):", warnings.len());
-    for warning in warnings.iter().take(5) {
-        eprintln!("  {}: {}", warning.path, warning.message);
-    }
-    if warnings.len() > 5 {
-        eprintln!("  ... {} more", warnings.len() - 5);
+    if report.warnings.len() > 5 {
+        eprintln!("warning: … {} more", report.warnings.len() - 5);
     }
 }

@@ -32,7 +32,6 @@
 
 pub mod config;
 pub mod db;
-pub mod doctor;
 pub mod extract;
 pub mod fresh;
 pub mod indexer;

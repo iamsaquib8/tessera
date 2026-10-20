@@ -116,9 +116,12 @@ impl AgentText for FindResult {
         for m in &self.matches {
             let s = &m.symbol;
             out.push_str(&format!(
-                "{} {} {}:{}-{}\n  {}\n",
-                s.kind, s.qualified_name, s.path, s.start_line, s.end_line, s.signature
+                "{} {} {}:{}-{}\n",
+                s.kind, s.qualified_name, s.path, s.start_line, s.end_line
             ));
+            if m.body.is_none() {
+                out.push_str(&format!("  {}\n", s.signature));
+            }
             for member in &m.members {
                 out.push_str(&format!("    {member}\n"));
             }
