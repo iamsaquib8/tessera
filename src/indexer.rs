@@ -67,7 +67,7 @@ pub fn index_path_with(root: &Path, db_path: &Path, options: IndexOptions) -> Re
         &serde_json::to_string(&options.excludes)?,
     )?;
 
-    let mut report = IndexReport::new(if options.full {
+    let mut report = IndexReport::new(if options.full || db::count_files(&conn)? == 0 {
         IndexMode::Full
     } else {
         IndexMode::Incremental
@@ -202,6 +202,14 @@ fn index_one(
     report: &mut IndexReport,
 ) -> Result<FileOutcome> {
     let rel_path = &file.rel_path;
+    if !full {
+        if let Some((id, size, mtime_ns)) = db::file_stat(tx, rel_path)? {
+            if size == file.size && mtime_ns == file.mtime_ns {
+                report.files_reused += 1;
+                return Ok(FileOutcome::Reused(id));
+            }
+        }
+    }
     let bytes = match fs::read(&file.abs_path) {
         Ok(bytes) => bytes,
         Err(error) => {

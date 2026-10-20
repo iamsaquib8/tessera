@@ -123,3 +123,18 @@ fn incremental_index_on_forty_thousand_files() {
     assert_eq!(report.files_indexed, 1);
     assert_eq!(report.files_removed, 0);
 }
+
+#[test]
+#[ignore = "perf budget; run with --release -- --ignored"]
+fn no_op_reindex_skips_unchanged_files_quickly() {
+    let (temp, index) = synth_index(10_000);
+    let root = index.root().to_path_buf();
+    drop(index);
+    let (report, took) =
+        timed(|| Index::build(&root, temp.path().join("t.db"), IndexOptions::default()).unwrap());
+    assert_eq!(report.files_indexed, 0);
+    assert!(
+        took <= Duration::from_millis(400),
+        "no-op re-index took {took:?}"
+    );
+}

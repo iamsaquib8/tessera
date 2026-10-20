@@ -255,3 +255,18 @@ fn status_on_a_fresh_checkout_explains_what_to_do() {
         .stdout(predicate::str::contains("missing"))
         .stdout(predicate::str::contains("Any query builds it"));
 }
+
+#[test]
+fn first_index_is_reported_as_full() {
+    let temp = repo("go");
+    tessera(temp.path())
+        .arg("index")
+        .assert()
+        .success()
+        .stdout(predicate::str::starts_with("[full]"));
+    tessera(temp.path())
+        .arg("index")
+        .assert()
+        .success()
+        .stdout(predicate::str::starts_with("[incremental]"));
+}

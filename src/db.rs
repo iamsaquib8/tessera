@@ -266,6 +266,15 @@ pub fn file_sha(conn: &Connection, path: &str) -> Result<Option<(i64, String)>> 
         .map_err(Into::into)
 }
 
+pub fn file_stat(conn: &Connection, path: &str) -> Result<Option<(i64, u64, i64)>> {
+    conn.prepare_cached("SELECT id, size_bytes, mtime_ns FROM files WHERE path = ?1")?
+        .query_row(params![path], |row| {
+            Ok((row.get(0)?, row.get::<_, i64>(1)? as u64, row.get(2)?))
+        })
+        .optional()
+        .map_err(Into::into)
+}
+
 pub fn touch_file(conn: &Connection, file_id: i64, size_bytes: u64, mtime_ns: i64) -> Result<()> {
     conn.prepare_cached("UPDATE files SET size_bytes = ?2, mtime_ns = ?3 WHERE id = ?1")?
         .execute(params![file_id, size_bytes as i64, mtime_ns])?;

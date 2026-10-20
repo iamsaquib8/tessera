@@ -231,3 +231,31 @@ fn cli_blast_json_is_byte_identical_across_runs() {
         assert_eq!(run(), first);
     }
 }
+
+#[cfg(unix)]
+#[test]
+fn unchanged_size_and_mtime_skip_rereading() {
+    let temp = tempfile::TempDir::new().unwrap();
+    let root = temp.path().join("repo");
+    std::fs::create_dir_all(&root).unwrap();
+    let file = root.join("a.ts");
+    std::fs::write(&file, "export function alpha() { return 1; }\n").unwrap();
+    std::fs::write(root.join("stamp"), "").unwrap();
+    std::process::Command::new("touch")
+        .arg("-r")
+        .arg(&file)
+        .arg(root.join("stamp"))
+        .status()
+        .unwrap();
+    let db = temp.path().join("t.db");
+    Index::build(&root, &db, IndexOptions::default()).unwrap();
+    std::fs::write(&file, "export function omega() { return 1; }\n").unwrap();
+    std::process::Command::new("touch")
+        .arg("-r")
+        .arg(root.join("stamp"))
+        .arg(&file)
+        .status()
+        .unwrap();
+    let report = Index::build(&root, &db, IndexOptions::default()).unwrap();
+    assert_eq!((report.files_indexed, report.files_reused), (0, 1));
+}
