@@ -13,7 +13,7 @@ demo. Nothing is claimed until it can be reproduced. The full design is in
 | --- | --- | --- |
 | v0.10 | Foundation | done, release pending |
 | v0.11 | Precision + public accuracy benchmark | next |
-| v0.12 | Edit-safety loop (hooks for 20+ agents) | planned |
+| v0.12 | Edit-safety loop (hooks in every agent that supports them) | planned |
 | v0.13 | Cross-repo contract map | planned |
 | v1.0 | Change-impact UI, GitHub Action, stable contracts | planned |
 | v1.x | Team & CI, architecture rules, precise mode, editors, runtime truth, data lineage, plugins, agent memory | planned |

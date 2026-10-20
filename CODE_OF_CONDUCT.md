@@ -1,23 +1,11 @@
 # Code of Conduct
 
-Tessera uses a simple standard: be direct, generous, and professional.
+Tessera follows the [Contributor Covenant, version 2.1](https://www.contributor-covenant.org/version/2/1/code_of_conduct/).
 
-## Expected Behavior
+In short: be kind, assume good faith, and keep discussion about the work.
+Harassment and personal attacks are not accepted in issues, pull requests,
+discussions, or any other project space.
 
-- Assume good intent while still being precise.
-- Keep criticism about code, behavior, or design choices, not people.
-- Welcome newcomers and explain context that may not be obvious.
-- Respect boundaries when maintainers close an issue or decline a proposal.
-
-## Unacceptable Behavior
-
-- Harassment, threats, or personal attacks.
-- Discriminatory language or conduct.
-- Doxxing or sharing private information.
-- Repeatedly derailing issues or pull requests after a maintainer asks you to stop.
-
-## Enforcement
-
-Maintainers may remove comments, close issues, block users, or report abuse when needed to keep the project healthy.
-
-To report a concern, contact the maintainers through the repository security or moderation channels.
+Report unacceptable behaviour privately to the maintainer at
+saquibulhassan6@gmail.com. Reports are handled confidentially, and the
+maintainer may remove content or block participants who break these rules.

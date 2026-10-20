@@ -1,0 +1,30 @@
+name: Agent integration
+description: Add or fix setup, MCP config, or hooks for a coding agent.
+labels: ["agents"]
+body:
+  - type: input
+    id: agent
+    attributes:
+      label: Agent and version
+      placeholder: Grok Build 0.4
+    validations:
+      required: true
+  - type: textarea
+    id: docs
+    attributes:
+      label: Links to the agent's MCP and hook documentation
+      description: Integrations are only built from vendor documentation.
+    validations:
+      required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: What is missing or broken
+    validations:
+      required: true
+  - type: checkboxes
+    id: help
+    attributes:
+      label: Contribution
+      options:
+        - label: I'd like to implement this (see docs/how-to-add-an-agent.md)

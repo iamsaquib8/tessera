@@ -1,0 +1,25 @@
+name: Framework pack
+description: Teach Tessera how a framework links code (routes, queues, tables) for the contract map.
+labels: ["framework-pack"]
+body:
+  - type: input
+    id: framework
+    attributes:
+      label: Framework or library
+      placeholder: Django REST framework
+    validations:
+      required: true
+  - type: textarea
+    id: links
+    attributes:
+      label: What should be linked
+      description: For example, a `@router.get("/users")` handler and the client calls that hit it.
+    validations:
+      required: true
+  - type: textarea
+    id: example
+    attributes:
+      label: Example code on both sides
+      render: text
+    validations:
+      required: true

@@ -1,0 +1,40 @@
+<!doctype html><html><head><meta charset="utf-8">
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@125,800&family=Atkinson+Hyperlegible:wght@400;700&family=JetBrains+Mono:wght@400;600&display=block" rel="stylesheet">
+<style>
+  * { box-sizing: border-box; margin: 0; }
+  body { width: 1280px; height: 640px; background: #EEF0F2; color: #1C2330; font-family: "Atkinson Hyperlegible", sans-serif; }
+  .card { position: relative; height: 100%; padding: 72px 80px; display: grid; grid-template-columns: 1fr 470px; gap: 56px; align-items: center; }
+  .logo { height: 58px; margin-bottom: 44px; }
+  h1 { font-family: "Archivo", sans-serif; font-stretch: 125%; font-weight: 800; font-size: 54px; line-height: 1.06; letter-spacing: -0.5px; }
+  h1 { text-wrap: balance; }
+  h1 .second { display: block; margin-top: 10px; }
+  p { margin-top: 28px; font-size: 25px; line-height: 1.4; color: #3B4556; max-width: 560px; }
+  .term { background: #1C2330; border-radius: 14px; padding: 26px 28px; font-family: "JetBrains Mono", monospace; font-size: 17.5px; line-height: 1.65; color: #C9D1DD; box-shadow: 0 1px 0 #ffffff inset, 0 24px 48px -24px rgba(28,35,48,.55); }
+  .term .prompt { color: #8A97AA; }
+  .term .cmd { color: #EEF0F2; }
+  .term .bad { color: #F07A7A; }
+  .term .good { color: #5CCFBE; }
+  .term .dim { color: #8A97AA; }
+  .dots { display: flex; gap: 7px; margin-bottom: 18px; }
+  .dots span { width: 11px; height: 11px; border-radius: 3px; background: #2E3A4E; }
+  .foot { position: absolute; left: 80px; bottom: 44px; font-size: 19px; color: #6B7686; }
+</style></head><body><div class="card">
+  <div>
+    <img class="logo" src="../logo-light.svg">
+    <h1>Your agent says done.<span class="second">Tessera checks.</span></h1>
+    <p>Blast radius before every edit, verification after it. Local, deterministic, no LLM.</p>
+  </div>
+  <div class="term">
+    <div class="dots"><span></span><span></span><span></span></div>
+    <div><span class="prompt">$ </span><span class="cmd">tessera blast formatName</span></div>
+    <div class="dim">4 callers affected (ranked)</div>
+    <div>&nbsp;100.0 handler <span class="dim">api/handler.ts:4</span></div>
+    <div>&nbsp;&nbsp;63.7 UserRepo.findById</div>
+    <div>&nbsp;</div>
+    <div><span class="prompt">$ </span><span class="cmd">tessera verify --snippet edit.ts</span></div>
+    <div class="bad">✗ findByIdd is not defined</div>
+    <div class="good">&nbsp;&nbsp;did you mean UserRepo.findById?</div>
+  </div>
+  <div class="foot">github.com/iamsaquib8/tessera &nbsp;&nbsp; Apache-2.0</div>
+</div></body></html>

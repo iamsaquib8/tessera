@@ -1,8 +1,8 @@
 blank_issues_enabled: false
 contact_links:
+  - name: Question or idea
+    url: https://github.com/iamsaquib8/tessera/discussions
+    about: Ask how to use Tessera or propose something bigger than an issue.
   - name: Security report
     url: https://github.com/iamsaquib8/tessera/security/advisories/new
-    about: Report a vulnerability privately
-  - name: Discussions
-    url: https://github.com/iamsaquib8/tessera/discussions
-    about: Questions and ideas (enable Discussions on the repo if needed)
+    about: Report a vulnerability privately.

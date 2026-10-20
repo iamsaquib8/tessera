@@ -1,59 +1,62 @@
-# Contributing
+# Contributing to Tessera
 
-Thanks for helping make Tessera better. The project is still young, so the best contributions are small, well-tested improvements that make the graph more accurate or the CLI easier to use.
+Small, tested pull requests are the most useful. The three most valuable kinds
+are each self-contained:
+
+1. **A language**: add or deepen extraction for a grammar
+   ([guide](docs/how-to-add-a-language.md)).
+2. **An agent integration**: document or wire up an agent
+   ([guide](docs/how-to-add-an-agent.md)).
+3. **A fix with a fixture**: anything Tessera got wrong on real code, reduced
+   to a few lines in `tests/fixtures/`.
+
+Issues labelled `good first issue` are scoped to fit one of these.
 
 ## Setup
 
 ```sh
 git clone https://github.com/iamsaquib8/tessera
 cd tessera
-cargo test
+cargo test            # Rust 1.90+
 ```
 
-## Development Loop
-
-Run the same checks CI runs:
+## The checks CI runs
 
 ```sh
 cargo fmt --check
 cargo clippy --all-targets --all-features -- -D warnings
 cargo test --all-targets --all-features
+cargo test --release --test perf -- --ignored   # perf budgets
+node --test npm/test/                            # npm launcher
 ```
 
-For local smoke testing:
+## How the tests are organised
 
-```sh
-cargo run -- index examples/sample --db /tmp/tessera.db
-cargo run -- impact findById --db /tmp/tessera.db
-```
+| File | Covers |
+| --- | --- |
+| `tests/golden.rs` | Snapshot of every symbol, reference, import, and edge for each language fixture. Run `INSTA_UPDATE=always cargo test --test golden`, then review the diff with `git diff tests/snapshots`. |
+| `tests/lib_api.rs` | The eight query operations through the library API |
+| `tests/cli.rs` | CLI behaviour, exit codes, JSON output |
+| `tests/mcp_conformance.rs` | MCP over stdio and HTTP, driven against the built binary |
+| `tests/robustness.rs` | Adversarial input, determinism, concurrency |
+| `tests/perf.rs` | Time budgets (ignored by default) |
 
-## Good First Contributions
+When you change what Tessera extracts, the golden snapshot diff is the review.
+Explain each changed line in your PR description.
 
-- Add a compact fixture for a parser edge case.
-- Improve symbol extraction for TypeScript, JavaScript, or Python.
-- Add a query test for definitions, references, outlines, expansion, or impact.
-- Improve docs where setup or MCP configuration is unclear.
+## Code style
 
-## Pull Request Guidelines
+- Match the surrounding code.
+- No multi-line comment blocks. At most one short line, and only when the
+  reason is not obvious.
+- Commit messages use Conventional Commits prefixes (`feat:`, `fix:`,
+  `docs:`, …) with a plain-English body explaining why.
 
-- Keep the PR scoped to one behavior or one documentation improvement.
-- Add or update tests for parser and query changes.
-- Preserve the `tessera` binary name even though the crates.io package is `tessera-codegraph`.
-- Avoid broad refactors unless they unlock a concrete feature or fix.
+## Pull requests
 
-## Release Checklist
+- One change per PR, with the test that proves it.
+- Run the checks above before you push.
+- New user-facing behaviour needs a line in `CHANGELOG.md` and, if it changes
+  a command, the matching page in `docs/`.
 
-Maintainers should run:
-
-```sh
-cargo fmt --check
-cargo clippy --all-targets --all-features -- -D warnings
-cargo test --all-targets --all-features
-cargo publish --dry-run
-```
-
-Then publish:
-
-```sh
-cargo publish
-```
+By contributing you agree your work is licensed under Apache-2.0.

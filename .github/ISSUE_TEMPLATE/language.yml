@@ -1,0 +1,37 @@
+name: Language request or gap
+description: Ask for a new language, or report something an existing language misses.
+labels: ["language-support"]
+body:
+  - type: input
+    id: language
+    attributes:
+      label: Language
+      placeholder: Kotlin
+    validations:
+      required: true
+  - type: dropdown
+    id: kind
+    attributes:
+      label: Request
+      options: [New language, Missing symbols, Missing references or calls, Missing imports, Wrong resolution]
+    validations:
+      required: true
+  - type: textarea
+    id: example
+    attributes:
+      label: Example code
+      description: Show the construct Tessera should understand, and what it should record.
+      render: text
+    validations:
+      required: true
+  - type: input
+    id: grammar
+    attributes:
+      label: tree-sitter grammar crate (if known)
+      placeholder: tree-sitter-kotlin-ng
+  - type: checkboxes
+    id: help
+    attributes:
+      label: Contribution
+      options:
+        - label: I'd like to implement this (see docs/how-to-add-a-language.md)

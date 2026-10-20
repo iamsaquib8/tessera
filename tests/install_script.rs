@@ -22,7 +22,14 @@ fn fake_release(dir: &Path, version: &str) {
     fs::create_dir_all(&release).unwrap();
     fs::create_dir_all(&stage).unwrap();
     let bin = stage.join("tessera");
-    fs::write(&bin, format!("#!/bin/sh\necho \"tessera {}\"\n", version.trim_start_matches('v'))).unwrap();
+    fs::write(
+        &bin,
+        format!(
+            "#!/bin/sh\necho \"tessera {}\"\n",
+            version.trim_start_matches('v')
+        ),
+    )
+    .unwrap();
     Command::new("chmod").arg("755").arg(&bin).status().unwrap();
     let archive = format!("tessera-{}.tar.gz", host_target());
     let status = Command::new("tar")
@@ -36,7 +43,10 @@ fn fake_release(dir: &Path, version: &str) {
     assert!(status.success());
     let sums = Command::new("sh")
         .arg("-c")
-        .arg(format!("cd '{}' && (shasum -a 256 {archive} 2>/dev/null || sha256sum {archive})", release.display()))
+        .arg(format!(
+            "cd '{}' && (shasum -a 256 {archive} 2>/dev/null || sha256sum {archive})",
+            release.display()
+        ))
         .output()
         .unwrap();
     fs::write(release.join("SHA256SUMS"), sums.stdout).unwrap();
@@ -59,9 +69,19 @@ fn installs_and_verifies_checksum() {
     fake_release(&base, "v9.9.9");
     let install_dir = temp.path().join("bin");
     let output = run_installer(&base, &install_dir);
-    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
-    let version = Command::new(install_dir.join("tessera")).arg("--version").output().unwrap();
-    assert_eq!(String::from_utf8_lossy(&version.stdout).trim(), "tessera 9.9.9");
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let version = Command::new(install_dir.join("tessera"))
+        .arg("--version")
+        .output()
+        .unwrap();
+    assert_eq!(
+        String::from_utf8_lossy(&version.stdout).trim(),
+        "tessera 9.9.9"
+    );
 }
 
 #[test]
@@ -70,7 +90,10 @@ fn refuses_a_tampered_archive() {
     let base = temp.path().join("releases");
     fake_release(&base, "v9.9.9");
     let sums = base.join("v9.9.9/SHA256SUMS");
-    let tampered = fs::read_to_string(&sums).unwrap().replacen(|c: char| c.is_ascii_hexdigit(), "0", 8);
+    let tampered =
+        fs::read_to_string(&sums)
+            .unwrap()
+            .replacen(|c: char| c.is_ascii_hexdigit(), "0", 8);
     fs::write(&sums, tampered).unwrap();
     let install_dir = temp.path().join("bin");
     let output = run_installer(&base, &install_dir);

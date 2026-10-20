@@ -24,22 +24,49 @@ fn release_package_versions_stay_aligned() {
 fn release_workflow_publishes_only_after_every_binary_succeeds() {
     let workflow = fs::read_to_string(".github/workflows/release.yml").unwrap();
     for (needle, why) in [
-        ("gh release create \"$TAG\"", "release must be created before assets upload"),
-        ("--draft", "release starts as a draft so releases/latest never points at an empty release"),
+        (
+            "gh release create \"$TAG\"",
+            "release must be created before assets upload",
+        ),
+        (
+            "--draft",
+            "release starts as a draft so releases/latest never points at an empty release",
+        ),
         ("needs: release", "binaries wait for the draft release"),
         ("needs: binaries", "publish waits for every binary job"),
-        ("--draft=false", "publish job flips the draft only at the end"),
+        (
+            "--draft=false",
+            "publish job flips the draft only at the end",
+        ),
         ("SHA256SUMS", "checksums are published for installers"),
         ("attest-build-provenance", "artifacts carry provenance"),
-        ("timeout-minutes: 30", "a hung runner cannot block a release for 24h"),
-        ("x86_64-unknown-linux-musl", "static Linux binaries are built"),
-        ("aarch64-unknown-linux-musl", "static arm64 Linux binaries are built"),
-        ("macos-15-intel", "Intel macOS builds use a current runner label"),
-        ("needs: publish", "package registries wait for a published release"),
+        (
+            "timeout-minutes: 30",
+            "a hung runner cannot block a release for 24h",
+        ),
+        (
+            "x86_64-unknown-linux-musl",
+            "static Linux binaries are built",
+        ),
+        (
+            "aarch64-unknown-linux-musl",
+            "static arm64 Linux binaries are built",
+        ),
+        (
+            "macos-15-intel",
+            "Intel macOS builds use a current runner label",
+        ),
+        (
+            "needs: publish",
+            "package registries wait for a published release",
+        ),
     ] {
         assert!(workflow.contains(needle), "{why} (missing `{needle}`)");
     }
-    assert!(!workflow.contains("macos-13"), "macos-13 runners can stay queued");
+    assert!(
+        !workflow.contains("macos-13"),
+        "macos-13 runners can stay queued"
+    );
 }
 
 #[test]
@@ -91,7 +118,11 @@ fn homebrew_formula_renders_every_checksum() {
         .arg(&sums)
         .output()
         .unwrap();
-    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     let formula = String::from_utf8(output.stdout).unwrap();
     assert!(!formula.contains("{{"), "{formula}");
     assert!(formula.contains("version \"1.2.3\""));

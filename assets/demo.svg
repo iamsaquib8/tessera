@@ -1,45 +1,30 @@
-<svg width="840" height="500" viewBox="0 0 840 500" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Tessera terminal demo">
-  <style>
-    .bg    { fill:#0d1117; }
-    .bar   { fill:#161b22; }
-    .t     { font-family: ui-monospace,'SF Mono',Menlo,Consolas,monospace; font-size:15px; }
-    .prompt{ fill:#2dd4bf; }
-    .cmd   { fill:#e6edf3; }
-    .out   { fill:#9aa5b1; }
-    .ok    { fill:#4ade80; }
-    .bad   { fill:#f87171; }
-    .num   { fill:#7dd3fc; }
-    .amber { fill:#fbbf24; }
-    .dim   { fill:#586069; }
-  </style>
-  <rect class="bg" x="0" y="0" width="840" height="500" rx="12"/>
-  <rect class="bar" x="0" y="0" width="840" height="34" rx="12"/>
-  <rect class="bar" x="0" y="18" width="840" height="16"/>
-  <circle cx="22" cy="17" r="6" fill="#ff5f56"/>
-  <circle cx="44" cy="17" r="6" fill="#ffbd2e"/>
-  <circle cx="66" cy="17" r="6" fill="#27c93f"/>
-  <text x="420" y="22" text-anchor="middle" class="t dim">tessera — 11 languages · deterministic · milliseconds</text>
-
-  <g class="t">
-    <text x="20" y="68"><tspan class="prompt">$ </tspan><tspan class="cmd">tessera index .</tspan></text>
-    <text x="20" y="92" class="out">[full] indexed <tspan class="num">1063</tspan> files, <tspan class="num">3067</tspan> symbols, <tspan class="num">142337</tspan> refs in <tspan class="num">1557</tspan>ms</text>
-
-    <text x="20" y="128"><tspan class="prompt">$ </tspan><tspan class="cmd">tessera impact BaseWorker</tspan></text>
-    <text x="20" y="152" class="out">Impact for BaseWorker</text>
-    <text x="20" y="174" class="out">  score <tspan class="num">100.0</tspan> depth 1 fanout 12  JobRunner.start @ runner.ts:42</text>
-    <text x="20" y="196" class="out">  score <tspan class="num"> 58.7</tspan> depth 2 fanout  4  Scheduler.tick @ sched.ts:88</text>
-    <text x="20" y="218" class="amber">  _meta: ~41 tokens   vs raw grep+read ~36,311  ·  886× cheaper</text>
-
-    <text x="20" y="254"><tspan class="prompt">$ </tspan><tspan class="cmd">tessera validate findByid</tspan></text>
-    <text x="20" y="278"><tspan class="bad">  ✗ findByid not found</tspan><tspan class="out"> (the model hallucinated it)</tspan></text>
-    <text x="20" y="300" class="out">  nearest:  <tspan class="ok">0.97</tspan>  findById  @ users.ts:12</text>
-
-    <text x="20" y="336"><tspan class="prompt">$ </tspan><tspan class="cmd">tessera connect handler loadUser</tspan></text>
-    <text x="20" y="360" class="out">Call path handler → loadUser (2 hops)</text>
-    <text x="20" y="382" class="out">  handler        @ users.ts:20</text>
-    <text x="20" y="404" class="out">  ↳ findById     @ users.ts:12</text>
-    <text x="20" y="426" class="out">  ↳ loadUser     @ users.ts:16</text>
-
-    <text x="20" y="462"><tspan class="prompt">$ </tspan><tspan class="cmd">tessera export --from handler --format mermaid</tspan><tspan class="dim">  # → paste into any .md</tspan></text>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 890 566" width="890" height="566" role="img" aria-label="Terminal session: tessera blast, context and verify">
+  <rect width="890" height="566" rx="12" fill="#1C2330"/>
+  <rect x="24" y="20" width="11" height="11" rx="3" fill="#2E3A4E"/>
+  <rect x="42" y="20" width="11" height="11" rx="3" fill="#2E3A4E"/>
+  <rect x="60" y="20" width="11" height="11" rx="3" fill="#2E3A4E"/>
+  <g font-family="JetBrains Mono, SFMono-Regular, Menlo, Consolas, monospace" font-size="14.5">
+  <text x="28" y="58" fill="#EEF0F2">$ tessera blast formatName</text>
+  <text x="28" y="80" fill="#8A97AA">4 callers affected by formatName (ranked; name-level matching):</text>
+  <text x="28" y="102" fill="#C9D1DD">  100.0 d2 handler src/api/handler.ts:4</text>
+  <text x="28" y="124" fill="#C9D1DD">   63.7 d1 UserRepo.findById src/users/repo.ts:6</text>
+  <text x="28" y="146" fill="#C9D1DD">   63.7 d1 loadUser src/util/format.ts:5</text>
+  <text x="28" y="168" fill="#C9D1DD">   54.0 d2 loadUser src/users/repo.ts:15</text>
+  <text x="28" y="190" fill="#C9D1DD"> </text>
+  <text x="28" y="212" fill="#EEF0F2">$ tessera context findById</text>
+  <text x="28" y="234" fill="#C9D1DD">method UserRepo.findById src/users/repo.ts:6-8</text>
+  <text x="28" y="256" fill="#C9D1DD">  findById(id: string): string {</text>
+  <text x="28" y="278" fill="#C9D1DD">    return formatName(this.lookup(id));</text>
+  <text x="28" y="300" fill="#C9D1DD">  }</text>
+  <text x="28" y="322" fill="#8A97AA">Calls:</text>
+  <text x="28" y="344" fill="#C9D1DD">  function formatName(name: string): string {  (src/util/format.ts:1)</text>
+  <text x="28" y="366" fill="#C9D1DD">  private lookup(id: string): string {  (src/users/repo.ts:10)</text>
+  <text x="28" y="388" fill="#8A97AA">Called by:</text>
+  <text x="28" y="410" fill="#C9D1DD">  function loadUser(id: string): string {  (src/users/repo.ts:15)</text>
+  <text x="28" y="432" fill="#C9D1DD"> </text>
+  <text x="28" y="454" fill="#EEF0F2">$ tessera verify --snippet edit.ts --language typescript</text>
+  <text x="28" y="476" fill="#F07A7A">✗ verify: 2 problem(s)</text>
+  <text x="28" y="498" fill="#F07A7A">  [V1] `findByIdd` is not defined anywhere in the index; did you mean UserRepo.findById? (line 1)</text>
+  <text x="28" y="520" fill="#F07A7A">  [V1] `loadUsr` is not defined anywhere in the index; did you mean loadUser? (line 2)</text>
   </g>
 </svg>

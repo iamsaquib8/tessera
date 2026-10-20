@@ -1,0 +1,8 @@
+body:
+  - type: textarea
+    id: story
+    attributes:
+      label: What Tessera caught or saved you
+      description: Repository size, language, agent, and what happened. Remove anything private.
+    validations:
+      required: true
