@@ -33,6 +33,8 @@ expression: graph_dump(& db)
     "app/controllers/api/v1/test_cases_controller.rb:2-4 method TestCasesController.index [exported] | def index",
     "app/models/user.rb:1-7 class User [exported] | class User < ApplicationRecord",
     "app/models/user.rb:4-6 method User.display_name [exported] | def display_name",
+    "app/services/i18n.rb:1-5 module I18n [exported] | module I18n",
+    "app/services/i18n.rb:2-4 method I18n.greet [exported] | def self.greet #x éééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééé",
     "app/services/name_formatter.rb:1-9 class NameFormatter [exported] | class NameFormatter",
     "app/services/name_formatter.rb:2-4 method NameFormatter.format [exported] | def self.format(name)",
     "app/services/name_formatter.rb:6-8 method NameFormatter.load [exported] | def load(id)",

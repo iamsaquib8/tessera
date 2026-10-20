@@ -32,6 +32,7 @@ expression: graph_dump(& db)
     "src/Util/Strings.php:13-16 function load [exported] | function load($x)",
     "src/Util/Strings.php:5-11 class Strings [exported] | class Strings",
     "src/Util/Strings.php:7-10 method Strings.trim [exported] | public static function trim($s)",
+    "src/Util/i18n.php:3-5 function greet [exported] | function greet() { //x éééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééé",
     "tests/UserServiceTest.php:5-11 class UserServiceTest [exported] | class UserServiceTest extends TestCase",
     "tests/UserServiceTest.php:7-10 method UserServiceTest.testLoad [exported] | public function testLoad()"
   ]

@@ -30,6 +30,7 @@ expression: graph_dump(& db)
   "symbols": [
     "src/App.tsx:4-7 function App [exported] | function App() {",
     "src/components/Avatar.tsx:1-3 function Avatar [exported] | function Avatar({ name }: { name: string }) {",
+    "src/components/Greeting.tsx:1-3 function Greeting [exported] | function Greeting() { //x éééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééé",
     "src/components/UserCard.tsx:6-10 function UserCard [exported] | UserCard = ({ name }: Props) => (",
     "src/hooks/useUser.ts:3-6 function useUser [exported] | function useUser(id: string) {"
   ]

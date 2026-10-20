@@ -29,6 +29,7 @@ expression: graph_dump(& db)
     "tests/test_service.py:5:12 call load <- test_load"
   ],
   "symbols": [
+    "app/i18n.py:1-2 function greet [exported] | def greet():  #x éééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééé",
     "app/models.py:4-9 class User [exported] | class User:",
     "app/models.py:5-6 function User.__init__ [exported] | def __init__(self, name):",
     "app/models.py:8-9 function User.display [exported] | def display(self):",

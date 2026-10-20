@@ -29,6 +29,8 @@ expression: graph_dump(& db)
     "src/Users/UserRepository.cs:5-5 method UserRepository.FindById [exported] | public string FindById(string id) => id;",
     "src/Users/UserService.cs:5-13 class UserService [exported] | public class UserService",
     "src/Users/UserService.cs:9-12 method UserService.Load [exported] | public string Load(string id)",
+    "src/Util/I18n.cs:1-6 class I18n [exported] | public static class I18n",
+    "src/Util/I18n.cs:3-5 method I18n.Greet [exported] | public static string Greet() { //x ééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééé…",
     "src/Util/Strings.cs:3-8 class Strings [exported] | public static class Strings",
     "src/Util/Strings.cs:5-5 method Strings.Trim [exported] | public static string Trim(string s) => s.Trim();",
     "src/Util/Strings.cs:7-7 method Strings.Load [exported] | public static string Load(string s) => s;",

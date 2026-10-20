@@ -38,6 +38,7 @@ expression: graph_dump(& db)
     "app.js:11-13 function slugify | function slugify(x) {",
     "lib/email_worker.js:4-8 class EmailWorker | class EmailWorker extends BaseWorker {",
     "lib/email_worker.js:5-7 method EmailWorker.perform | perform() {",
+    "lib/i18n.js:1-3 function greet | function greet() { //x éééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééé",
     "lib/util.js:1-3 function slugify | function slugify(s) {",
     "lib/worker.js:1-9 class BaseWorker | class BaseWorker {",
     "lib/worker.js:2-4 method BaseWorker.run | run() {",

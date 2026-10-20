@@ -24,6 +24,7 @@ expression: graph_dump(& db)
   "symbols": [
     "api/handler.go:5-7 function Handle [exported] | func Handle(id string) string {",
     "api/handler.go:9-11 function Load [exported] | func Load(id string) string {",
+    "store/i18n.go:3-5 function Greet [exported] | func Greet() string { //x éééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééé",
     "store/store.go:11-13 method Store.Get [exported] | func (s *Store) Get(id string) string {",
     "store/store.go:15-17 function Load [exported] | func Load(id string) string {",
     "store/store.go:3-5 struct Store [exported] | Store struct {",

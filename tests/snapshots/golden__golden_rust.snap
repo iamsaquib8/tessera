@@ -34,6 +34,7 @@ expression: graph_dump(& db)
     "src/api.rs:17-19 function tests.handles | fn handles() {",
     "src/api.rs:3-5 function handle [exported] | pub fn handle(i: usize) -> bool {",
     "src/api.rs:7-10 function load [exported] | pub fn load(i: usize) -> bool {",
+    "src/i18n.rs:1-3 function greet [exported] | pub fn greet() -> &'static str { //x ééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééé…",
     "src/lib.rs:1-1 module api [exported] | pub mod api;",
     "src/lib.rs:2-2 module store [exported] | pub mod store;",
     "src/store.rs:1-3 struct Store [exported] | pub struct Store {",

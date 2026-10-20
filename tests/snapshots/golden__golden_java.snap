@@ -40,6 +40,8 @@ expression: graph_dump(& db)
     "src/main/java/com/acme/user/UserService.java:12-14 method UserService.load [exported] | public String load(String id) {",
     "src/main/java/com/acme/user/UserService.java:5-15 class UserService [exported] | public class UserService {",
     "src/main/java/com/acme/user/UserService.java:8-10 constructor UserService.UserService [exported] | public UserService(UserRepository repo) {",
+    "src/main/java/com/acme/util/I18n.java:3-7 class I18n [exported] | public final class I18n {",
+    "src/main/java/com/acme/util/I18n.java:4-6 method I18n.greet [exported] | public static String greet() { //x ééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééé…",
     "src/main/java/com/acme/util/Strings.java:3-11 class Strings [exported] | public final class Strings {",
     "src/main/java/com/acme/util/Strings.java:4-6 method Strings.trim [exported] | public static String trim(String s) {",
     "src/main/java/com/acme/util/Strings.java:8-10 method Strings.load [exported] | public static String load(String s) {",

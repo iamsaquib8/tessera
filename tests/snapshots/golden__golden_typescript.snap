@@ -39,6 +39,7 @@ expression: graph_dump(& db)
     "src/users/repo.ts:3-13 class UserRepo [exported] | class UserRepo {",
     "src/users/repo.ts:6-8 method UserRepo.findById [exported] | findById(id: string): string {",
     "src/util/format.ts:1-3 function formatName [exported] | function formatName(name: string): string {",
-    "src/util/format.ts:5-7 function loadUser [exported] | function loadUser(id: string): string {"
+    "src/util/format.ts:5-7 function loadUser [exported] | function loadUser(id: string): string {",
+    "src/util/i18n.ts:1-3 function greet [exported] | function greet(): string { //x ééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééé…"
   ]
 }

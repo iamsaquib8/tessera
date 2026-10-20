@@ -33,6 +33,7 @@ pub mod config;
 pub mod db;
 pub mod doctor;
 pub mod engine;
+pub mod extract;
 pub mod indexer;
 pub mod init;
 pub mod mcp;

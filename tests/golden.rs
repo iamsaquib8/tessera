@@ -48,7 +48,9 @@ fn golden_typescript_generic_cast() {
     let dump = graph_dump(&db);
     let symbols = dump["symbols"].as_array().unwrap();
     assert!(
-        symbols.iter().any(|s| s.as_str().unwrap().contains(" function g [exported]")),
+        symbols
+            .iter()
+            .any(|s| s.as_str().unwrap().contains(" function g [exported]")),
         "missing g: {symbols:?}"
     );
     let edges = dump["edges"].as_array().unwrap();
