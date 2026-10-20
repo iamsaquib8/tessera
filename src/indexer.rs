@@ -1,16 +1,15 @@
+use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use anyhow::{Context, Result};
-use rusqlite::Connection;
 use sha2::{Digest, Sha256};
 
-use crate::bloom::BloomFilter;
 use crate::config::TesseraConfig;
 use crate::db;
 use crate::snapshot;
-use crate::walk::{self, WalkOptions};
+use crate::walk::{self, SkipReason, WalkOptions};
 
 #[derive(Debug, Clone)]
 pub struct IndexReport {
@@ -63,7 +62,7 @@ pub fn index_path_with(root: &Path, db_path: &Path, options: IndexOptions) -> Re
     let root = root
         .canonicalize()
         .with_context(|| format!("failed to canonicalize {}", root.display()))?;
-    let conn = db::open(db_path)?;
+    let conn = db::open_rw(db_path)?;
     let config = TesseraConfig::load(&root);
     if options.full {
         db::reset(&conn)?;
@@ -101,7 +100,11 @@ pub fn index_path_with(root: &Path, db_path: &Path, options: IndexOptions) -> Re
     };
     let discovery = walk::discover(&root, &config, &walk_options)?;
     report.warnings.extend(discovery.warnings);
-    report.files_skipped = discovery.skipped.len();
+    let mut skipped: Vec<(String, u64, i64, &str)> = discovery
+        .skipped
+        .iter()
+        .map(|s| (s.rel_path.clone(), s.size, s.mtime_ns, s.reason.as_str()))
+        .collect();
 
     for file in discovery.files {
         let rel_path = file.rel_path;
@@ -122,7 +125,12 @@ pub fn index_path_with(root: &Path, db_path: &Path, options: IndexOptions) -> Re
             .unwrap_or_default()
             .to_string_lossy();
         if walk::is_minified(&name, content.as_bytes()) {
-            report.files_skipped += 1;
+            skipped.push((
+                rel_path,
+                file.size,
+                file.mtime_ns,
+                SkipReason::Minified.as_str(),
+            ));
             continue;
         }
         let sha = format!("{:x}", Sha256::digest(content.as_bytes()));
@@ -131,6 +139,7 @@ pub fn index_path_with(root: &Path, db_path: &Path, options: IndexOptions) -> Re
         if !options.full {
             if let Some((existing_id, existing_sha)) = db::file_sha(&tx, &rel_path)? {
                 if existing_sha == sha {
+                    db::touch_file(&tx, existing_id, file.size, file.mtime_ns)?;
                     visited_ids.push(existing_id);
                     report.files_reused += 1;
                     continue;
@@ -150,9 +159,23 @@ pub fn index_path_with(root: &Path, db_path: &Path, options: IndexOptions) -> Re
             }
         };
 
-        let file_id = db::insert_file(&tx, &rel_path, language, &sha, content.lines().count())?;
+        let file_id = db::insert_file(
+            &tx,
+            &rel_path,
+            language,
+            &sha,
+            content.lines().count(),
+            file.size,
+            file.mtime_ns,
+        )?;
         let symbol_ids = db::insert_symbols(&tx, file_id, &parsed.symbols)?;
-        let ref_count = db::insert_references(&tx, file_id, &parsed.references)?;
+        let mut ids_by_name: HashMap<String, i64> = HashMap::with_capacity(symbol_ids.len());
+        for (symbol, id) in parsed.symbols.iter().zip(&symbol_ids) {
+            ids_by_name
+                .entry(symbol.qualified_name.clone())
+                .or_insert(*id);
+        }
+        let ref_count = db::insert_references(&tx, file_id, &parsed.references, &ids_by_name)?;
         let _ = db::insert_imports(&tx, file_id, &parsed.imports)?;
 
         visited_ids.push(file_id);
@@ -166,9 +189,10 @@ pub fn index_path_with(root: &Path, db_path: &Path, options: IndexOptions) -> Re
         report.files_removed = db::delete_files_not_in(&tx, &visited_ids)?;
     }
 
-    tx.commit()?;
+    report.files_skipped = skipped.len();
+    db::replace_skipped(&tx, &skipped)?;
 
-    rebuild_bloom(&conn)?;
+    tx.commit()?;
 
     if options.build_snapshot {
         let snapshot_path = snapshot_path(db_path);
@@ -184,29 +208,6 @@ fn snapshot_path(db_path: &Path) -> PathBuf {
         .parent()
         .unwrap_or_else(|| Path::new("."))
         .join("snapshot.bin")
-}
-
-fn rebuild_bloom(conn: &Connection) -> Result<()> {
-    let mut stmt = conn.prepare("SELECT name, qualified_name FROM symbols")?;
-    let mut names: Vec<String> = Vec::new();
-    let rows = stmt.query_map([], |row| {
-        let name: String = row.get(0)?;
-        let qualified: String = row.get(1)?;
-        Ok((name, qualified))
-    })?;
-    for row in rows {
-        let (name, qualified) = row?;
-        names.push(name);
-        names.push(qualified);
-    }
-    let expected = names.len().max(64);
-    let mut bloom = BloomFilter::for_expected(expected, 0.01);
-    for name in &names {
-        bloom.insert(name);
-    }
-    let bytes = bloom.to_bytes();
-    db::set_meta_blob(conn, "bloom_symbols", &bytes)?;
-    Ok(())
 }
 
 pub use crate::extract::{parse_file, ParsedFile};

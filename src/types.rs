@@ -357,7 +357,6 @@ pub struct SymbolSuggestion {
 pub struct ValidateResult {
     pub query: String,
     pub exists: bool,
-    pub bloom_hit: bool,
     pub candidates: Vec<SymbolSuggestion>,
     pub meta: QueryMeta,
 }
@@ -367,7 +366,7 @@ impl Display for ValidateResult {
         if self.exists {
             writeln!(f, "✓ {} exists in the graph.", self.query)?;
         } else {
-            writeln!(f, "✗ {} not found (bloom={}).", self.query, self.bloom_hit)?;
+            writeln!(f, "✗ {} not found.", self.query)?;
         }
         if !self.candidates.is_empty() {
             writeln!(f, "Nearest candidates:")?;

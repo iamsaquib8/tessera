@@ -116,25 +116,26 @@ fn check_db(db_path: &Path, checks: &mut Vec<DoctorCheck>) -> Result<()> {
         return Ok(());
     }
 
-    let conn = Connection::open(db_path)?;
-    let schema = db::get_meta(&conn, "schema_version")?;
-    match schema {
-        Some(version) if version == db::SCHEMA_VERSION.to_string() => {
-            push_ok(checks, "schema", format!("schema version {version}"), None)
+    let conn = match db::open_ro(db_path) {
+        Ok(conn) => conn,
+        Err(error) => {
+            push_error(
+                checks,
+                "schema",
+                error.to_string(),
+                Some(
+                    "Run `tessera index . --full` to rebuild with the current schema.".to_string(),
+                ),
+            );
+            return Ok(());
         }
-        Some(version) => push_error(
-            checks,
-            "schema",
-            format!("schema version {version}, expected {}", db::SCHEMA_VERSION),
-            Some("Run `tessera index . --full` to rebuild with the current schema.".to_string()),
-        ),
-        None => push_error(
-            checks,
-            "schema",
-            "schema version metadata is missing".to_string(),
-            Some("Run `tessera index . --full` to rebuild the database.".to_string()),
-        ),
-    }
+    };
+    push_ok(
+        checks,
+        "schema",
+        format!("schema version {}", db::SCHEMA_VERSION),
+        None,
+    );
 
     let files = count_table(&conn, "files")?;
     let symbols = count_table(&conn, "symbols")?;

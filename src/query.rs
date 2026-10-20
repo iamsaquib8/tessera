@@ -7,7 +7,6 @@ use anyhow::Result;
 use rusqlite::{params, Connection, OptionalExtension};
 use strsim::jaro_winkler;
 
-use crate::bloom::BloomFilter;
 use crate::db;
 use crate::indexer;
 use crate::types::{
@@ -417,18 +416,7 @@ pub fn impact_conn(conn: &Connection, symbol: &str, depth: usize) -> Result<Impa
 }
 
 pub fn validate_conn(conn: &Connection, symbol: &str) -> Result<ValidateResult> {
-    let bloom_bytes = db::get_meta_blob(conn, "bloom_symbols")?;
-    let bloom_hit = bloom_bytes
-        .as_deref()
-        .and_then(BloomFilter::from_bytes)
-        .map(|b| b.contains(symbol))
-        .unwrap_or(true);
-
-    let exists = if bloom_hit {
-        symbol_exists(conn, symbol)?
-    } else {
-        false
-    };
+    let exists = symbol_exists(conn, symbol)?;
 
     let candidates = if exists {
         Vec::new()
@@ -440,7 +428,6 @@ pub fn validate_conn(conn: &Connection, symbol: &str) -> Result<ValidateResult> 
     Ok(ValidateResult {
         query: symbol.to_string(),
         exists,
-        bloom_hit,
         candidates,
         meta: meta(tokens, "find_definition", 320, 0.8),
     })
@@ -452,21 +439,11 @@ pub fn validate_snippet_conn(
     language: Language,
 ) -> Result<ValidateSnippetResult> {
     let parsed = indexer::parse_file(language, code)?;
-    let bloom_bytes = db::get_meta_blob(conn, "bloom_symbols")?;
-    let bloom = bloom_bytes.as_deref().and_then(BloomFilter::from_bytes);
 
     let mut checks = Vec::with_capacity(parsed.references.len());
     let mut unresolved = 0;
     for reference in &parsed.references {
-        let bloom_hit = bloom
-            .as_ref()
-            .map(|b| b.contains(&reference.symbol_name))
-            .unwrap_or(true);
-        let exists = if bloom_hit {
-            symbol_exists(conn, &reference.symbol_name)?
-        } else {
-            false
-        };
+        let exists = symbol_exists(conn, &reference.symbol_name)?;
         let candidates = if exists {
             Vec::new()
         } else {
@@ -1644,32 +1621,32 @@ pub fn export_conn_with_options(conn: &Connection, options: ExportOptions) -> Re
 // ─── Path-based wrappers used by the CLI ─────────────────────────────────────
 
 pub fn find_definition(db_path: &Path, symbol: &str) -> Result<DefinitionResult> {
-    let conn = db::open_existing(db_path)?;
+    let conn = db::open_ro(db_path)?;
     find_definition_conn(&conn, symbol)
 }
 
 pub fn find_references(db_path: &Path, symbol: &str) -> Result<ReferencesResult> {
-    let conn = db::open_existing(db_path)?;
+    let conn = db::open_ro(db_path)?;
     find_references_conn(&conn, symbol)
 }
 
 pub fn get_outline(db_path: &Path, path: &Path) -> Result<OutlineResult> {
-    let conn = db::open_existing(db_path)?;
+    let conn = db::open_ro(db_path)?;
     get_outline_conn(&conn, path)
 }
 
 pub fn expand_symbol(db_path: &Path, symbol: &str) -> Result<ExpandResult> {
-    let conn = db::open_existing(db_path)?;
+    let conn = db::open_ro(db_path)?;
     expand_symbol_conn(&conn, symbol)
 }
 
 pub fn impact(db_path: &Path, symbol: &str, depth: usize) -> Result<ImpactResult> {
-    let conn = db::open_existing(db_path)?;
+    let conn = db::open_ro(db_path)?;
     impact_conn(&conn, symbol, depth)
 }
 
 pub fn validate(db_path: &Path, symbol: &str) -> Result<ValidateResult> {
-    let conn = db::open_existing(db_path)?;
+    let conn = db::open_ro(db_path)?;
     validate_conn(&conn, symbol)
 }
 
@@ -1678,22 +1655,22 @@ pub fn validate_snippet(
     code: &str,
     language: Language,
 ) -> Result<ValidateSnippetResult> {
-    let conn = db::open_existing(db_path)?;
+    let conn = db::open_ro(db_path)?;
     validate_snippet_conn(&conn, code, language)
 }
 
 pub fn stats(db_path: &Path) -> Result<StatsResult> {
-    let conn = db::open_existing(db_path)?;
+    let conn = db::open_ro(db_path)?;
     stats_conn(&conn, db_path)
 }
 
 pub fn tests_for(db_path: &Path, symbol: &str) -> Result<TestsForResult> {
-    let conn = db::open_existing(db_path)?;
+    let conn = db::open_ro(db_path)?;
     tests_for_conn(&conn, symbol)
 }
 
 pub fn connect(db_path: &Path, from: &str, to: &str, max_depth: usize) -> Result<ConnectResult> {
-    let conn = db::open_existing(db_path)?;
+    let conn = db::open_ro(db_path)?;
     connect_conn(&conn, from, to, max_depth)
 }
 
@@ -1704,32 +1681,32 @@ pub fn export(
     depth: usize,
     limit: usize,
 ) -> Result<ExportResult> {
-    let conn = db::open_existing(db_path)?;
+    let conn = db::open_ro(db_path)?;
     export_conn(&conn, format, from, depth, limit)
 }
 
 pub fn export_with_options(db_path: &Path, options: ExportOptions) -> Result<ExportResult> {
-    let conn = db::open_existing(db_path)?;
+    let conn = db::open_ro(db_path)?;
     export_conn_with_options(&conn, options)
 }
 
 pub fn search(db_path: &Path, pattern: &str, options: SearchOptions) -> Result<SearchResult> {
-    let conn = db::open_existing(db_path)?;
+    let conn = db::open_ro(db_path)?;
     search_conn(&conn, pattern, options)
 }
 
 pub fn unused(db_path: &Path, options: UnusedOptions) -> Result<UnusedResult> {
-    let conn = db::open_existing(db_path)?;
+    let conn = db::open_ro(db_path)?;
     unused_conn(&conn, options)
 }
 
 pub fn context_pack(db_path: &Path, symbol: &str, budget: usize) -> Result<ContextPack> {
-    let conn = db::open_existing(db_path)?;
+    let conn = db::open_ro(db_path)?;
     context_pack_conn(&conn, symbol, budget)
 }
 
 pub fn edit_prep(db_path: &Path, symbol: &str, budget: usize) -> Result<EditPrepResult> {
-    let conn = db::open_existing(db_path)?;
+    let conn = db::open_ro(db_path)?;
     edit_prep_conn(&conn, symbol, budget)
 }
 
@@ -1739,27 +1716,27 @@ pub fn diff_impact(
     to_ref: Option<&str>,
     depth: usize,
 ) -> Result<DiffImpactResult> {
-    let conn = db::open_existing(db_path)?;
+    let conn = db::open_ro(db_path)?;
     diff_impact_conn(&conn, from_ref, to_ref, depth)
 }
 
 pub fn imports(db_path: &Path, path: &str) -> Result<ImportsResult> {
-    let conn = db::open_existing(db_path)?;
+    let conn = db::open_ro(db_path)?;
     imports_conn(&conn, path)
 }
 
 pub fn imported_by(db_path: &Path, source: &str) -> Result<ImportedByResult> {
-    let conn = db::open_existing(db_path)?;
+    let conn = db::open_ro(db_path)?;
     imported_by_conn(&conn, source)
 }
 
 pub fn signature(db_path: &Path, symbol: &str) -> Result<SignatureResult> {
-    let conn = db::open_existing(db_path)?;
+    let conn = db::open_ro(db_path)?;
     signature_conn(&conn, symbol)
 }
 
 pub fn siblings(db_path: &Path, symbol: &str) -> Result<SiblingsResult> {
-    let conn = db::open_existing(db_path)?;
+    let conn = db::open_ro(db_path)?;
     siblings_conn(&conn, symbol)
 }
 

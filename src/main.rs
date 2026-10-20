@@ -265,7 +265,7 @@ enum Commands {
         symbol: String,
         #[arg(long, default_value = ".tessera/tessera.db")]
         db: PathBuf,
-        /// Explain bloom and near-miss decisions in human output.
+        /// Explain lookup and near-miss decisions in human output.
         #[arg(long, alias = "why")]
         explain: bool,
         #[arg(long)]
@@ -812,7 +812,7 @@ fn run() -> Result<()> {
             }
         }
         Commands::Snapshot { db } => {
-            let conn = db::open(&db)?;
+            let conn = db::open_ro(&db)?;
             let snapshot_path = db
                 .parent()
                 .map(|p| p.join("snapshot.bin"))
@@ -859,11 +859,11 @@ fn explain_impact(result: &tessera_codegraph::types::ImpactResult) {
 
 fn explain_validate(result: &tessera_codegraph::types::ValidateResult) {
     println!("\nWhy:");
-    println!("  Validate checks the Bloom filter first; a miss means the symbol is definitely absent from the indexed names.");
+    println!("  Validate looks the name up in the symbol table.");
     println!("  If unresolved, candidates come from trigram search and are ranked by Jaro-Winkler similarity.");
     println!(
-        "  bloom_hit={} candidates={}",
-        result.bloom_hit,
+        "  exists={} candidates={}",
+        result.exists,
         result.candidates.len()
     );
 }

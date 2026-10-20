@@ -48,6 +48,18 @@ pub enum SkipReason {
 pub struct Skipped {
     pub rel_path: String,
     pub reason: SkipReason,
+    pub size: u64,
+    pub mtime_ns: i64,
+}
+
+impl SkipReason {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Minified => "minified",
+            Self::TooLarge => "too_large",
+            Self::Excluded => "excluded",
+        }
+    }
 }
 
 #[derive(Debug, Default)]
@@ -149,17 +161,16 @@ pub fn discover(root: &Path, config: &TesseraConfig, opts: &WalkOptions) -> Resu
             continue;
         };
         let rel_path = relative_path(root, path);
-        let skip = |discovery: &mut Discovery, reason| {
-            discovery.skipped.push(Skipped {
-                rel_path: rel_path.clone(),
-                reason,
-            })
-        };
         if !config.includes_path(&rel_path)
             || config.excludes_path(&rel_path)
             || excludes.is_match(&rel_path)
         {
-            skip(&mut discovery, SkipReason::Excluded);
+            discovery.skipped.push(Skipped {
+                rel_path,
+                reason: SkipReason::Excluded,
+                size: 0,
+                mtime_ns: 0,
+            });
             continue;
         }
         let metadata = match entry.metadata() {
@@ -171,6 +182,20 @@ pub fn discover(root: &Path, config: &TesseraConfig, opts: &WalkOptions) -> Resu
                 });
                 continue;
             }
+        };
+        let mtime_ns = metadata
+            .modified()
+            .ok()
+            .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
+            .map(|d| d.as_nanos() as i64)
+            .unwrap_or(0);
+        let skip = |discovery: &mut Discovery, reason| {
+            discovery.skipped.push(Skipped {
+                rel_path: rel_path.clone(),
+                reason,
+                size: metadata.len(),
+                mtime_ns,
+            })
         };
         let name = entry.file_name().to_string_lossy();
         if minified_name(&name) {
@@ -185,12 +210,6 @@ pub fn discover(root: &Path, config: &TesseraConfig, opts: &WalkOptions) -> Resu
             skip(&mut discovery, SkipReason::Minified);
             continue;
         }
-        let mtime_ns = metadata
-            .modified()
-            .ok()
-            .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
-            .map(|d| d.as_nanos() as i64)
-            .unwrap_or(0);
         discovery.files.push(SourceFile {
             rel_path,
             abs_path: path.to_path_buf(),

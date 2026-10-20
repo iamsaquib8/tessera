@@ -27,7 +27,6 @@
 //! The library binary `tessera` is also built from this crate; see the README.
 
 pub mod bench;
-pub mod bloom;
 pub mod completions;
 pub mod config;
 pub mod db;
@@ -75,7 +74,7 @@ impl Index {
     /// or can't be migrated to the current schema.
     pub fn open(db_path: impl AsRef<Path>) -> Result<Self> {
         let db_path = db_path.as_ref().to_path_buf();
-        let conn = db::open_existing(&db_path)?;
+        let conn = db::open_ro(&db_path)?;
         Ok(Self { conn, db_path })
     }
 

@@ -1026,7 +1026,7 @@ function helper() {
         health["root"],
         temp.path().canonicalize().unwrap().display().to_string()
     );
-    assert_eq!(health["schema_version"], "3");
+    assert_eq!(health["schema_version"], 4);
     assert_eq!(health["snapshot_exists"], true);
 
     let sse = http_request(&addr, "GET", "/sse", None);
@@ -1172,7 +1172,7 @@ fn query_missing_database_is_actionable() {
         .args(["stats", "--db", db.to_str().unwrap()])
         .assert()
         .failure()
-        .stderr(predicate::str::contains("Tessera database not found"))
+        .stderr(predicate::str::contains("Tessera index not found"))
         .stderr(predicate::str::contains("tessera index . --db"));
 }
 
@@ -1225,7 +1225,7 @@ function helper() {
         .assert()
         .success()
         .stdout(predicate::str::contains("Why:"))
-        .stdout(predicate::str::contains("Bloom filter"));
+        .stdout(predicate::str::contains("symbol table"));
 
     Command::cargo_bin("tessera")
         .unwrap()

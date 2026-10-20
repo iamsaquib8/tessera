@@ -9,7 +9,7 @@ use crate::db;
 use crate::mcp;
 
 pub fn serve(addr: &str, db_path: &Path) -> Result<()> {
-    let conn = db::open_existing(db_path)?;
+    let conn = db::open_ro(db_path)?;
     let listener = TcpListener::bind(addr)?;
     println!("Tessera MCP HTTP listening on http://{addr}");
     println!("  POST /mcp     JSON-RPC MCP endpoint");
@@ -111,12 +111,11 @@ fn handle_stream(
 }
 
 fn health_payload(conn: &rusqlite::Connection, db_path: &Path) -> Result<serde_json::Value> {
-    let schema_version = db::get_meta(conn, "schema_version")?;
+    let schema_version = db::schema_version(conn)?;
     let root = db::get_meta(conn, "root")?;
     let snapshot_path = snapshot_path_for(db_path);
-    let expected_schema_version = db::SCHEMA_VERSION.to_string();
     Ok(json!({
-        "ok": schema_version.as_deref() == Some(expected_schema_version.as_str()),
+        "ok": schema_version == db::SCHEMA_VERSION,
         "service": "tessera-mcp-http",
         "version": env!("CARGO_PKG_VERSION"),
         "protocol": "mcp-json-rpc-over-http",

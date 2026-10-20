@@ -58,7 +58,7 @@ pub fn run(options: BenchOptions) -> Result<BenchResult> {
         },
     )?;
 
-    let conn = db::open(&db_path)?;
+    let conn = db::open_rw(&db_path)?;
     // Pick a symbol that actually has callers so the "who calls X?" comparison
     // produces meaningful numbers, not an empty result.
     let probe = options
