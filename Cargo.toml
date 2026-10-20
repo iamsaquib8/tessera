@@ -9,7 +9,7 @@ repository = "https://github.com/iamsaquib8/tessera"
 homepage = "https://github.com/iamsaquib8/tessera"
 documentation = "https://docs.rs/tessera-codegraph"
 readme = "README.md"
-rust-version = "1.82"
+rust-version = "1.90"
 keywords = ["mcp", "codegraph", "tree-sitter", "agents", "cli"]
 categories = ["command-line-utilities", "development-tools"]
 exclude = [".github/ISSUE_TEMPLATE/*"]
@@ -54,3 +54,11 @@ walkdir = "2.5"
 insta = { version = "1", features = ["json"] }
 assert_cmd = "2.0"
 predicates = "3.1"
+
+[package.metadata.binstall]
+pkg-url = "{ repo }/releases/download/v{ version }/tessera-{ target }{ archive-suffix }"
+bin-dir = "{ bin }{ binary-ext }"
+pkg-fmt = "tgz"
+
+[package.metadata.binstall.overrides.x86_64-pc-windows-msvc]
+pkg-fmt = "zip"

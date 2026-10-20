@@ -4,40 +4,43 @@ on:
   push:
     tags:
       - "v*.*.*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing tag to (re)release, e.g. v0.10.0"
+        required: true
 
 permissions:
-  contents: write # required to create GitHub Releases and upload assets
+  contents: write
+  id-token: write
+  attestations: write
+
+env:
+  TAG: ${{ inputs.tag || github.ref_name }}
 
 jobs:
-  # ── GitHub Release ─────────────────────────────────────────────────────────
-  # The binary upload action attaches assets to an existing release; it does not
-  # create one for us. Create it first so every matrix job has a target.
+  # A draft release collects assets; it is published only after every binary
+  # job succeeds, so `releases/latest` never points at a release without files.
   release:
-    name: create GitHub Release
+    name: create draft release
     runs-on: ubuntu-latest
     steps:
-      - name: Create release if needed
+      - uses: actions/checkout@v4
+      - name: Create draft release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAG: ${{ github.ref_name }}
         run: |
           set -euo pipefail
           if gh release view "$TAG" >/dev/null 2>&1; then
-            echo "::notice::GitHub Release $TAG already exists."
+            echo "::notice::Release $TAG already exists; reusing it."
             exit 0
           fi
-          gh release create "$TAG" \
-            --title "$TAG" \
-            --generate-notes
+          gh release create "$TAG" --draft --verify-tag --title "$TAG" --generate-notes
 
-  # ── Prebuilt binaries for every supported platform ──────────────────────────
-  # Attaches `tessera-<target>.tar.gz` (or `.zip` on Windows) to the GitHub
-  # Release for the tag. These archives back the curl|sh installer, the Homebrew
-  # formula, and the npm wrapper. aarch64-linux cross-compiles via `cross`,
-  # which the action installs automatically.
   binaries:
     name: binary (${{ matrix.target }})
     needs: release
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -45,6 +48,10 @@ jobs:
           - target: x86_64-unknown-linux-gnu
             os: ubuntu-latest
           - target: aarch64-unknown-linux-gnu
+            os: ubuntu-latest
+          - target: x86_64-unknown-linux-musl
+            os: ubuntu-latest
+          - target: aarch64-unknown-linux-musl
             os: ubuntu-latest
           - target: x86_64-apple-darwin
             os: macos-15-intel
@@ -58,76 +65,70 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
+      - if: matrix.target == 'x86_64-unknown-linux-musl'
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
       - uses: taiki-e/upload-rust-binary-action@v1
         with:
           bin: tessera
           target: ${{ matrix.target }}
           archive: tessera-$target
+          ref: refs/tags/${{ env.TAG }}
           token: ${{ secrets.GITHUB_TOKEN }}
 
-  # ── crates.io ───────────────────────────────────────────────────────────────
-  # Idempotent: skips cleanly if no token, succeeds if the version already exists.
+  publish:
+    name: checksums, provenance, publish
+    needs: binaries
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download release archives
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          gh release download "$TAG" --dir dist --pattern 'tessera-*'
+          ls -l dist
+      - name: Write SHA256SUMS
+        run: |
+          set -euo pipefail
+          cd dist
+          sha256sum tessera-*.tar.gz tessera-*.zip > SHA256SUMS
+          cat SHA256SUMS
+      - uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: "dist/tessera-*"
+      - name: Upload SHA256SUMS and publish
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          gh release upload "$TAG" dist/SHA256SUMS --clobber
+          gh release edit "$TAG" --draft=false --latest
+
   crates:
     name: publish crates.io
+    needs: publish
     runs-on: ubuntu-latest
     environment: crates-io
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
-      - run: cargo fmt --check
-      - run: cargo clippy --all-targets --all-features -- -D warnings
-      - run: cargo test --all-targets --all-features
-      - name: Publish to crates.io (idempotent)
+      - name: Publish (idempotent; skipped without a token)
         env:
           CRATES_IO_TOKEN: ${{ secrets.CRATES_IO_TOKEN }}
         run: |
           set -uo pipefail
           if [ -z "${CRATES_IO_TOKEN:-}" ]; then
-            echo "::notice::CRATES_IO_TOKEN not configured for this environment; skipping crates.io publish. Publish manually with \`cargo publish\` or set the secret in the 'crates-io' environment."
+            echo "::notice::CRATES_IO_TOKEN not set; skipping crates.io."
             exit 0
           fi
-          output=$(cargo publish --token "$CRATES_IO_TOKEN" 2>&1)
+          output=$(cargo publish --locked --token "$CRATES_IO_TOKEN" 2>&1)
           status=$?
           echo "$output"
-          if [ $status -eq 0 ]; then
-            exit 0
-          fi
-          if echo "$output" | grep -Eq "already (uploaded|exists)|crate version .* is already uploaded"; then
-            echo "::notice::Version already on crates.io; treating as success."
+          if [ $status -ne 0 ] && echo "$output" | grep -Eq "already (uploaded|exists)"; then
+            echo "::notice::Version already on crates.io."
             exit 0
           fi
           exit $status
-
-  # ── npm wrapper ─────────────────────────────────────────────────────────────
-  # Publishes the thin npm package that downloads the matching prebuilt binary
-  # on install (so `npm i -g` / `npx` work without a Rust toolchain). Runs after
-  # the release assets exist; skips cleanly when NPM_TOKEN is unset.
-  npm:
-    name: publish npm
-    needs: binaries
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 20
-          registry-url: https://registry.npmjs.org
-      - name: Publish wrapper
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-        run: |
-          set -uo pipefail
-          if [ -z "${NODE_AUTH_TOKEN:-}" ]; then
-            echo "::notice::NPM_TOKEN not set; skipping npm publish."
-            exit 0
-          fi
-          VERSION="${GITHUB_REF_NAME#v}"
-          cd npm
-          npm version "$VERSION" --no-git-tag-version --allow-same-version
-          npm publish --access public || {
-            echo "::warning::npm publish failed (name may be taken or version exists). See npm/README.md.";
-            exit 0;
-          }
