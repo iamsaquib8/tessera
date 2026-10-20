@@ -15,7 +15,19 @@ use crate::types::{Language, SymbolSuggestion};
 pub struct VerifyArgs {
     pub symbol: Option<String>,
     pub snippet: Option<String>,
+    #[serde(deserialize_with = "language_by_name")]
     pub language: Option<Language>,
+}
+
+fn language_by_name<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> std::result::Result<Option<Language>, D::Error> {
+    let name: Option<String> = Option::deserialize(deserializer)?;
+    name.map(|n| {
+        Language::from_name(&n)
+            .ok_or_else(|| serde::de::Error::custom(format!("unsupported language `{n}`")))
+    })
+    .transpose()
 }
 
 #[derive(Debug, Clone, Serialize)]

@@ -37,7 +37,6 @@ pub mod fresh;
 pub mod indexer;
 pub mod init;
 pub mod mcp;
-pub mod mcp_http;
 pub mod output;
 pub mod query;
 pub mod types;

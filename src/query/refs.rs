@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 use super::common::{bare_name, is_test_path, limit_or_default};
 use super::find::page_footer;
 use super::legacy;
+use crate::extract::truncate_chars;
 use crate::output::{paginate, AgentText, Page};
 use crate::types::ReferenceRecord;
 
@@ -162,7 +163,7 @@ impl AgentText for RefsResult {
                     r.path,
                     r.line,
                     r.column,
-                    r.context,
+                    truncate_chars(&r.context, 120),
                     r.from_symbol
                         .as_deref()
                         .map(|s| format!("  ← {s}"))

@@ -15,7 +15,7 @@ use tessera_codegraph::query::{
 };
 use tessera_codegraph::types::Language;
 use tessera_codegraph::watch::{self, WatchOptions};
-use tessera_codegraph::{mcp, mcp_http, ExportGroupBy, ExportOptions, Index, Workspace};
+use tessera_codegraph::{mcp, ExportGroupBy, ExportOptions, Index, Workspace};
 
 const EXIT_FINDINGS: u8 = 1;
 const EXIT_USAGE: u8 = 2;
@@ -542,8 +542,8 @@ fn run() -> Result<u8> {
         Commands::Mcp { http } => {
             fresh::ensure(&ws)?;
             match http {
-                Some(addr) => mcp_http::serve(&addr, &ws.db_path)?,
-                None => mcp::serve_stdio(&ws.db_path)?,
+                Some(addr) => mcp::serve_http(ws, &addr)?,
+                None => mcp::serve_stdio(ws)?,
             }
         }
         Commands::Completions { shell } => {
