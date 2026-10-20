@@ -33,6 +33,7 @@ export function handler(id: string) {
         IndexOptions {
             full: true,
             build_snapshot: true,
+            excludes: Vec::new(),
         },
     )
     .unwrap();

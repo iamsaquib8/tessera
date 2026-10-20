@@ -41,6 +41,7 @@ pub mod mcp_http;
 pub mod query;
 pub mod snapshot;
 pub mod types;
+pub mod walk;
 pub mod watch;
 
 use std::path::{Path, PathBuf};

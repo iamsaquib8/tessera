@@ -149,6 +149,9 @@ enum Commands {
         /// Skip writing the memory-mapped snapshot at the end of indexing.
         #[arg(long)]
         no_snapshot: bool,
+        /// Glob (relative to the repo root) to skip; repeatable, e.g. `--exclude 'legacy/**'`.
+        #[arg(long = "exclude", value_name = "GLOB")]
+        exclude: Vec<String>,
         /// Graph engine to use for impact queries. Cozo requires `--features cozo`.
         #[arg(long, value_enum, default_value_t = EngineArg::Sqlite)]
         graph_engine: EngineArg,
@@ -535,6 +538,7 @@ fn run() -> Result<()> {
             db,
             full,
             no_snapshot,
+            exclude,
             graph_engine,
         } => {
             let engine: GraphEngineKind = graph_engine.into();
@@ -546,6 +550,7 @@ fn run() -> Result<()> {
             let options = IndexOptions {
                 full,
                 build_snapshot: !no_snapshot,
+                excludes: exclude,
             };
             let report = indexer::index_path_with(&path, &db, options)?;
             let mode = match report.mode {
@@ -553,10 +558,11 @@ fn run() -> Result<()> {
                 indexer::IndexMode::Incremental => "incremental",
             };
             println!(
-                "[{mode}] indexed {} files (+{} reused, -{} removed), {} symbols, {} references into {} in {}ms",
+                "[{mode}] indexed {} files (+{} reused, -{} removed, {} skipped), {} symbols, {} references into {} in {}ms",
                 report.files_indexed,
                 report.files_reused,
                 report.files_removed,
+                report.files_skipped,
                 report.symbols_indexed,
                 report.references_indexed,
                 db.display(),
@@ -579,6 +585,7 @@ fn run() -> Result<()> {
                 index_options: IndexOptions {
                     full,
                     build_snapshot: !no_snapshot,
+                    excludes: Vec::new(),
                 },
                 once,
             };

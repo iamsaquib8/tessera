@@ -1489,3 +1489,37 @@ fn validate_snippet_detects_unresolved_calls() {
         .success()
         .stdout(predicate::str::contains("\"unresolved_calls\""));
 }
+
+#[test]
+fn index_exclude_flag_skips_matching_files() {
+    let temp = TempDir::new().unwrap();
+    fs::create_dir_all(temp.path().join("legacy")).unwrap();
+    fs::write(
+        temp.path().join("legacy/old.ts"),
+        "export function oldThing() {}\n",
+    )
+    .unwrap();
+    fs::write(
+        temp.path().join("new.ts"),
+        "export function newThing() {}\n",
+    )
+    .unwrap();
+    let db = temp.path().join("t.db");
+    Command::cargo_bin("tessera")
+        .unwrap()
+        .args(["index"])
+        .arg(temp.path())
+        .arg("--db")
+        .arg(&db)
+        .args(["--exclude", "legacy/**"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("1 skipped"));
+    Command::cargo_bin("tessera")
+        .unwrap()
+        .args(["find-definition", "oldThing", "--db"])
+        .arg(&db)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("legacy/old.ts").not());
+}

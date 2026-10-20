@@ -5,13 +5,12 @@ use std::time::Instant;
 use anyhow::{Context, Result};
 use rusqlite::Connection;
 use sha2::{Digest, Sha256};
-use walkdir::{DirEntry, WalkDir};
 
 use crate::bloom::BloomFilter;
 use crate::config::TesseraConfig;
 use crate::db;
 use crate::snapshot;
-use crate::types::Language;
+use crate::walk::{self, WalkOptions};
 
 #[derive(Debug, Clone)]
 pub struct IndexReport {
@@ -20,6 +19,7 @@ pub struct IndexReport {
     pub files_removed: usize,
     pub symbols_indexed: usize,
     pub references_indexed: usize,
+    pub files_skipped: usize,
     pub elapsed_ms: u128,
     pub mode: IndexMode,
     pub warnings: Vec<IndexWarning>,
@@ -37,10 +37,11 @@ pub enum IndexMode {
     Incremental,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct IndexOptions {
     pub full: bool,
     pub build_snapshot: bool,
+    pub excludes: Vec<String>,
 }
 
 impl Default for IndexOptions {
@@ -48,6 +49,7 @@ impl Default for IndexOptions {
         Self {
             full: false,
             build_snapshot: true,
+            excludes: Vec::new(),
         }
     }
 }
@@ -80,6 +82,7 @@ pub fn index_path_with(root: &Path, db_path: &Path, options: IndexOptions) -> Re
         files_removed: 0,
         symbols_indexed: 0,
         references_indexed: 0,
+        files_skipped: 0,
         elapsed_ms: 0,
         mode,
         warnings: Vec::new(),
@@ -89,42 +92,21 @@ pub fn index_path_with(root: &Path, db_path: &Path, options: IndexOptions) -> Re
 
     let tx = conn.unchecked_transaction()?;
 
-    for entry_result in WalkDir::new(&root)
-        .into_iter()
-        .filter_entry(|entry| should_enter(entry, &config))
-    {
-        let entry = match entry_result {
-            Ok(entry) => entry,
-            Err(error) => {
-                report.warnings.push(IndexWarning {
-                    path: error
-                        .path()
-                        .map(|p| p.display().to_string())
-                        .unwrap_or_else(|| "<walkdir>".to_string()),
-                    message: error.to_string(),
-                });
-                continue;
-            }
-        };
-        if !entry.file_type().is_file() {
-            continue;
-        }
+    let walk_options = WalkOptions {
+        max_file_bytes: config
+            .max_file_bytes
+            .unwrap_or(WalkOptions::default().max_file_bytes),
+        excludes: options.excludes.clone(),
+        sniff_content: false,
+    };
+    let discovery = walk::discover(&root, &config, &walk_options)?;
+    report.warnings.extend(discovery.warnings);
+    report.files_skipped = discovery.skipped.len();
 
-        let path = entry.path();
-        let rel_path = path
-            .strip_prefix(&root)
-            .unwrap_or(path)
-            .to_string_lossy()
-            .replace('\\', "/");
-
-        if !config.includes_path(&rel_path) || config.excludes_path(&rel_path) {
-            continue;
-        }
-
-        let Some(language) = language_for_path(path) else {
-            continue;
-        };
-        let content = match fs::read_to_string(path) {
+    for file in discovery.files {
+        let rel_path = file.rel_path;
+        let language = file.language;
+        let content = match fs::read_to_string(&file.abs_path) {
             Ok(c) => c,
             Err(error) => {
                 report.warnings.push(IndexWarning {
@@ -134,6 +116,15 @@ pub fn index_path_with(root: &Path, db_path: &Path, options: IndexOptions) -> Re
                 continue;
             }
         };
+        let name = file
+            .abs_path
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy();
+        if walk::is_minified(&name, content.as_bytes()) {
+            report.files_skipped += 1;
+            continue;
+        }
         let sha = format!("{:x}", Sha256::digest(content.as_bytes()));
 
         // Incremental: short-circuit when sha is unchanged.
@@ -216,49 +207,6 @@ fn rebuild_bloom(conn: &Connection) -> Result<()> {
     let bytes = bloom.to_bytes();
     db::set_meta_blob(conn, "bloom_symbols", &bytes)?;
     Ok(())
-}
-
-fn should_enter(entry: &DirEntry, config: &TesseraConfig) -> bool {
-    let name = entry.file_name().to_string_lossy();
-    if config.ignores_name(&name) {
-        return false;
-    }
-    !matches!(
-        name.as_ref(),
-        ".git"
-            | ".hg"
-            | ".svn"
-            | "node_modules"
-            | "target"
-            | "dist"
-            | "build"
-            | "out"
-            | "coverage"
-            | "vendor"
-            | "vendors"
-            | "third_party"
-            | ".cache"
-            | ".gradle"
-            | ".idea"
-            | ".pytest_cache"
-            | ".mypy_cache"
-            | ".ruff_cache"
-            | ".tox"
-            | ".cargo"
-            | "Pods"
-            | "DerivedData"
-            | ".next"
-            | ".venv"
-            | "venv"
-            | "__pycache__"
-            | ".tessera"
-    )
-}
-
-fn language_for_path(path: &Path) -> Option<Language> {
-    path.extension()
-        .and_then(|ext| ext.to_str())
-        .and_then(Language::from_extension)
 }
 
 pub use crate::extract::{parse_file, ParsedFile};

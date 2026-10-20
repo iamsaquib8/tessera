@@ -1,14 +1,13 @@
-use std::fs;
 use std::path::{Path, PathBuf};
 use std::thread;
 use std::time::Duration;
 
 use anyhow::Result;
 use sha2::{Digest, Sha256};
-use walkdir::{DirEntry, WalkDir};
 
+use crate::config::TesseraConfig;
 use crate::indexer::{self, IndexOptions};
-use crate::types::Language;
+use crate::walk::{self, WalkOptions};
 
 #[derive(Debug, Clone)]
 pub struct WatchOptions {
@@ -32,7 +31,7 @@ impl Default for WatchOptions {
 pub fn watch_path(root: &Path, db_path: &Path, options: WatchOptions) -> Result<()> {
     let root = root.canonicalize().unwrap_or_else(|_| PathBuf::from(root));
     let mut last_fingerprint = fingerprint_sources(&root)?;
-    index_once(&root, db_path, options.index_options)?;
+    index_once(&root, db_path, options.index_options.clone())?;
 
     if options.once {
         return Ok(());
@@ -58,7 +57,7 @@ pub fn watch_path(root: &Path, db_path: &Path, options: WatchOptions) -> Result<
         }
 
         last_fingerprint = settled;
-        index_once(&root, db_path, options.index_options)?;
+        index_once(&root, db_path, options.index_options.clone())?;
     }
 }
 
@@ -88,66 +87,25 @@ fn index_once(root: &Path, db_path: &Path, options: IndexOptions) -> Result<()> 
 }
 
 fn fingerprint_sources(root: &Path) -> Result<String> {
-    let mut entries: Vec<(String, Vec<u8>)> = Vec::new();
-    for entry in WalkDir::new(root)
-        .into_iter()
-        .filter_entry(should_enter)
-        .filter_map(Result::ok)
-        .filter(|entry| entry.file_type().is_file())
-    {
-        let path = entry.path();
-        if language_for_path(path).is_none() {
-            continue;
-        }
-        let Ok(content) = fs::read(path) else {
-            continue;
-        };
-        let rel_path = path
-            .strip_prefix(root)
-            .unwrap_or(path)
-            .to_string_lossy()
-            .replace('\\', "/");
-        entries.push((rel_path, content));
-    }
-
-    entries.sort_by(|a, b| a.0.cmp(&b.0));
+    let config = TesseraConfig::load(root);
+    let options = WalkOptions {
+        sniff_content: false,
+        ..WalkOptions::default()
+    };
+    let discovery = walk::discover(root, &config, &options)?;
     let mut hasher = Sha256::new();
-    for (path, content) in entries {
-        hasher.update(path.as_bytes());
-        hasher.update([0]);
-        hasher.update(content);
-        hasher.update([0]);
+    for file in discovery.files {
+        hasher.update(file.rel_path.as_bytes());
+        hasher.update(file.size.to_le_bytes());
+        hasher.update(file.mtime_ns.to_le_bytes());
     }
     Ok(format!("{:x}", hasher.finalize()))
 }
 
-fn should_enter(entry: &DirEntry) -> bool {
-    let name = entry.file_name().to_string_lossy();
-    !matches!(
-        name.as_ref(),
-        ".git"
-            | ".hg"
-            | ".svn"
-            | "node_modules"
-            | "target"
-            | "dist"
-            | "build"
-            | ".next"
-            | ".venv"
-            | "venv"
-            | "__pycache__"
-            | ".tessera"
-    )
-}
-
-fn language_for_path(path: &Path) -> Option<Language> {
-    path.extension()
-        .and_then(|ext| ext.to_str())
-        .and_then(Language::from_extension)
-}
-
 #[cfg(test)]
 mod tests {
+    use std::fs;
+
     use super::*;
 
     #[test]
@@ -157,6 +115,8 @@ mod tests {
         fs::write(&path, "export function a() { return 1; }\n").unwrap();
 
         let first = fingerprint_sources(temp.path()).unwrap();
+        // Coarse filesystem clocks can stamp two quick writes with the same mtime.
+        std::thread::sleep(Duration::from_millis(20));
         fs::write(&path, "export function a() { return 2; }\n").unwrap();
         let second = fingerprint_sources(temp.path()).unwrap();
 

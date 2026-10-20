@@ -43,6 +43,7 @@ pub fn run(options: BenchOptions) -> Result<BenchResult> {
         IndexOptions {
             full: true,
             build_snapshot: true,
+            excludes: Vec::new(),
         },
     )?;
 
@@ -53,6 +54,7 @@ pub fn run(options: BenchOptions) -> Result<BenchResult> {
         IndexOptions {
             full: false,
             build_snapshot: false,
+            excludes: Vec::new(),
         },
     )?;
 
