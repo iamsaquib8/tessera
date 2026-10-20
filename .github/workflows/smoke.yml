@@ -1,0 +1,96 @@
+name: Install smoke tests
+
+# Installs a published release through every channel on every OS and runs a
+# real query, so a broken install path is caught before users hit it.
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to test, e.g. 0.10.0 (no leading v)"
+        required: true
+
+env:
+  VERSION: ${{ inputs.version || github.event.release.tag_name }}
+
+jobs:
+  smoke:
+    name: ${{ matrix.channel }} (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        channel: [npx, script, brew, binstall]
+        exclude:
+          - os: windows-latest
+            channel: brew
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - name: Normalise version
+        run: echo "V=${VERSION#v}" >> "$GITHUB_ENV"
+
+      - if: matrix.channel == 'npx'
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - if: matrix.channel == 'npx'
+        name: Install via npx
+        run: |
+          echo "TESSERA=npx --yes tessera-codegraph@${V}" >> "$GITHUB_ENV"
+
+      - if: matrix.channel == 'script' && runner.os != 'Windows'
+        name: Install via install.sh
+        run: |
+          TESSERA_VERSION="v${V}" TESSERA_INSTALL_DIR="$HOME/.local/bin" sh install.sh
+          echo "TESSERA=$HOME/.local/bin/tessera" >> "$GITHUB_ENV"
+      - if: matrix.channel == 'script' && runner.os == 'Windows'
+        name: Install via release zip
+        run: |
+          curl -fsSL -o tessera.zip "https://github.com/iamsaquib8/tessera/releases/download/v${V}/tessera-x86_64-pc-windows-msvc.zip"
+          curl -fsSL -o SHA256SUMS "https://github.com/iamsaquib8/tessera/releases/download/v${V}/SHA256SUMS"
+          expected=$(awk '$2 == "tessera-x86_64-pc-windows-msvc.zip" { print $1 }' SHA256SUMS)
+          actual=$(sha256sum tessera.zip | cut -d ' ' -f 1)
+          [ "$expected" = "$actual" ] || { echo "checksum mismatch"; exit 1; }
+          unzip -o tessera.zip -d tessera-bin
+          echo "TESSERA=$PWD/tessera-bin/tessera.exe" >> "$GITHUB_ENV"
+
+      - if: matrix.channel == 'brew'
+        name: Install via Homebrew
+        run: |
+          brew install iamsaquib8/tessera/tessera
+          echo "TESSERA=tessera" >> "$GITHUB_ENV"
+
+      - if: matrix.channel == 'binstall'
+        uses: cargo-bins/cargo-binstall@main
+      - if: matrix.channel == 'binstall'
+        name: Install via cargo-binstall
+        run: |
+          cargo binstall --no-confirm --version "${V}" tessera-codegraph
+          echo "TESSERA=tessera" >> "$GITHUB_ENV"
+
+      - name: Version matches the release
+        run: |
+          out=$($TESSERA --version)
+          echo "$out"
+          [ "$out" = "tessera ${V}" ]
+      - name: Answers a real query
+        working-directory: tests/fixtures/typescript
+        run: $TESSERA --quiet find findById | grep -q "UserRepo.findById"
+
+  docker:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run the published image
+        run: |
+          V="${VERSION#v}"
+          docker run --rm "ghcr.io/iamsaquib8/tessera:v${V}" --version | grep -q "tessera ${V}"
+          docker run --rm -v "$PWD/tests/fixtures/typescript:/work" "ghcr.io/iamsaquib8/tessera:v${V}" --quiet find findById \
+            | grep -q "UserRepo.findById"
