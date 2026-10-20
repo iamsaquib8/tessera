@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::fs;
-use std::io::{self, Write};
+
 use std::path::{Path, PathBuf};
 
 use anyhow::Result;
@@ -13,8 +13,8 @@ use crate::types::{
     AlternativeQuery, ConnectResult, ContextPack, CriticalityBreakdown, DefinitionResult,
     DiffChangedSymbol, DiffImpactResult, DiffImpactedSymbol, EditPrepResult, ExpandResult,
     ExportResult, ImpactCaller, ImpactResult, ImportRecord, ImportedByResult, ImportsResult,
-    KindCount, Language, LanguageCount, OutlineResult, PathNode, PlanQueryResult, PlanStep,
-    QueryMeta, ReferenceRecord, ReferencesResult, SearchHit, SearchOptions, SearchResult, Sibling,
+    KindCount, Language, LanguageCount, OutlineResult, PathNode, PlanStep, QueryMeta,
+    ReferenceRecord, ReferencesResult, SearchHit, SearchOptions, SearchResult, Sibling,
     SiblingsResult, SignatureLine, SignatureResult, SnippetReferenceCheck, StatsResult,
     SymbolRecord, SymbolSuggestion, TestsForResult, TopFanout, UnusedOptions, UnusedResult,
     UnusedSymbol, ValidateResult, ValidateSnippetResult,
@@ -527,11 +527,6 @@ pub fn stats_conn(conn: &Connection, db_path: &Path) -> Result<StatsResult> {
         }
     }
 
-    let snapshot_present = db_path
-        .parent()
-        .map(|p| p.join("snapshot.bin").exists())
-        .unwrap_or(false);
-
     let tokens = symbols / 8 + 60;
     Ok(StatsResult {
         files,
@@ -542,7 +537,6 @@ pub fn stats_conn(conn: &Connection, db_path: &Path) -> Result<StatsResult> {
         kinds,
         top_fanout,
         db_path: db_path.to_string_lossy().to_string(),
-        snapshot_present,
         meta: meta(tokens, "get_outline", 320, 0.6),
     })
 }
@@ -649,176 +643,6 @@ pub fn context_pack_conn(
         budget_tokens: budget,
         meta: meta(tokens, "expand_symbol", 800, 0.88),
     })
-}
-
-pub fn plan_query(task: &str, symbol: Option<&str>) -> PlanQueryResult {
-    let query = task.trim();
-    let lower = query.to_lowercase();
-    let subject = symbol
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .unwrap_or("<symbol>");
-
-    let (intent, mut steps) =
-        if contains_any(&lower, &["edit", "change", "modify", "refactor", "fix"]) {
-            (
-                "prepare_edit",
-                vec![
-                    plan_step(
-                        1,
-                        "validate",
-                        subject,
-                        "Confirm the target exists before spending context.",
-                        80,
-                    ),
-                    plan_step(
-                        2,
-                        "edit-prep",
-                        subject,
-                        "Fetch signature, related symbols, context, and tests in one bundle.",
-                        1300,
-                    ),
-                    plan_step(
-                        3,
-                        "impact",
-                        subject,
-                        "Check downstream callers before making the change.",
-                        500,
-                    ),
-                ],
-            )
-        } else if contains_any(&lower, &["review", "pr", "diff", "changed", "regression"]) {
-            (
-                "review_changes",
-                vec![
-                    PlanStep {
-                        order: 1,
-                        tool: "diff-impact".to_string(),
-                        command: "tessera diff-impact origin/main --depth 3".to_string(),
-                        reason: "Map changed symbols to high-impact callers for PR review."
-                            .to_string(),
-                        expected_tokens: 900,
-                    },
-                    PlanStep {
-                        order: 2,
-                        tool: "tests-for".to_string(),
-                        command: format!("tessera tests-for {subject}"),
-                        reason: "Verify whether the changed surface has focused test coverage."
-                            .to_string(),
-                        expected_tokens: 250,
-                    },
-                ],
-            )
-        } else if contains_any(&lower, &["call path", "connect", "reach", "flow"]) {
-            (
-                "trace_connection",
-                vec![
-                PlanStep {
-                    order: 1,
-                    tool: "connect".to_string(),
-                    command: "tessera connect <from> <to> --depth 8".to_string(),
-                    reason: "Find the shortest deterministic call path between two symbols."
-                        .to_string(),
-                    expected_tokens: 250,
-                },
-                PlanStep {
-                    order: 2,
-                    tool: "export".to_string(),
-                    command: "tessera export --from <from> --depth 3".to_string(),
-                    reason:
-                        "Render the forward call neighbourhood if the path needs visual context."
-                            .to_string(),
-                    expected_tokens: 450,
-                },
-            ],
-            )
-        } else if contains_any(&lower, &["unused", "dead", "cleanup"]) {
-            (
-                "find_cleanup_targets",
-                vec![
-                    PlanStep {
-                        order: 1,
-                        tool: "unused".to_string(),
-                        command: "tessera unused --limit 50".to_string(),
-                        reason: "Find indexed symbols with no inbound refs or call edges."
-                            .to_string(),
-                        expected_tokens: 600,
-                    },
-                    PlanStep {
-                        order: 2,
-                        tool: "impact".to_string(),
-                        command: format!("tessera impact {subject}"),
-                        reason: "Double-check callers before removing a candidate.".to_string(),
-                        expected_tokens: 400,
-                    },
-                ],
-            )
-        } else if contains_any(&lower, &["where", "definition", "find", "locate"]) {
-            (
-                "locate_symbol",
-                vec![
-                    plan_step(
-                        1,
-                        "validate",
-                        subject,
-                        "Catch typos and near-misses before lookup.",
-                        80,
-                    ),
-                    plan_step(
-                        2,
-                        "find-definition",
-                        subject,
-                        "Jump to exact file, line, and signature.",
-                        120,
-                    ),
-                    plan_step(
-                        3,
-                        "signature",
-                        subject,
-                        "Fetch the public shape without function bodies.",
-                        180,
-                    ),
-                ],
-            )
-        } else {
-            (
-                "understand_symbol",
-                vec![
-                    plan_step(
-                        1,
-                        "validate",
-                        subject,
-                        "Confirm the indexed symbol name.",
-                        80,
-                    ),
-                    plan_step(
-                        2,
-                        "context-pack",
-                        subject,
-                        "Bundle body, dependencies, callers, and tests under one budget.",
-                        1200,
-                    ),
-                    plan_step(
-                        3,
-                        "siblings",
-                        subject,
-                        "Find adjacent symbols that share callers.",
-                        250,
-                    ),
-                ],
-            )
-        };
-
-    for (idx, step) in steps.iter_mut().enumerate() {
-        step.order = idx + 1;
-    }
-    let tokens = steps.iter().map(|step| step.expected_tokens).sum::<usize>() + 40;
-    PlanQueryResult {
-        query: query.to_string(),
-        inferred_intent: intent.to_string(),
-        steps,
-        meta: meta(tokens, "search", 500, 0.68),
-    }
 }
 
 pub fn edit_prep_conn(
@@ -1738,47 +1562,6 @@ pub fn signature(db_path: &Path, symbol: &str) -> Result<SignatureResult> {
 pub fn siblings(db_path: &Path, symbol: &str) -> Result<SiblingsResult> {
     let conn = db::open_ro(db_path)?;
     siblings_conn(&conn, symbol)
-}
-
-pub fn shell(db_path: &Path) -> Result<()> {
-    println!("Tessera shell. Commands: def <symbol>, refs <symbol>, outline <path>, expand <symbol>, impact <symbol>, validate <symbol>, stats, tests <symbol>, quit");
-    let mut input = String::new();
-    loop {
-        input.clear();
-        print!("tessera> ");
-        io::stdout().flush()?;
-        if io::stdin().read_line(&mut input)? == 0 {
-            break;
-        }
-        let command = input.trim();
-        if command.is_empty() {
-            continue;
-        }
-        if command == "quit" || command == "exit" {
-            break;
-        }
-        let mut parts = command.splitn(2, char::is_whitespace);
-        let name = parts.next().unwrap_or_default();
-        let arg = parts.next().unwrap_or_default().trim();
-        match name {
-            "def" => println!("{}", find_definition(db_path, arg)?),
-            "refs" => println!("{}", find_references(db_path, arg)?),
-            "outline" => println!("{}", get_outline(db_path, Path::new(arg))?),
-            "expand" => println!("{}", expand_symbol(db_path, arg)?),
-            "impact" => println!("{}", impact(db_path, arg, 4)?),
-            "validate" => println!("{}", validate(db_path, arg)?),
-            "tests" => println!("{}", tests_for(db_path, arg)?),
-            "stats" => println!("{}", stats(db_path)?),
-            _ => println!("Unknown command: {name}"),
-        }
-    }
-    Ok(())
-}
-
-// ─── Internals ───────────────────────────────────────────────────────────────
-
-fn contains_any(haystack: &str, needles: &[&str]) -> bool {
-    needles.iter().any(|needle| haystack.contains(needle))
 }
 
 fn plan_step(

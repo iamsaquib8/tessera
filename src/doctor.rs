@@ -1,5 +1,4 @@
 use std::fmt::{self, Display};
-use std::fs;
 use std::path::{Path, PathBuf};
 
 use anyhow::Result;
@@ -72,7 +71,6 @@ pub fn run(options: DoctorOptions) -> Result<DoctorResult> {
 
     check_root(&root, &mut checks);
     check_db(&db_path, &mut checks)?;
-    check_snapshot(&db_path, &mut checks);
     check_parsers(&mut checks);
     check_ignored_paths(&mut checks);
     check_mcp_config(&db_path, &mut checks);
@@ -152,57 +150,6 @@ fn check_db(db_path: &Path, checks: &mut Vec<DoctorCheck>) -> Result<()> {
     Ok(())
 }
 
-fn check_snapshot(db_path: &Path, checks: &mut Vec<DoctorCheck>) {
-    let Some(parent) = db_path.parent() else {
-        push_warn(
-            checks,
-            "snapshot",
-            "database path has no parent directory".to_string(),
-            None,
-        );
-        return;
-    };
-    let snapshot_path = parent.join("snapshot.bin");
-    if !snapshot_path.exists() {
-        push_warn(
-            checks,
-            "snapshot",
-            format!("{} is missing", snapshot_path.display()),
-            Some(format!(
-                "Run `tessera snapshot --db {}`.",
-                db_path.display()
-            )),
-        );
-        return;
-    }
-
-    let db_modified = fs::metadata(db_path).and_then(|m| m.modified());
-    let snapshot_modified = fs::metadata(&snapshot_path).and_then(|m| m.modified());
-    match (db_modified, snapshot_modified) {
-        (Ok(db_time), Ok(snapshot_time)) if snapshot_time >= db_time => push_ok(
-            checks,
-            "snapshot",
-            format!("{} is fresh", snapshot_path.display()),
-            None,
-        ),
-        (Ok(_), Ok(_)) => push_warn(
-            checks,
-            "snapshot",
-            format!("{} is older than the database", snapshot_path.display()),
-            Some(format!(
-                "Run `tessera snapshot --db {}`.",
-                db_path.display()
-            )),
-        ),
-        _ => push_warn(
-            checks,
-            "snapshot",
-            "could not compare snapshot and database timestamps".to_string(),
-            None,
-        ),
-    }
-}
-
 fn check_parsers(checks: &mut Vec<DoctorCheck>) {
     let snippets = [
         (Language::JavaScript, "function f() { return 1; }\n"),
@@ -277,15 +224,6 @@ fn push_ok(checks: &mut Vec<DoctorCheck>, name: &str, message: String, hint: Opt
     checks.push(DoctorCheck {
         name: name.to_string(),
         status: DoctorStatus::Ok,
-        message,
-        hint,
-    });
-}
-
-fn push_warn(checks: &mut Vec<DoctorCheck>, name: &str, message: String, hint: Option<String>) {
-    checks.push(DoctorCheck {
-        name: name.to_string(),
-        status: DoctorStatus::Warn,
         message,
         hint,
     });

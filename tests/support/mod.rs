@@ -79,3 +79,31 @@ pub fn graph_dump(db: &Path) -> Value {
             JOIN files ff ON ff.id = fs.file_id"),
     })
 }
+
+pub fn synth_repo(root: &Path, files: usize) {
+    fs::create_dir_all(root).unwrap();
+    fs::write(
+        root.join("util.ts"),
+        "export function sharedHelper(x: number): number {\n  return (x * 13 + 7) ^ 0;\n}\n\n\
+         export function formatRow(row: { id: number; name: string }): string {\n  return `${row.id}\\t${row.name}`;\n}\n\n\
+         export function parseInput(raw: string): number {\n  return Number.parseInt(raw, 10);\n}\n",
+    )
+    .unwrap();
+    for i in 0..files {
+        let prev = (i + files - 1) % files;
+        let next = (i + 1) % files;
+        fs::write(
+            root.join(format!("module_{i:05}.ts")),
+            format!(
+                "import {{ sharedHelper, formatRow, parseInput }} from \"./util\";\n\n\
+                 export function moduleEntry{i}(raw: string, label: string): string {{\n\
+                 \x20 const value = helper{i}(parseInput(raw));\n\
+                 \x20 return formatRow({{ id: value, name: label }});\n}}\n\n\
+                 function helper{i}(x: number): number {{\n\
+                 \x20 return sharedHelper(x) + bridge{prev}(x) + bridge{next}(x);\n}}\n\n\
+                 export function bridge{i}(x: number): number {{\n  return sharedHelper(x + {i});\n}}\n"
+            ),
+        )
+        .unwrap();
+    }
+}

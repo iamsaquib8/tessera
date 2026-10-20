@@ -87,22 +87,6 @@ impl Display for Language {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum GraphEngineKind {
-    Sqlite,
-    Cozo,
-}
-
-impl Display for GraphEngineKind {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Sqlite => f.write_str("sqlite"),
-            Self::Cozo => f.write_str("cozo"),
-        }
-    }
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SymbolRecord {
     pub id: i64,
@@ -500,35 +484,12 @@ impl Display for ContextPack {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PlanQueryResult {
-    pub query: String,
-    pub inferred_intent: String,
-    pub steps: Vec<PlanStep>,
-    pub meta: QueryMeta,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PlanStep {
     pub order: usize,
     pub tool: String,
     pub command: String,
     pub reason: String,
     pub expected_tokens: usize,
-}
-
-impl Display for PlanQueryResult {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        writeln!(f, "Plan for {:?} ({})", self.query, self.inferred_intent)?;
-        for step in &self.steps {
-            writeln!(
-                f,
-                "  {}. {}  ~{} tokens",
-                step.order, step.command, step.expected_tokens
-            )?;
-            writeln!(f, "     {}", step.reason)?;
-        }
-        write_meta(f, &self.meta)
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -887,17 +848,12 @@ pub struct StatsResult {
     pub kinds: Vec<KindCount>,
     pub top_fanout: Vec<TopFanout>,
     pub db_path: String,
-    pub snapshot_present: bool,
     pub meta: QueryMeta,
 }
 
 impl Display for StatsResult {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        writeln!(
-            f,
-            "Tessera index at {} (snapshot={})",
-            self.db_path, self.snapshot_present
-        )?;
+        writeln!(f, "Tessera index at {}", self.db_path)?;
         writeln!(
             f,
             "  files={}  symbols={}  references={}  edges={}",
@@ -972,40 +928,6 @@ impl Display for TestsForResult {
         }
         write_meta(f, &self.meta)
     }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct BenchResult {
-    pub path: String,
-    pub files: usize,
-    pub symbols: usize,
-    pub references: usize,
-    pub index_full_ms: u128,
-    pub index_incremental_ms: u128,
-    pub queries: Vec<BenchQuery>,
-    pub savings: Vec<BenchSavings>,
-    pub chart: String,
-}
-
-impl Display for BenchResult {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        writeln!(f, "{}", self.chart)
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct BenchQuery {
-    pub name: String,
-    pub ms: u128,
-    pub tokens: usize,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct BenchSavings {
-    pub label: String,
-    pub raw_tokens: usize,
-    pub tessera_tokens: usize,
-    pub ratio: f32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

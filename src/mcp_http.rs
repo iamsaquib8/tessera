@@ -113,7 +113,6 @@ fn handle_stream(
 fn health_payload(conn: &rusqlite::Connection, db_path: &Path) -> Result<serde_json::Value> {
     let schema_version = db::schema_version(conn)?;
     let root = db::get_meta(conn, "root")?;
-    let snapshot_path = snapshot_path_for(db_path);
     Ok(json!({
         "ok": schema_version == db::SCHEMA_VERSION,
         "service": "tessera-mcp-http",
@@ -127,17 +126,8 @@ fn health_payload(conn: &rusqlite::Connection, db_path: &Path) -> Result<serde_j
         "db_path": db_path.display().to_string(),
         "root": root,
         "schema_version": schema_version,
-        "expected_schema_version": db::SCHEMA_VERSION,
-        "snapshot_path": snapshot_path.display().to_string(),
-        "snapshot_exists": snapshot_path.exists()
+        "expected_schema_version": db::SCHEMA_VERSION
     }))
-}
-
-fn snapshot_path_for(db_path: &Path) -> std::path::PathBuf {
-    db_path
-        .parent()
-        .unwrap_or_else(|| Path::new("."))
-        .join("snapshot.bin")
 }
 
 fn request_complete(buffer: &[u8]) -> bool {

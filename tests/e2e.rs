@@ -602,33 +602,6 @@ export function testAdd() {
 }
 
 #[test]
-fn snapshot_command_writes_file() {
-    let temp = TempDir::new().unwrap();
-    write_sample(&temp);
-    let db = temp.path().join(".tessera/s.db");
-    Command::cargo_bin("tessera")
-        .unwrap()
-        .args([
-            "index",
-            temp.path().to_str().unwrap(),
-            "--db",
-            db.to_str().unwrap(),
-            "--full",
-            "--no-snapshot",
-        ])
-        .assert()
-        .success();
-    Command::cargo_bin("tessera")
-        .unwrap()
-        .args(["snapshot", "--db", db.to_str().unwrap()])
-        .assert()
-        .success()
-        .stdout(predicate::str::contains("snapshot.bin"));
-
-    assert!(temp.path().join(".tessera/snapshot.bin").exists());
-}
-
-#[test]
 fn search_filters_by_kind_language_path() {
     let temp = TempDir::new().unwrap();
     write_sample(&temp);
@@ -734,32 +707,6 @@ fn context_pack_bundles_body_deps_callers() {
             v["symbol"]["name"] == "findById"
                 && v["body"].is_string()
                 && v["caller_signatures"].is_array()
-        }));
-}
-
-#[test]
-fn plan_query_recommends_agent_workflow() {
-    Command::cargo_bin("tessera")
-        .unwrap()
-        .args([
-            "plan-query",
-            "edit findById safely",
-            "--symbol",
-            "findById",
-            "--json",
-        ])
-        .assert()
-        .success()
-        .stdout(predicate::function(|out: &str| {
-            let v: serde_json::Value = serde_json::from_str(out).unwrap();
-            v["inferred_intent"] == "prepare_edit"
-                && v["steps"].as_array().unwrap().iter().any(|step| {
-                    step["tool"] == "edit-prep"
-                        && step["command"]
-                            .as_str()
-                            .unwrap()
-                            .contains("tessera edit-prep findById")
-                })
         }));
 }
 
@@ -1027,7 +974,6 @@ function helper() {
         temp.path().canonicalize().unwrap().display().to_string()
     );
     assert_eq!(health["schema_version"], 4);
-    assert_eq!(health["snapshot_exists"], true);
 
     let sse = http_request(&addr, "GET", "/sse", None);
     assert!(sse.contains("event: ready"));
@@ -1151,15 +1097,15 @@ fn init_creates_project_defaults_and_mcp_snippets() {
 }
 
 #[test]
-fn completions_print_shell_scripts() {
+fn completions_zsh_lists_commands() {
     Command::cargo_bin("tessera")
         .unwrap()
-        .args(["completions", "bash"])
+        .args(["completions", "zsh"])
         .assert()
         .success()
-        .stdout(predicate::str::contains("complete -F _tessera tessera"))
-        .stdout(predicate::str::contains("doctor"))
-        .stdout(predicate::str::contains("init"));
+        .stdout(predicate::str::contains("#compdef tessera"))
+        .stdout(predicate::str::contains("index"))
+        .stdout(predicate::str::contains("mcp"));
 }
 
 #[test]

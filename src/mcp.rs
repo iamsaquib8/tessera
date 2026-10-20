@@ -218,11 +218,6 @@ fn call_tool(
                 query::context_pack_conn(conn, &symbol, budget).map_err(to_string)?,
             )
         }
-        "plan_query" => {
-            let task = arg_string(&args, "task")?;
-            let symbol = args.get("symbol").and_then(Value::as_str);
-            serde_json::to_value(query::plan_query(&task, symbol))
-        }
         "edit_prep" => {
             let symbol = arg_string(&args, "symbol")?;
             let budget = args
@@ -439,18 +434,6 @@ fn tools() -> Value {
                     "budget": { "type": "integer", "minimum": 200, "maximum": 8000, "description": "Approximate token budget for the entire response. Default 1500." }
                 },
                 "required": ["symbol"]
-            }
-        },
-        {
-            "name": "plan_query",
-            "description": "Given a natural-language coding task, recommend the cheapest ordered Tessera tool sequence an agent should run before spending broader context.",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "task": { "type": "string", "description": "Task shape, for example `edit findById safely` or `review this PR`." },
-                    "symbol": { "type": "string", "description": "Optional known symbol to substitute into commands." }
-                },
-                "required": ["task"]
             }
         },
         {

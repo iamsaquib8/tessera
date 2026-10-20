@@ -2,20 +2,16 @@ use std::io::Read;
 use std::path::PathBuf;
 use std::time::Duration;
 
-use anyhow::{anyhow, Result};
-use clap::{Parser, Subcommand, ValueEnum};
+use anyhow::Result;
+use clap::{CommandFactory, Parser, Subcommand, ValueEnum};
 
-use tessera_codegraph::bench::{self, BenchOptions};
-use tessera_codegraph::completions::{self, CompletionShell};
-use tessera_codegraph::db;
 use tessera_codegraph::doctor::{self, DoctorOptions};
 use tessera_codegraph::indexer::{self, IndexOptions};
 use tessera_codegraph::init::{self, InitOptions};
 use tessera_codegraph::mcp;
 use tessera_codegraph::mcp_http;
 use tessera_codegraph::query;
-use tessera_codegraph::snapshot;
-use tessera_codegraph::types::{GraphEngineKind, Language, SearchOptions, UnusedOptions};
+use tessera_codegraph::types::{Language, SearchOptions, UnusedOptions};
 use tessera_codegraph::watch::{self, WatchOptions};
 use tessera_codegraph::{ExportGroupBy, ExportOptions};
 
@@ -99,41 +95,6 @@ impl GraphFormat {
     }
 }
 
-#[derive(Debug, Clone, ValueEnum, Default)]
-enum EngineArg {
-    #[default]
-    Sqlite,
-    Cozo,
-}
-
-impl From<EngineArg> for GraphEngineKind {
-    fn from(value: EngineArg) -> Self {
-        match value {
-            EngineArg::Sqlite => GraphEngineKind::Sqlite,
-            EngineArg::Cozo => GraphEngineKind::Cozo,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, ValueEnum)]
-enum CompletionShellArg {
-    Bash,
-    Zsh,
-    Fish,
-    Powershell,
-}
-
-impl From<CompletionShellArg> for CompletionShell {
-    fn from(value: CompletionShellArg) -> Self {
-        match value {
-            CompletionShellArg::Bash => CompletionShell::Bash,
-            CompletionShellArg::Zsh => CompletionShell::Zsh,
-            CompletionShellArg::Fish => CompletionShell::Fish,
-            CompletionShellArg::Powershell => CompletionShell::Powershell,
-        }
-    }
-}
-
 #[derive(Debug, Subcommand)]
 enum Commands {
     /// Index a repository into a SQLite semantic graph (incremental by default).
@@ -146,15 +107,9 @@ enum Commands {
         /// Re-index from scratch instead of using the sha-diff incremental path.
         #[arg(long)]
         full: bool,
-        /// Skip writing the memory-mapped snapshot at the end of indexing.
-        #[arg(long)]
-        no_snapshot: bool,
         /// Glob (relative to the repo root) to skip; repeatable, e.g. `--exclude 'legacy/**'`.
         #[arg(long = "exclude", value_name = "GLOB")]
         exclude: Vec<String>,
-        /// Graph engine to use for impact queries. Cozo requires `--features cozo`.
-        #[arg(long, value_enum, default_value_t = EngineArg::Sqlite)]
-        graph_engine: EngineArg,
     },
     /// Watch a repository and incrementally re-index when source files change.
     Watch {
@@ -166,9 +121,6 @@ enum Commands {
         /// Re-index from scratch instead of using the sha-diff incremental path.
         #[arg(long)]
         full: bool,
-        /// Skip writing the memory-mapped snapshot after indexing.
-        #[arg(long)]
-        no_snapshot: bool,
         /// Poll interval in milliseconds.
         #[arg(long, default_value_t = 500)]
         poll_ms: u64,
@@ -213,7 +165,7 @@ enum Commands {
     /// Print shell completion script.
     Completions {
         #[arg(value_enum)]
-        shell: CompletionShellArg,
+        shell: clap_complete::Shell,
     },
     /// Find symbol definitions by name.
     FindDefinition {
@@ -357,16 +309,6 @@ enum Commands {
         #[arg(long)]
         json: bool,
     },
-    /// Recommend the cheapest Tessera tool sequence for an agent task.
-    PlanQuery {
-        /// Natural-language task shape, for example "edit findById safely".
-        task: String,
-        /// Optional symbol to substitute into the recommended commands.
-        #[arg(long)]
-        symbol: Option<String>,
-        #[arg(long)]
-        json: bool,
-    },
     /// Bundle validation, signature, siblings, context, and tests before editing.
     EditPrep {
         symbol: String,
@@ -475,25 +417,6 @@ enum Commands {
         #[arg(long)]
         json: bool,
     },
-    /// Run a benchmark and emit the perf chart used in the README.
-    Bench {
-        #[arg(long)]
-        path: Option<PathBuf>,
-        #[arg(long)]
-        probe: Option<String>,
-        /// Synthetic-repo size when no --path is given.
-        #[arg(long, default_value_t = 50)]
-        scale: usize,
-        #[arg(long)]
-        out: Option<PathBuf>,
-        #[arg(long)]
-        json: bool,
-    },
-    /// (Re)build the memory-mapped snapshot used by the MCP server.
-    Snapshot {
-        #[arg(long, default_value = ".tessera/tessera.db")]
-        db: PathBuf,
-    },
     /// Run the MCP server over stdio.
     Mcp {
         #[arg(long, default_value = ".tessera/tessera.db")]
@@ -504,11 +427,6 @@ enum Commands {
         /// Address to bind, for example 127.0.0.1:8765.
         #[arg(long, default_value = "127.0.0.1:8765")]
         addr: String,
-        #[arg(long, default_value = ".tessera/tessera.db")]
-        db: PathBuf,
-    },
-    /// Start a tiny interactive query shell.
-    Shell {
         #[arg(long, default_value = ".tessera/tessera.db")]
         db: PathBuf,
     },
@@ -537,19 +455,10 @@ fn run() -> Result<()> {
             path,
             db,
             full,
-            no_snapshot,
             exclude,
-            graph_engine,
         } => {
-            let engine: GraphEngineKind = graph_engine.into();
-            if matches!(engine, GraphEngineKind::Cozo) && !cfg!(feature = "cozo") {
-                return Err(anyhow!(
-                    "Cozo backend not compiled in. Rebuild with `cargo install --features cozo`."
-                ));
-            }
             let options = IndexOptions {
                 full,
-                build_snapshot: !no_snapshot,
                 excludes: exclude,
             };
             let report = indexer::index_path_with(&path, &db, options)?;
@@ -574,7 +483,6 @@ fn run() -> Result<()> {
             path,
             db,
             full,
-            no_snapshot,
             poll_ms,
             debounce_ms,
             once,
@@ -584,7 +492,6 @@ fn run() -> Result<()> {
                 debounce: Duration::from_millis(debounce_ms),
                 index_options: IndexOptions {
                     full,
-                    build_snapshot: !no_snapshot,
                     excludes: Vec::new(),
                 },
                 once,
@@ -613,7 +520,12 @@ fn run() -> Result<()> {
             print_result(result, json)?;
         }
         Commands::Completions { shell } => {
-            print!("{}", completions::generate(shell.into()));
+            clap_complete::generate(
+                shell,
+                &mut Cli::command(),
+                "tessera",
+                &mut std::io::stdout(),
+            );
         }
         Commands::FindDefinition { symbol, db, json } => {
             print_result(query::find_definition(&db, &symbol)?, json)?;
@@ -711,9 +623,6 @@ fn run() -> Result<()> {
         } => {
             print_result(query::context_pack(&db, &symbol, budget)?, json)?;
         }
-        Commands::PlanQuery { task, symbol, json } => {
-            print_result(query::plan_query(&task, symbol.as_deref()), json)?;
-        }
         Commands::EditPrep {
             symbol,
             budget,
@@ -790,39 +699,8 @@ fn run() -> Result<()> {
                 explain_unused(&result);
             }
         }
-        Commands::Bench {
-            path,
-            probe,
-            scale,
-            out,
-            json,
-        } => {
-            let result = bench::run(BenchOptions {
-                path,
-                probe_symbol: probe,
-                scale: Some(scale),
-            })?;
-            if let Some(out_path) = out {
-                std::fs::write(&out_path, &result.chart)?;
-            }
-            if json {
-                println!("{}", serde_json::to_string_pretty(&result)?);
-            } else {
-                println!("{}", result.chart);
-            }
-        }
-        Commands::Snapshot { db } => {
-            let conn = db::open_ro(&db)?;
-            let snapshot_path = db
-                .parent()
-                .map(|p| p.join("snapshot.bin"))
-                .unwrap_or_else(|| PathBuf::from("snapshot.bin"));
-            snapshot::build(&conn, &snapshot_path)?;
-            println!("snapshot written to {}", snapshot_path.display());
-        }
         Commands::Mcp { db } => mcp::serve_stdio(&db)?,
         Commands::McpHttp { addr, db } => mcp_http::serve(&addr, &db)?,
-        Commands::Shell { db } => query::shell(&db)?,
     }
 
     Ok(())

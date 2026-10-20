@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::time::Instant;
 
 use anyhow::{Context, Result};
@@ -8,7 +8,6 @@ use sha2::{Digest, Sha256};
 
 use crate::config::TesseraConfig;
 use crate::db;
-use crate::snapshot;
 use crate::walk::{self, SkipReason, WalkOptions};
 
 #[derive(Debug, Clone)]
@@ -36,21 +35,10 @@ pub enum IndexMode {
     Incremental,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct IndexOptions {
     pub full: bool,
-    pub build_snapshot: bool,
     pub excludes: Vec<String>,
-}
-
-impl Default for IndexOptions {
-    fn default() -> Self {
-        Self {
-            full: false,
-            build_snapshot: true,
-            excludes: Vec::new(),
-        }
-    }
 }
 
 pub fn index_path(root: &Path, db_path: &Path) -> Result<IndexReport> {
@@ -194,20 +182,8 @@ pub fn index_path_with(root: &Path, db_path: &Path, options: IndexOptions) -> Re
 
     tx.commit()?;
 
-    if options.build_snapshot {
-        let snapshot_path = snapshot_path(db_path);
-        let _ = snapshot::build(&conn, &snapshot_path);
-    }
-
     report.elapsed_ms = started.elapsed().as_millis();
     Ok(report)
-}
-
-fn snapshot_path(db_path: &Path) -> PathBuf {
-    db_path
-        .parent()
-        .unwrap_or_else(|| Path::new("."))
-        .join("snapshot.bin")
 }
 
 pub use crate::extract::{parse_file, ParsedFile};

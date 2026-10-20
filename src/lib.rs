@@ -1,7 +1,7 @@
 //! # tessera-codegraph
 //!
 //! Local semantic code graph for AI coding agents. Index a repository into
-//! SQLite + a memory-mapped snapshot; ask deterministic questions about
+//! SQLite; ask deterministic questions about
 //! symbols, references, blast radius, and hallucinated identifiers.
 //!
 //! ```no_run
@@ -26,19 +26,15 @@
 //!
 //! The library binary `tessera` is also built from this crate; see the README.
 
-pub mod bench;
-pub mod completions;
 pub mod config;
 pub mod db;
 pub mod doctor;
-pub mod engine;
 pub mod extract;
 pub mod indexer;
 pub mod init;
 pub mod mcp;
 pub mod mcp_http;
 pub mod query;
-pub mod snapshot;
 pub mod types;
 pub mod walk;
 pub mod watch;
@@ -51,19 +47,17 @@ use rusqlite::Connection;
 pub use indexer::{IndexMode, IndexOptions, IndexReport};
 pub use query::{ExportGroupBy, ExportOptions};
 pub use types::{
-    AlternativeQuery, BenchQuery, BenchResult, BenchSavings, ConnectResult, ContextPack,
-    CriticalityBreakdown, DefinitionResult, DiffChangedSymbol, DiffImpactResult,
-    DiffImpactedSymbol, EditPrepResult, ExpandResult, ExportResult, GraphEngineKind, ImpactCaller,
-    ImpactResult, ImportRecord, ImportedByResult, ImportsResult, KindCount, Language,
-    LanguageCount, OutlineResult, PlanQueryResult, PlanStep, QueryMeta, ReferenceRecord,
+    AlternativeQuery, ConnectResult, ContextPack, CriticalityBreakdown, DefinitionResult,
+    DiffChangedSymbol, DiffImpactResult, DiffImpactedSymbol, EditPrepResult, ExpandResult,
+    ExportResult, ImpactCaller, ImpactResult, ImportRecord, ImportedByResult, ImportsResult,
+    KindCount, Language, LanguageCount, OutlineResult, PlanStep, QueryMeta, ReferenceRecord,
     ReferencesResult, SearchHit, SearchOptions, SearchResult, Sibling, SiblingsResult,
     SignatureLine, SignatureResult, SnippetReferenceCheck, StatsResult, SymbolRecord,
     SymbolSuggestion, TestsForResult, TopFanout, UnusedOptions, UnusedResult, UnusedSymbol,
     ValidateResult, ValidateSnippetResult,
 };
 
-/// High-level handle to a Tessera index. Holds a single SQLite connection and,
-/// when present, a memory-mapped snapshot for hot-path queries.
+/// High-level handle to a Tessera index backed by one SQLite connection.
 pub struct Index {
     conn: Connection,
     db_path: PathBuf,
@@ -164,10 +158,6 @@ impl Index {
 
     pub fn context_pack(&self, symbol: &str, budget_tokens: usize) -> Result<ContextPack> {
         query::context_pack_conn(&self.conn, symbol, budget_tokens)
-    }
-
-    pub fn plan_query(&self, task: &str, symbol: Option<&str>) -> PlanQueryResult {
-        query::plan_query(task, symbol)
     }
 
     pub fn edit_prep(&self, symbol: &str, budget_tokens: usize) -> Result<EditPrepResult> {
