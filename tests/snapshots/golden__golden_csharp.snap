@@ -1,0 +1,38 @@
+---
+source: tests/golden.rs
+expression: graph_dump(& db)
+---
+{
+  "edges": [
+    "src/Users/UserService.cs UserService -new-> UserRepository",
+    "src/Users/UserService.cs UserService.Load -call-> FindById",
+    "src/Users/UserService.cs UserService.Load -call-> Trim",
+    "src/Util/Strings.cs Strings.Trim -call-> Trim",
+    "tests/UserServiceTests.cs UserServiceTests.Loads -call-> Load",
+    "tests/UserServiceTests.cs UserServiceTests.Loads -new-> UserService"
+  ],
+  "imports": [
+    "src/Users/UserService.cs:1 using Acme.Util",
+    "tests/UserServiceTests.cs:1 using Acme.Users",
+    "tests/UserServiceTests.cs:2 using Xunit"
+  ],
+  "refs": [
+    "src/Users/UserService.cs:11:20 call Trim <- UserService.Load",
+    "src/Users/UserService.cs:11:33 call FindById <- UserService.Load",
+    "src/Users/UserService.cs:7:49 new UserRepository <- UserService",
+    "src/Util/Strings.cs:5:48 call Trim <- Strings.Trim",
+    "tests/UserServiceTests.cs:9:9 call Load <- UserServiceTests.Loads",
+    "tests/UserServiceTests.cs:9:9 new UserService <- UserServiceTests.Loads"
+  ],
+  "symbols": [
+    "src/Users/UserRepository.cs:3-6 class UserRepository [exported] | public class UserRepository",
+    "src/Users/UserRepository.cs:5-5 method UserRepository.FindById [exported] | public string FindById(string id) => id;",
+    "src/Users/UserService.cs:5-13 class UserService [exported] | public class UserService",
+    "src/Users/UserService.cs:9-12 method UserService.Load [exported] | public string Load(string id)",
+    "src/Util/Strings.cs:3-8 class Strings [exported] | public static class Strings",
+    "src/Util/Strings.cs:5-5 method Strings.Trim [exported] | public static string Trim(string s) => s.Trim();",
+    "src/Util/Strings.cs:7-7 method Strings.Load [exported] | public static string Load(string s) => s;",
+    "tests/UserServiceTests.cs:4-11 class UserServiceTests [exported] | public class UserServiceTests",
+    "tests/UserServiceTests.cs:6-10 method UserServiceTests.Loads [exported] | [Fact]"
+  ]
+}

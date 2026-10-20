@@ -1,0 +1,31 @@
+---
+source: tests/golden.rs
+expression: graph_dump(& db)
+---
+{
+  "edges": [
+    "src/main.c main -call-> lookup",
+    "src/main.c main -call-> store_load",
+    "src/store.c store_load -call-> lookup",
+    "tests/test_store.c test_store_load -call-> store_load"
+  ],
+  "imports": [
+    "src/main.c:1 include store.h",
+    "src/store.c:1 include store.h",
+    "tests/test_store.c:1 include ../src/store.h"
+  ],
+  "refs": [
+    "src/main.c:5:25 call store_load <- main",
+    "src/main.c:5:36 call lookup <- main",
+    "src/store.c:9:33 call lookup <- store_load",
+    "tests/test_store.c:3:36 call store_load <- test_store_load"
+  ],
+  "symbols": [
+    "src/main.c:3-3 function lookup [exported] | int lookup(int id) { return id * 2; }",
+    "src/main.c:5-5 function main [exported] | int main(void) { return store_load(lookup(1)); }",
+    "src/store.c:3-5 struct item [exported] | struct item {",
+    "src/store.c:7-7 function lookup | static int lookup(int id) { return id; }",
+    "src/store.c:9-9 function store_load [exported] | int store_load(int id) { return lookup(id); }",
+    "tests/test_store.c:3-3 function test_store_load [exported] | int test_store_load(void) { return store_load(1) == 1; }"
+  ]
+}

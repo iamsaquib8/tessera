@@ -1,0 +1,44 @@
+---
+source: tests/golden.rs
+expression: graph_dump(& db)
+---
+{
+  "edges": [
+    "src/api/handler.ts handler -call-> loadUser",
+    "src/users/repo.ts UserRepo.findById -call-> formatName",
+    "src/users/repo.ts UserRepo.findById -call-> lookup",
+    "src/users/repo.ts UserRepo.lookup -call-> get",
+    "src/users/repo.ts loadUser -call-> findById",
+    "src/util/format.ts formatName -call-> trim",
+    "src/util/format.ts loadUser -call-> formatName"
+  ],
+  "imports": [
+    "src/api/handler.ts:1 import ../users/repo",
+    "src/api/handler.ts:2 import ./types",
+    "src/users/repo.ts:1 import ../util/format",
+    "test/repo.test.ts:1 import ../src/users/repo"
+  ],
+  "refs": [
+    "src/api/handler.ts:4:42 call loadUser <- handler",
+    "src/users/repo.ts:11:12 call get <- UserRepo.lookup",
+    "src/users/repo.ts:17:10 call findById <- loadUser",
+    "src/users/repo.ts:7:12 call formatName <- UserRepo.findById",
+    "src/users/repo.ts:7:23 call lookup <- UserRepo.findById",
+    "src/util/format.ts:2:10 call trim <- formatName",
+    "src/util/format.ts:6:10 call formatName <- loadUser",
+    "test/repo.test.ts:3:1 call describe <- <none>",
+    "test/repo.test.ts:4:3 call it <- <none>",
+    "test/repo.test.ts:5:12 call loadUser <- <none>",
+    "test/repo.test.ts:5:5 call expect <- <none>",
+    "test/repo.test.ts:5:5 call toBe <- <none>"
+  ],
+  "symbols": [
+    "src/api/handler.ts:4-4 function handler [exported] | handler = (req: Request) => loadUser(req.id)",
+    "src/users/repo.ts:10-12 method UserRepo.lookup [exported] | private lookup(id: string): string {",
+    "src/users/repo.ts:15-18 function loadUser [exported] | function loadUser(id: string): string {",
+    "src/users/repo.ts:3-13 class UserRepo [exported] | class UserRepo {",
+    "src/users/repo.ts:6-8 method UserRepo.findById [exported] | findById(id: string): string {",
+    "src/util/format.ts:1-3 function formatName [exported] | function formatName(name: string): string {",
+    "src/util/format.ts:5-7 function loadUser [exported] | function loadUser(id: string): string {"
+  ]
+}

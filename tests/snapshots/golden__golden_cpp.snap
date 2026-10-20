@@ -1,0 +1,37 @@
+---
+source: tests/golden.rs
+expression: graph_dump(& db)
+---
+{
+  "edges": [
+    "src/main.cpp main -call-> get",
+    "src/main.cpp main -call-> load",
+    "src/main.cpp main -call-> load",
+    "src/main.cpp main -new-> Store",
+    "src/store.cpp app.load -call-> get",
+    "tests/store_test.cpp test_load -call-> load"
+  ],
+  "imports": [
+    "src/main.cpp:1 include store.hpp",
+    "src/store.cpp:1 include store.hpp",
+    "tests/store_test.cpp:1 include ../src/store.hpp"
+  ],
+  "refs": [
+    "src/main.cpp:6:15 new Store <- main",
+    "src/main.cpp:7:13 call get <- main",
+    "src/main.cpp:7:20 call load <- main",
+    "src/main.cpp:9:12 call load <- main",
+    "src/store.cpp:8:12 call get <- app.load",
+    "tests/store_test.cpp:3:20 call load <- test_load"
+  ],
+  "symbols": [
+    "src/main.cpp:3-3 function load [exported] | int load(int x) { return x; }",
+    "src/main.cpp:5-10 function main [exported] | int main() {",
+    "src/store.cpp:3-10 namespace app [exported] | namespace app {",
+    "src/store.cpp:4-4 function app.get [exported] | int Store::get(int id) const { return id; }",
+    "src/store.cpp:6-9 function app.load [exported] | int load(int id) {",
+    "src/store.hpp:1-8 namespace app [exported] | namespace app {",
+    "src/store.hpp:2-5 class app.Store [exported] | class Store {",
+    "tests/store_test.cpp:3-3 function test_load [exported] | void test_load() { app::load(1); }"
+  ]
+}

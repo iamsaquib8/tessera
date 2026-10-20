@@ -1,0 +1,51 @@
+---
+source: tests/golden.rs
+expression: graph_dump(& db)
+---
+{
+  "edges": [
+    "src/main/java/com/acme/user/UserRepository.java UserRepository.findById -call-> findById",
+    "src/main/java/com/acme/user/UserService.java UserService.load -call-> findById",
+    "src/main/java/com/acme/user/UserService.java UserService.load -call-> trim",
+    "src/main/java/com/acme/util/Strings.java Strings.trim -call-> trim",
+    "src/main/java/com/acme/web/UserController.java UserController -new-> UserRepository",
+    "src/main/java/com/acme/web/UserController.java UserController -new-> UserService",
+    "src/main/java/com/acme/web/UserController.java UserController.get -call-> load",
+    "src/test/java/com/acme/user/UserServiceTest.java UserServiceTest.loads -call-> load",
+    "src/test/java/com/acme/user/UserServiceTest.java UserServiceTest.loads -new-> UserRepository",
+    "src/test/java/com/acme/user/UserServiceTest.java UserServiceTest.loads -new-> UserService"
+  ],
+  "imports": [
+    "src/main/java/com/acme/user/UserService.java:3 import com.acme.util.Strings",
+    "src/main/java/com/acme/web/UserController.java:3 import com.acme.user.UserRepository",
+    "src/main/java/com/acme/web/UserController.java:4 import com.acme.user.UserService",
+    "src/test/java/com/acme/user/UserServiceTest.java:3 import org.junit.jupiter.api.Test"
+  ],
+  "refs": [
+    "src/main/java/com/acme/user/UserRepository.java:9:16 call findById <- UserRepository.findById",
+    "src/main/java/com/acme/user/UserService.java:13:16 call trim <- UserService.load",
+    "src/main/java/com/acme/user/UserService.java:13:29 call findById <- UserService.load",
+    "src/main/java/com/acme/util/Strings.java:5:16 call trim <- Strings.trim",
+    "src/main/java/com/acme/web/UserController.java:12:16 call load <- UserController.get",
+    "src/main/java/com/acme/web/UserController.java:8:41 new UserService <- UserController",
+    "src/main/java/com/acme/web/UserController.java:8:57 new UserRepository <- UserController",
+    "src/test/java/com/acme/user/UserServiceTest.java:8:25 new UserRepository <- UserServiceTest.loads",
+    "src/test/java/com/acme/user/UserServiceTest.java:8:9 call load <- UserServiceTest.loads",
+    "src/test/java/com/acme/user/UserServiceTest.java:8:9 new UserService <- UserServiceTest.loads"
+  ],
+  "symbols": [
+    "src/main/java/com/acme/user/UserRepository.java:3-11 class UserRepository [exported] | public class UserRepository {",
+    "src/main/java/com/acme/user/UserRepository.java:4-6 method UserRepository.findById [exported] | public String findById(String id) {",
+    "src/main/java/com/acme/user/UserRepository.java:8-10 method UserRepository.findById [exported] | public String findById(String id, boolean cached) {",
+    "src/main/java/com/acme/user/UserService.java:12-14 method UserService.load [exported] | public String load(String id) {",
+    "src/main/java/com/acme/user/UserService.java:5-15 class UserService [exported] | public class UserService {",
+    "src/main/java/com/acme/user/UserService.java:8-10 constructor UserService.UserService [exported] | public UserService(UserRepository repo) {",
+    "src/main/java/com/acme/util/Strings.java:3-11 class Strings [exported] | public final class Strings {",
+    "src/main/java/com/acme/util/Strings.java:4-6 method Strings.trim [exported] | public static String trim(String s) {",
+    "src/main/java/com/acme/util/Strings.java:8-10 method Strings.load [exported] | public static String load(String s) {",
+    "src/main/java/com/acme/web/UserController.java:10-13 method UserController.get [exported] | @GetMapping(\"/users/{id}\")",
+    "src/main/java/com/acme/web/UserController.java:6-14 class UserController [exported] | @RestController",
+    "src/test/java/com/acme/user/UserServiceTest.java:5-10 class UserServiceTest | class UserServiceTest {",
+    "src/test/java/com/acme/user/UserServiceTest.java:6-9 method UserServiceTest.loads | @Test"
+  ]
+}

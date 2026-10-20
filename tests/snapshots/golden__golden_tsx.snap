@@ -1,0 +1,36 @@
+---
+source: tests/golden.rs
+expression: graph_dump(& db)
+---
+{
+  "edges": [
+    "src/App.tsx App -call-> useUser",
+    "src/App.tsx App -jsx-> UserCard",
+    "src/components/UserCard.tsx UserCard -jsx-> Avatar",
+    "src/hooks/useUser.ts useUser -call-> useState"
+  ],
+  "imports": [
+    "src/App.test.tsx:1 import ./App",
+    "src/App.tsx:1 import ./components/UserCard",
+    "src/App.tsx:2 import ./hooks/useUser",
+    "src/components/UserCard.tsx:1 import react",
+    "src/components/UserCard.tsx:2 import ./Avatar",
+    "src/hooks/useUser.ts:1 import react"
+  ],
+  "refs": [
+    "src/App.test.tsx:3:1 call it <- <none>",
+    "src/App.test.tsx:4:10 jsx App <- <none>",
+    "src/App.test.tsx:4:3 call render <- <none>",
+    "src/App.tsx:5:16 call useUser <- App",
+    "src/App.tsx:6:10 jsx UserCard <- App",
+    "src/components/UserCard.tsx:12:25 call memo <- <none>",
+    "src/components/UserCard.tsx:8:5 jsx Avatar <- UserCard",
+    "src/hooks/useUser.ts:4:18 call useState <- useUser"
+  ],
+  "symbols": [
+    "src/App.tsx:4-7 function App [exported] | function App() {",
+    "src/components/Avatar.tsx:1-3 function Avatar [exported] | function Avatar({ name }: { name: string }) {",
+    "src/components/UserCard.tsx:6-10 function UserCard [exported] | UserCard = ({ name }: Props) => (",
+    "src/hooks/useUser.ts:3-6 function useUser [exported] | function useUser(id: string) {"
+  ]
+}

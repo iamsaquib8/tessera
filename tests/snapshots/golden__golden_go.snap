@@ -1,0 +1,33 @@
+---
+source: tests/golden.rs
+expression: graph_dump(& db)
+---
+{
+  "edges": [
+    "api/handler.go Handle -call-> Load",
+    "store/store.go Load -call-> Get",
+    "store/store.go Load -call-> New",
+    "store/store_test.go TestLoad -call-> Fatal",
+    "store/store_test.go TestLoad -call-> Load"
+  ],
+  "imports": [
+    "api/handler.go:3 import example.com/app/store",
+    "store/store_test.go:3 import testing"
+  ],
+  "refs": [
+    "api/handler.go:6:9 call Load <- Handle",
+    "store/store.go:16:9 call Get <- Load",
+    "store/store.go:16:9 call New <- Load",
+    "store/store_test.go:6:5 call Load <- TestLoad",
+    "store/store_test.go:7:3 call Fatal <- TestLoad"
+  ],
+  "symbols": [
+    "api/handler.go:5-7 function Handle [exported] | func Handle(id string) string {",
+    "api/handler.go:9-11 function Load [exported] | func Load(id string) string {",
+    "store/store.go:11-13 method Store.Get [exported] | func (s *Store) Get(id string) string {",
+    "store/store.go:15-17 function Load [exported] | func Load(id string) string {",
+    "store/store.go:3-5 struct Store [exported] | Store struct {",
+    "store/store.go:7-9 function New [exported] | func New() *Store {",
+    "store/store_test.go:5-9 function TestLoad [exported] | func TestLoad(t *testing.T) {"
+  ]
+}

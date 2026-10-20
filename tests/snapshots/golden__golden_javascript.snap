@@ -1,0 +1,46 @@
+---
+source: tests/golden.rs
+expression: graph_dump(& db)
+---
+{
+  "edges": [
+    "lib/email_worker.js EmailWorker.perform -call-> slugify",
+    "lib/util.js slugify -call-> toLowerCase",
+    "lib/worker.js BaseWorker.run -call-> perform"
+  ],
+  "imports": [
+    "app.js:1 require express",
+    "app.js:2 require ./lib/email_worker",
+    "lib/email_worker.js:1 require ./worker",
+    "lib/email_worker.js:2 require ./util",
+    "specs/util.spec.js:1 require ../lib/util"
+  ],
+  "refs": [
+    "app.js:1:17 call require <- <none>",
+    "app.js:2:21 call require <- <none>",
+    "app.js:4:13 call express <- <none>",
+    "app.js:6:1 call get <- <none>",
+    "app.js:7:3 call run <- <none>",
+    "app.js:8:3 call send <- <none>",
+    "lib/email_worker.js:1:20 call require <- <none>",
+    "lib/email_worker.js:2:21 call require <- <none>",
+    "lib/email_worker.js:6:12 call slugify <- EmailWorker.perform",
+    "lib/util.js:2:10 call toLowerCase <- slugify",
+    "lib/worker.js:3:12 call perform <- BaseWorker.run",
+    "specs/util.spec.js:1:21 call require <- <none>",
+    "specs/util.spec.js:3:1 call describe <- <none>",
+    "specs/util.spec.js:4:3 call it <- <none>",
+    "specs/util.spec.js:5:12 call slugify <- <none>",
+    "specs/util.spec.js:5:5 call expect <- <none>",
+    "specs/util.spec.js:5:5 call toBe <- <none>"
+  ],
+  "symbols": [
+    "app.js:11-13 function slugify | function slugify(x) {",
+    "lib/email_worker.js:4-8 class EmailWorker | class EmailWorker extends BaseWorker {",
+    "lib/email_worker.js:5-7 method EmailWorker.perform | perform() {",
+    "lib/util.js:1-3 function slugify | function slugify(s) {",
+    "lib/worker.js:1-9 class BaseWorker | class BaseWorker {",
+    "lib/worker.js:2-4 method BaseWorker.run | run() {",
+    "lib/worker.js:6-8 method BaseWorker.perform | perform() {"
+  ]
+}

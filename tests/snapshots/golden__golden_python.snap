@@ -1,0 +1,41 @@
+---
+source: tests/golden.rs
+expression: graph_dump(& db)
+---
+{
+  "edges": [
+    "app/models.py User.display -call-> format_name",
+    "app/service.py cached_load -call-> load",
+    "app/service.py load -call-> User",
+    "app/service.py load -call-> display",
+    "app/service.py load -call-> load",
+    "app/util.py format_name -call-> strip",
+    "tests/test_service.py test_load -call-> load"
+  ],
+  "imports": [
+    "app/models.py:1 from app.util",
+    "app/service.py:1 from functools",
+    "app/service.py:3 from .",
+    "app/service.py:4 from .models",
+    "tests/test_service.py:1 from app.service"
+  ],
+  "refs": [
+    "app/models.py:9:16 call format_name <- User.display",
+    "app/service.py:14:12 call load <- cached_load",
+    "app/service.py:8:12 call User <- load",
+    "app/service.py:8:17 call load <- load",
+    "app/service.py:9:12 call display <- load",
+    "app/util.py:2:12 call strip <- format_name",
+    "tests/test_service.py:5:12 call load <- test_load"
+  ],
+  "symbols": [
+    "app/models.py:4-9 class User [exported] | class User:",
+    "app/models.py:5-6 function User.__init__ [exported] | def __init__(self, name):",
+    "app/models.py:8-9 function User.display [exported] | def display(self):",
+    "app/service.py:13-14 function cached_load [exported] | def cached_load(id):",
+    "app/service.py:7-9 function load [exported] | def load(id):",
+    "app/util.py:1-2 function format_name [exported] | def format_name(name):",
+    "app/util.py:5-6 function load [exported] | def load(id):",
+    "tests/test_service.py:4-5 function test_load [exported] | def test_load():"
+  ]
+}

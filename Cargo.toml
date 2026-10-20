@@ -62,5 +62,6 @@ tree-sitter-typescript = ">=0.20, <0.21"
 walkdir = "2.5"
 
 [dev-dependencies]
+insta = { version = "1", features = ["json"] }
 assert_cmd = "2.0"
 predicates = "3.1"
