@@ -173,3 +173,31 @@ jobs:
             publish "${dir%/}"
           done
           publish npm
+
+  homebrew:
+    name: update Homebrew tap
+    needs: publish
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Render formula and push to iamsaquib8/homebrew-tessera
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ -z "${TAP_TOKEN:-}" ]; then
+            echo "::notice::HOMEBREW_TAP_TOKEN not set; skipping Homebrew."
+            exit 0
+          fi
+          gh release download "$TAG" --pattern SHA256SUMS --dir dist
+          sh packaging/homebrew/render.sh "${TAG#v}" dist/SHA256SUMS > tessera.rb
+          git clone "https://x-access-token:${TAP_TOKEN}@github.com/iamsaquib8/homebrew-tessera.git" tap
+          mkdir -p tap/Formula
+          cp tessera.rb tap/Formula/tessera.rb
+          cd tap
+          git config user.name "tessera-release"
+          git config user.email "tessera-release@users.noreply.github.com"
+          git add Formula/tessera.rb
+          git diff --cached --quiet || git commit -m "tessera ${TAG}"
+          git push

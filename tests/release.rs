@@ -67,3 +67,35 @@ fn find_manifest_value<'a>(content: &'a str, key: &str) -> Option<&'a str> {
             .and_then(|rest| rest.split('"').next())
     })
 }
+
+#[cfg(unix)]
+#[test]
+fn homebrew_formula_renders_every_checksum() {
+    let temp = tempfile::TempDir::new().unwrap();
+    let sums = temp.path().join("SHA256SUMS");
+    let targets = [
+        "aarch64-apple-darwin",
+        "x86_64-apple-darwin",
+        "aarch64-unknown-linux-musl",
+        "x86_64-unknown-linux-musl",
+    ];
+    let lines: String = targets
+        .iter()
+        .enumerate()
+        .map(|(i, t)| format!("{}  tessera-{t}.tar.gz\n", format!("{i}").repeat(64)))
+        .collect();
+    fs::write(&sums, lines).unwrap();
+    let output = std::process::Command::new("sh")
+        .arg("packaging/homebrew/render.sh")
+        .arg("1.2.3")
+        .arg(&sums)
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    let formula = String::from_utf8(output.stdout).unwrap();
+    assert!(!formula.contains("{{"), "{formula}");
+    assert!(formula.contains("version \"1.2.3\""));
+    for i in 0..targets.len() {
+        assert!(formula.contains(&format!("sha256 \"{}\"", format!("{i}").repeat(64))));
+    }
+}
