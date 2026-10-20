@@ -272,26 +272,22 @@ pub struct ParsedFile {
 
 pub fn parse_file(language: Language, content: &str) -> Result<ParsedFile> {
     let mut parser = Parser::new();
-    match language {
-        Language::JavaScript => parser.set_language(tree_sitter_javascript::language())?,
-        // TSX grammar is a superset of TS — using it for both means a plain
-        // `.ts` file still parses cleanly *and* JSX-bearing `.tsx` files yield
-        // jsx_element nodes for React-component reference extraction.
-        Language::TypeScript | Language::Tsx => {
-            parser.set_language(tree_sitter_typescript::language_tsx())?
-        }
-        Language::Python => parser.set_language(tree_sitter_python::language())?,
-        Language::Go => parser.set_language(tree_sitter_go::language())?,
-        Language::Rust => parser.set_language(tree_sitter_rust::language())?,
-        Language::Java => parser.set_language(tree_sitter_java::language())?,
-        Language::C => parser.set_language(tree_sitter_c::language())?,
-        // The C++ grammar is a superset of C, so `.h`/C files routed here parse
-        // cleanly too.
-        Language::Cpp => parser.set_language(tree_sitter_cpp::language())?,
-        Language::CSharp => parser.set_language(tree_sitter_c_sharp::language())?,
-        Language::Ruby => parser.set_language(tree_sitter_ruby::language())?,
-        Language::Php => parser.set_language(tree_sitter_php::language())?,
-    }
+    let grammar: tree_sitter::Language = match language {
+        Language::JavaScript => tree_sitter_javascript::LANGUAGE.into(),
+        Language::TypeScript => tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into(),
+        Language::Tsx => tree_sitter_typescript::LANGUAGE_TSX.into(),
+        Language::Python => tree_sitter_python::LANGUAGE.into(),
+        Language::Go => tree_sitter_go::LANGUAGE.into(),
+        Language::Rust => tree_sitter_rust::LANGUAGE.into(),
+        Language::Java => tree_sitter_java::LANGUAGE.into(),
+        Language::C => tree_sitter_c::LANGUAGE.into(),
+        // The C++ grammar is a superset of C, so `.h` headers routed here parse cleanly too.
+        Language::Cpp => tree_sitter_cpp::LANGUAGE.into(),
+        Language::CSharp => tree_sitter_c_sharp::LANGUAGE.into(),
+        Language::Ruby => tree_sitter_ruby::LANGUAGE.into(),
+        Language::Php => tree_sitter_php::LANGUAGE_PHP.into(),
+    };
+    parser.set_language(&grammar)?;
     let tree = parser
         .parse(content, None)
         .ok_or_else(|| anyhow!("tree-sitter returned no parse tree"))?;
@@ -1074,7 +1070,7 @@ impl<'a> Visitor<'a> {
                     .child_by_field_name("property")
                     .or_else(|| name_node.child_by_field_name("name"))
                     .or_else(|| {
-                        name_node.named_child(name_node.named_child_count().saturating_sub(1))
+                        name_node.named_child((name_node.named_child_count().saturating_sub(1)) as u32)
                     })?;
                 Some(self.node_text(last))
             }

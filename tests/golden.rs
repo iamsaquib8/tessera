@@ -24,3 +24,38 @@ golden!(golden_cpp, "cpp");
 golden!(golden_csharp, "csharp");
 golden!(golden_ruby, "ruby");
 golden!(golden_php, "php");
+
+#[test]
+fn golden_typescript_generic_cast() {
+    let temp = tempfile::TempDir::new().unwrap();
+    let root = temp.path().join("repo");
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::write(
+        root.join("cast.ts"),
+        "const f = <T,>(x: T) => x;\nexport function h() {\n  return <any>g();\n}\nexport function g() {\n  return f(<number>value);\n}\n",
+    )
+    .unwrap();
+    let db = temp.path().join("tessera.db");
+    tessera_codegraph::Index::build(
+        &root,
+        &db,
+        tessera_codegraph::indexer::IndexOptions {
+            full: true,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let dump = graph_dump(&db);
+    let symbols = dump["symbols"].as_array().unwrap();
+    assert!(
+        symbols.iter().any(|s| s.as_str().unwrap().contains(" function g [exported]")),
+        "missing g: {symbols:?}"
+    );
+    let edges = dump["edges"].as_array().unwrap();
+    for expected in ["cast.ts g -call-> f", "cast.ts h -call-> g"] {
+        assert!(
+            edges.iter().any(|e| e.as_str().unwrap() == expected),
+            "missing {expected}: {edges:?}"
+        );
+    }
+}
