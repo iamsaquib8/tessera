@@ -299,6 +299,7 @@ fn contract_breaks(
     }
     for (fact, from) in removed {
         let consumers = consumers_of(conn, &fact)?;
+        let name = declared_name(conn, &fact)?;
         let (verb, user) = match fact.kind {
             kind::PRODUCER => ("produced", "listener"),
             _ => ("served", "call"),
@@ -311,8 +312,7 @@ fn contract_breaks(
                 confidence: if high { Confidence::High } else { Confidence::Medium },
                 blocking,
                 message: format!(
-                    "`{}` is no longer {verb}: the change removed it from {from}, and this {user} still uses it",
-                    fact.name
+                    "`{name}` is no longer {verb}: the change removed it from {from}, and this {user} still uses it"
                 ),
                 path: Some(consumer.path),
                 line: Some(consumer.line),
@@ -321,6 +321,24 @@ fn contract_breaks(
         }
     }
     Ok(())
+}
+
+/// A gRPC method whose server did not say which service it implements
+/// (`*/GetQuote`) is named after the one `.proto` service that declares it.
+fn declared_name(conn: &Connection, fact: &crate::facts::IndexedFact) -> Result<String> {
+    let Some(method) = fact.key.strip_prefix("grpc */") else {
+        return Ok(fact.name.clone());
+    };
+    let mut stmt = conn.prepare_cached(
+        "SELECT DISTINCT name FROM facts WHERE kind = ?1 AND key LIKE '%/' || ?2",
+    )?;
+    let names: Vec<String> = stmt
+        .query_map(params![kind::RPC_DEF, method], |row| row.get(0))?
+        .collect::<rusqlite::Result<_>>()?;
+    Ok(match names.as_slice() {
+        [name] => name.clone(),
+        _ => fact.name.clone(),
+    })
 }
 
 /// The clients of a removed provider fact.

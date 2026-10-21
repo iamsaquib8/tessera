@@ -354,6 +354,70 @@ fn v5_removing_a_grpc_method_a_client_calls_blocks() {
 }
 
 #[test]
+fn v5_names_the_method_from_its_proto_when_the_server_is_ambiguous() {
+    let temp = repo_from("contracts-grpc");
+    // Two servers registered in one file leave the handler's service unknown.
+    edit(
+        temp.path(),
+        "checkout/main.go",
+        "\tpb.RegisterCheckoutServiceServer(srv, svc)\n",
+        "\tpb.RegisterCheckoutServiceServer(srv, svc)\n\thealthpb.RegisterHealthServer(srv, svc)\n",
+    );
+    fs::write(
+        temp.path().join("frontend/checkout.go"),
+        "package main\n\nimport (\n\t\"context\"\n\n\tpb \"example.com/frontend/genproto\"\n)\n\n\
+         func (fe *frontendServer) placeOrder(ctx context.Context) error {\n\
+         \t_, err := pb.NewCheckoutServiceClient(fe.checkoutSvcConn).PlaceOrder(ctx, &pb.PlaceOrderRequest{})\n\
+         \treturn err\n}\n",
+    )
+    .unwrap();
+    for args in [
+        &["add", "."][..],
+        &[
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@example.com",
+            "commit",
+            "-qm",
+            "client",
+        ],
+    ] {
+        assert!(StdCommand::new("git")
+            .args(args)
+            .current_dir(temp.path())
+            .status()
+            .unwrap()
+            .success());
+    }
+    edit(
+        temp.path(),
+        "checkout/main.go",
+        "func (cs *checkoutService) PlaceOrder(",
+        "func (cs *checkoutService) SubmitOrder(",
+    );
+    let (code, findings, value) = verify_changed(temp.path());
+    assert_eq!(code, 1, "{value}");
+    assert!(
+        findings.contains(&"V5 frontend/checkout.go:10".to_string()),
+        "{findings:?}"
+    );
+    let message = value["findings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|f| f["id"] == "V5")
+        .unwrap()["message"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert!(
+        message.contains("`CheckoutService/PlaceOrder`"),
+        "{message}"
+    );
+}
+
+#[test]
 fn v5_a_moved_route_is_reported_for_its_clients() {
     let temp = repo_from("contracts-http");
     edit(
