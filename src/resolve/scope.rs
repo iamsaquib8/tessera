@@ -10,7 +10,7 @@ use crate::types::Language;
 
 /// Kinds that own members: a bare call never reaches a method of these in JS,
 /// and `this` walks up to the nearest one.
-const CLASS_KINDS: &[&str] = &[
+pub(super) const CLASS_KINDS: &[&str] = &[
     "class",
     "interface",
     "enum",

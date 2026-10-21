@@ -347,6 +347,103 @@ fn an_unrelated_edit_does_not_re_resolve_files_with_missing_names() {
 }
 
 #[test]
+fn a_body_edit_re_resolves_only_the_edited_file() {
+    let util = "export function helper(x: number) {\n  return x + 1;\n}\nexport class Box {\n  open() { return 1; }\n}\n";
+    let importers: Vec<(String, String)> = (0..5)
+        .map(|i| {
+            (
+                format!("m{i}.ts"),
+                format!(
+                    "import {{ helper, Box }} from \"./util\";\nexport function use{i}(b: Box) {{\n  b.open();\n  return helper({i});\n}}\n"
+                ),
+            )
+        })
+        .collect();
+    let mut files: Vec<(&str, &str)> = vec![("util.ts", util)];
+    files.extend(importers.iter().map(|(p, c)| (p.as_str(), c.as_str())));
+    let (_temp, ws) = repo_with(&files);
+
+    let body = util.replace("x + 1", "x + 2");
+    assert_eq!(edit_and_resolve(&ws, "util.ts", &body), 1);
+    assert_eq!(resolved_state(&ws.db_path), full_state(&ws.root));
+
+    // A changed signature reaches every importer.
+    let signature = body.replace("helper(x: number)", "helper(x: number, y: number)");
+    assert_eq!(edit_and_resolve(&ws, "util.ts", &signature), 6);
+    assert_eq!(resolved_state(&ws.db_path), full_state(&ws.root));
+}
+
+#[test]
+fn incremental_edits_match_a_full_index() {
+    let (_temp, ws) = repo_with(&[
+        (
+            "base.ts",
+            "export class Base {\n  hello() { return 1; }\n}\n",
+        ),
+        (
+            "model.ts",
+            "import { Base } from \"./base\";\nexport class Model extends Base {\n  save() { return 1; }\n}\nexport function make(): Model { return new Model(); }\n",
+        ),
+        ("barrel.ts", "export * from \"./model\";\n"),
+        (
+            "use.ts",
+            "import { Model, make } from \"./barrel\";\nimport { later } from \"./later\";\n\
+             export function run(m: Model) {\n  m.save();\n  m.hello();\n  make().save();\n  return later();\n}\n",
+        ),
+        (
+            "loose.ts",
+            "export function loose() {\n  return helper();\n}\n",
+        ),
+        (
+            "Shape.java",
+            "class Shape {\n  int area() { return 1; }\n}\n",
+        ),
+        (
+            "Main.java",
+            "class Main {\n  int run(Shape s) { return s.area() + s.perimeter(); }\n}\n",
+        ),
+    ]);
+    let edits: &[(&str, Option<&str>)] = &[
+        // body only
+        (
+            "model.ts",
+            Some("import { Base } from \"./base\";\nexport class Model extends Base {\n  save() { return 2; }\n}\nexport function make(): Model { return new Model(); }\n"),
+        ),
+        // a member renamed in a class two hops away through a barrel
+        (
+            "model.ts",
+            Some("import { Base } from \"./base\";\nexport class Model extends Base {\n  store() { return 2; }\n}\nexport function make(): Model { return new Model(); }\n"),
+        ),
+        // a superclass member removed
+        ("base.ts", Some("export class Base {\n  bye() { return 1; }\n}\n")),
+        // a new file an unresolved import was waiting for
+        ("later.ts", Some("export function later() { return 1; }\n")),
+        // a new definition of a name only matched repo-wide
+        ("helper.ts", Some("export function helper() { return 1; }\n")),
+        // a Java class gains the member another class calls
+        (
+            "Shape.java",
+            Some("class Shape {\n  int area() { return 1; }\n  int perimeter() { return 4; }\n}\n"),
+        ),
+        // files removed
+        ("barrel.ts", None),
+        ("helper.ts", None),
+    ];
+    for (path, content) in edits {
+        match content {
+            Some(content) => fs::write(ws.root.join(path), content).unwrap(),
+            None => fs::remove_file(ws.root.join(path)).unwrap(),
+        }
+        indexer::index_files(&ws, &[path.to_string()]).unwrap();
+        assert_eq!(
+            resolved_state(&ws.db_path),
+            full_state(&ws.root),
+            "after editing {path}"
+        );
+    }
+}
+
+#[test]
 fn a_property_added_to_a_class_clears_a_missing_member() {
     let (_temp, ws) = repo_with(&[
         (
