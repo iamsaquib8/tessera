@@ -579,10 +579,11 @@ fn broken_imports(
         String,
         String,
         Option<String>,
+        String,
     );
     let changed_stems: HashSet<String> = changed.iter().map(|p| strip_extension(p)).collect();
     let mut stmt = conn.prepare(
-        "SELECT f.path, b.line, b.local, b.imported, b.source, b.status, b.target_path
+        "SELECT f.path, b.line, b.local, b.imported, b.source, b.status, b.target_path, b.kind
          FROM import_bindings b JOIN files f ON f.id = b.file_id
          WHERE b.status != 'ok'",
     )?;
@@ -596,10 +597,11 @@ fn broken_imports(
                 row.get(4)?,
                 row.get(5)?,
                 row.get(6)?,
+                row.get(7)?,
             ))
         })?
         .collect::<rusqlite::Result<_>>()?;
-    for (path, line, local, imported, source, status, target) in rows {
+    for (path, line, local, imported, source, status, target, kind) in rows {
         let points_at_change = target.as_ref().is_some_and(|t| changed.contains(t))
             || lexical_target(&path, &source).is_some_and(|candidate| {
                 changed_stems.contains(&candidate)
@@ -610,6 +612,8 @@ fn broken_imports(
         }
         let message = if status == "missing_module" {
             format!("`{source}` does not resolve to a file")
+        } else if kind.starts_with("java") {
+            format!("`{source}` is not a class in this repository")
         } else {
             format!(
                 "`{}` is not exported by {source}",

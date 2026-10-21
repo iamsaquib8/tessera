@@ -55,6 +55,8 @@ pub struct ModuleResolver {
     packages: HashMap<String, WorkspacePackage>,
     /// `(package, class)` → file, from each Java file's module and stem.
     java_classes: HashMap<(String, String), i64>,
+    /// Package → the directories holding its indexed Java files.
+    java_dirs: HashMap<String, Vec<String>>,
 }
 
 impl ModuleResolver {
@@ -83,9 +85,13 @@ impl ModuleResolver {
                 .file_stem()
                 .map(|s| s.to_string_lossy().into_owned())
                 .unwrap_or_default();
-            resolver
-                .java_classes
-                .insert((module.unwrap_or_default(), stem), id);
+            let module = module.unwrap_or_default();
+            let dirs = resolver.java_dirs.entry(module.clone()).or_default();
+            let dir = parent_dir(&path);
+            if !dirs.contains(&dir) {
+                dirs.push(dir);
+            }
+            resolver.java_classes.insert((module, stem), id);
         }
         Ok(resolver)
     }
@@ -125,6 +131,51 @@ impl ModuleResolver {
     /// Whether any indexed Java file declares `package`.
     pub fn java_package_exists(&self, package: &str) -> bool {
         !package.is_empty() && self.java_classes.keys().any(|(p, _)| p == package)
+    }
+
+    /// Whether `package.class` may exist although the index lacks it: its
+    /// source sits next to the package's indexed files but was skipped, a
+    /// build left it under `target/` or `build/` (generated sources or
+    /// compiled classes), or the package's build runs a code generator.
+    pub fn java_class_outside_index(&self, package: &str, class: &str) -> bool {
+        let package_path = package.replace('.', "/");
+        let Some(dirs) = self.java_dirs.get(package) else {
+            return false;
+        };
+        for dir in dirs {
+            let here = self.root.join(dir);
+            if ["java", "kt", "groovy", "scala"]
+                .iter()
+                .any(|ext| here.join(format!("{class}.{ext}")).is_file())
+            {
+                return true;
+            }
+            let Some(source_root) = dir.strip_suffix(&package_path) else {
+                continue;
+            };
+            let source_root = source_root.trim_end_matches('/');
+            let module = [
+                "src/main/java",
+                "src/test/java",
+                "src/main/kotlin",
+                "src/test/kotlin",
+                "src",
+            ]
+            .iter()
+            .find_map(|suffix| source_root.strip_suffix(suffix))
+            .unwrap_or(source_root)
+            .trim_end_matches('/');
+            for out in ["target", "build"] {
+                let out = self.root.join(module).join(out);
+                if out.is_dir() && built_class(&out, &package_path, class) {
+                    return true;
+                }
+            }
+            if generates_code(&self.root, module) {
+                return true;
+            }
+        }
+        false
     }
 
     pub fn file_id(&self, path: &str) -> Option<i64> {
@@ -476,6 +527,60 @@ fn expand_workspace_pattern(root: &Path, pattern: &str) -> Vec<String> {
         }
         None if !pattern.contains('*') => vec![pattern.to_string()],
         None => Vec::new(),
+    }
+}
+
+/// Whether a directory under a build output (`target/generated-sources/x`,
+/// `build/classes/java/main`) holds `package_path/class` as a source or a
+/// compiled class.
+fn built_class(out: &Path, package_path: &str, class: &str) -> bool {
+    walkdir::WalkDir::new(out)
+        .max_depth(5)
+        .into_iter()
+        .filter_map(|entry| entry.ok())
+        .filter(|entry| entry.file_type().is_dir())
+        .any(|entry| {
+            let dir = entry.path().join(package_path);
+            ["java", "class", "kt"]
+                .iter()
+                .any(|ext| dir.join(format!("{class}.{ext}")).is_file())
+        })
+}
+
+/// Whether the Maven or Gradle build of `module` (or of a parent module)
+/// generates Java sources, so a class can exist before any build has run.
+fn generates_code(root: &Path, module: &str) -> bool {
+    const GENERATORS: &[&str] = &[
+        "querydsl",
+        "apt-maven-plugin",
+        "annotationProcessor",
+        "kapt",
+        "mapstruct",
+        "immutables",
+        "protobuf",
+        "grpc",
+        "openapi-generator",
+        "swagger-codegen",
+        "jooq",
+        "avro",
+        "jaxb",
+        "xjc",
+        "wsdl",
+        "jsonschema2pojo",
+        "generated-sources",
+    ];
+    let mut dir = module.to_string();
+    loop {
+        for build in ["pom.xml", "build.gradle", "build.gradle.kts"] {
+            let text = fs::read_to_string(root.join(&dir).join(build)).unwrap_or_default();
+            if GENERATORS.iter().any(|marker| text.contains(marker)) {
+                return true;
+            }
+        }
+        if dir.is_empty() {
+            return false;
+        }
+        dir = parent_dir(&dir);
     }
 }
 

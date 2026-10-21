@@ -466,7 +466,12 @@ impl<'c> Resolver<'c> {
                     .map_or("", |(package, _)| package);
                 Ok(match self.java_import(&binding.source, &binding.local)? {
                     Found::Absent(_) => "missing_export",
-                    Found::External if self.modules.java_package_exists(package) => {
+                    Found::External
+                        if self.modules.java_package_exists(package)
+                            && !self
+                                .modules
+                                .java_class_outside_index(package, &binding.local) =>
+                    {
                         "missing_export"
                     }
                     _ => "ok",

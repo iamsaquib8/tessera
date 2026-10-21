@@ -275,6 +275,60 @@ fn v4_a_barrel_re_exporting_a_renamed_name_is_broken() {
     );
 }
 
+#[test]
+fn v4_java_imports_of_generated_classes_are_not_broken() {
+    let temp = repo();
+    let root = temp.path();
+    let files = [
+        (".gitignore", "target/\n"),
+        (
+            "svc/src/main/java/com/acme/domain/User.java",
+            "package com.acme.domain;\n\npublic class User {}\n",
+        ),
+        (
+            "svc/target/generated-sources/annotations/com/acme/domain/QUser.java",
+            "package com.acme.domain;\n\npublic class QUser {}\n",
+        ),
+        (
+            "api/pom.xml",
+            "<project><build><plugins><plugin><artifactId>querydsl-apt</artifactId></plugin></plugins></build></project>\n",
+        ),
+        (
+            "api/src/main/java/com/acme/model/Order.java",
+            "package com.acme.model;\n\npublic class Order {}\n",
+        ),
+        (
+            "svc/src/main/java/com/acme/app/App.java",
+            "package com.acme.app;\n\nimport com.acme.domain.User;\nimport com.acme.domain.QUser;\nimport com.acme.domain.Usr;\nimport com.acme.model.QOrder;\n\npublic class App {}\n",
+        ),
+    ];
+    for (path, content) in files {
+        fs::create_dir_all(root.join(path).parent().unwrap()).unwrap();
+        fs::write(root.join(path), content).unwrap();
+    }
+    let (_, findings, value) = verify_changed(root);
+    let v4: Vec<&String> = findings.iter().filter(|f| f.starts_with("V4")).collect();
+    assert_eq!(
+        v4,
+        vec!["V4 svc/src/main/java/com/acme/app/App.java:5"],
+        "{value}"
+    );
+    let message = value["findings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|f| f["id"] == "V4")
+        .unwrap()["message"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert!(
+        message.contains("`com.acme.domain.Usr`")
+            && message.contains("not a class in this repository"),
+        "{message}"
+    );
+}
+
 fn commit_all(root: &Path) {
     for args in [
         &["add", "."][..],
