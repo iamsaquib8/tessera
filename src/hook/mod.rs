@@ -347,7 +347,7 @@ impl Hook<'_> {
                 }
             }
         }
-        notes.sort_by(|a, b| b.1 .0.cmp(&a.1 .0));
+        notes.sort_by_key(|n| std::cmp::Reverse(n.1 .0));
         notes.truncate(NOTE_SYMBOLS);
         if notes.is_empty() {
             return Ok(None);

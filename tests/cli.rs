@@ -502,8 +502,12 @@ fn init_names_a_custom_index_in_mcp_configs() {
     let claude: serde_json::Value =
         serde_json::from_str(&fs::read_to_string(temp.path().join(".mcp.json")).unwrap()).unwrap();
     let args = claude["mcpServers"]["tessera"]["args"].as_array().unwrap();
-    assert_eq!(args[1], "--db");
-    assert!(args[2].as_str().unwrap().ends_with("we\"ird\\dir/t.db"));
+    // The launcher is `tessera` or `npx -y tessera-codegraph@…`, by PATH.
+    let db = args.iter().position(|a| a == "--db").expect("--db in args");
+    assert!(args[db + 1]
+        .as_str()
+        .unwrap()
+        .ends_with("we\"ird\\dir/t.db"));
 }
 
 #[cfg(unix)]

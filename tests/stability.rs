@@ -99,10 +99,16 @@ fn repo(fixture: &str) -> TempDir {
 }
 
 fn tessera(root: &Path) -> Command {
-    let mut cmd = Command::cargo_bin("tessera").unwrap();
     // Other `tessera` binaries on PATH would show up in `status`.
+    let system = std::env::var_os("PATH").unwrap_or_default();
+    let path = std::env::join_paths(
+        std::env::split_paths(&system)
+            .filter(|dir| !dir.join("tessera").is_file() && !dir.join("tessera.exe").is_file()),
+    )
+    .unwrap();
+    let mut cmd = Command::cargo_bin("tessera").unwrap();
     cmd.current_dir(root)
-        .env("PATH", "/usr/bin:/bin")
+        .env("PATH", path)
         .env_remove("TESSERA_DB")
         .arg("--quiet");
     cmd

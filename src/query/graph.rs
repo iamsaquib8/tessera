@@ -374,7 +374,7 @@ fn pagerank(
         }
     }
     for edges in &mut out {
-        edges.sort_by(|a, b| a.0.cmp(&b.0));
+        edges.sort_by_key(|e| e.0);
     }
     let mut teleport = vec![0.0f64; n];
     for seed in seeds {

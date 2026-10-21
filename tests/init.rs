@@ -42,16 +42,21 @@ fn git(dir: &Path, args: &[&str]) {
 }
 
 /// `tessera` on PATH, and the system tools git needs.
-fn path_with_tessera() -> String {
+fn path_with_tessera() -> std::ffi::OsString {
     let bin = assert_cmd::cargo::cargo_bin("tessera");
-    format!("{}:/usr/bin:/bin", bin.parent().unwrap().display())
+    std::env::join_paths([
+        bin.parent().unwrap(),
+        Path::new("/usr/bin"),
+        Path::new("/bin"),
+    ])
+    .unwrap()
 }
 
 fn init(s: &Setup, args: &[&str]) -> (String, bool) {
-    init_with_path(s, args, &path_with_tessera())
+    init_with_path(s, args, path_with_tessera())
 }
 
-fn init_with_path(s: &Setup, args: &[&str], path: &str) -> (String, bool) {
+fn init_with_path(s: &Setup, args: &[&str], path: impl AsRef<std::ffi::OsStr>) -> (String, bool) {
     let output = Command::cargo_bin("tessera")
         .unwrap()
         .current_dir(&s.root)
