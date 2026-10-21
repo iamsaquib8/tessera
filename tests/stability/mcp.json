@@ -1,0 +1,93 @@
+{
+  "blast": [
+    "cursor",
+    "depth",
+    "diff_from",
+    "diff_to",
+    "format",
+    "limit",
+    "symbol"
+  ],
+  "blast required": [
+    ""
+  ],
+  "context": [
+    "budget_tokens",
+    "format",
+    "symbol"
+  ],
+  "context required": [
+    "symbol"
+  ],
+  "find": [
+    "cursor",
+    "format",
+    "include_body",
+    "limit",
+    "path",
+    "symbol"
+  ],
+  "find required": [
+    ""
+  ],
+  "map": [
+    "format",
+    "kind",
+    "query"
+  ],
+  "map required": [
+    ""
+  ],
+  "path": [
+    "depth",
+    "format",
+    "from",
+    "to"
+  ],
+  "path required": [
+    "from,to"
+  ],
+  "refs": [
+    "cursor",
+    "format",
+    "limit",
+    "min_confidence",
+    "target",
+    "tests_only"
+  ],
+  "refs required": [
+    "target"
+  ],
+  "search": [
+    "cursor",
+    "exported",
+    "format",
+    "kinds",
+    "languages",
+    "limit",
+    "path",
+    "pattern",
+    "unused"
+  ],
+  "search required": [
+    "pattern"
+  ],
+  "status": [
+    "format"
+  ],
+  "status required": [
+    ""
+  ],
+  "verify": [
+    "changed",
+    "diff_from",
+    "format",
+    "language",
+    "snippet",
+    "staged",
+    "symbol"
+  ],
+  "verify required": [
+    ""
+  ]
+}
