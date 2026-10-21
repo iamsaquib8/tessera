@@ -99,3 +99,55 @@ fn every_site_names_its_handler_service_and_definition() {
     assert_eq!(consumer["service"], "frontend");
     assert_eq!(consumer["line"], 10);
 }
+
+#[test]
+fn http_routes_link_to_their_clients_across_frameworks() {
+    let temp = fixture("contracts-http");
+    let result = map(temp.path(), &["route"]);
+    let got = summary(&result);
+    for expected in [
+        "GET /api/users/{}: api/src/app.js -> web/src/client.ts",
+        "POST /api/users: api/src/app.js -> web/src/client.ts",
+        "GET /api/orders/{}: nest/src/orders.controller.ts -> web/src/client.ts",
+        "POST /api/orders: nest/src/orders.controller.ts -> ",
+        "ANY /api/health: web/pages/api/health.ts -> ",
+        "GET /api/items/{}: web/app/api/items/[id]/route.ts -> web/src/client.ts",
+        "GET /owners/{}: owners/src/main/java/petclinic/OwnerController.java -> billing/src/main/java/billing/Invoices.java,billing/src/main/java/billing/OwnerClient.java,owners/src/test/java/petclinic/OwnerControllerTests.java",
+        "POST /owners/new: owners/src/main/java/petclinic/OwnerController.java -> ",
+        "GET /owners: owners/src/main/java/petclinic/OwnerController.java -> ",
+        "GET /repos:  -> web/src/client.ts",
+    ] {
+        assert!(got.contains(expected), "missing {expected:?} in {got:#?}");
+    }
+    assert_eq!(got.len(), 10, "{got:#?}");
+}
+
+#[test]
+fn route_sites_carry_handlers_confidence_and_spec() {
+    let temp = fixture("contracts-http");
+    let result = map(temp.path(), &["route", "/api/users/{}"]);
+    let users = &result["contracts"][0];
+    assert_eq!(users["name"], "GET /api/users/{}", "{result}");
+    assert_eq!(users["definitions"][0]["path"], "api/openapi.yaml");
+    assert_eq!(users["providers"][0]["symbol"], "getUser");
+    let confidences: Vec<(u64, &str)> = users["consumers"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| {
+            (
+                s["line"].as_u64().unwrap(),
+                s["confidence"].as_str().unwrap(),
+            )
+        })
+        .collect();
+    assert_eq!(confidences, vec![(8, "low"), (9, "medium")]);
+
+    let result = map(temp.path(), &["route", "/api/orders/{}"]);
+    let orders = &result["contracts"][0];
+    assert_eq!(
+        orders["providers"][0]["symbol"], "OrdersController.findOne",
+        "{result}"
+    );
+    assert_eq!(orders["consumers"][0]["symbol"], "order");
+}

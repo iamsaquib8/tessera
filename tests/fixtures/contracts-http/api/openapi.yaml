@@ -1,0 +1,11 @@
+openapi: 3.0.0
+info:
+  title: Users
+  version: "1"
+paths:
+  /api/users/{id}:
+    get:
+      operationId: getUser
+  /api/users:
+    post:
+      operationId: createUser

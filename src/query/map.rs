@@ -28,12 +28,12 @@ const MANIFESTS: &[&str] = &[
     "composer.json",
     "Dockerfile",
 ];
-pub const KINDS: &[&str] = &["rpc"];
+pub const KINDS: &[&str] = &["route", "rpc"];
 
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct MapArgs {
-    /// `rpc`; `None` for every kind.
+    /// `route` or `rpc`; `None` for every kind.
     pub kind: Option<String>,
     /// Keeps contracts whose name, or a file of theirs, contains this.
     pub query: Option<String>,
@@ -193,7 +193,14 @@ pub fn run(conn: &Connection, root: &Path, args: &MapArgs) -> Result<MapResult> 
         }
     }
     let mut services = Services::new(root);
-    let mut contracts = rpc_contracts(&load(conn, "grpc ")?, &mut services);
+    let wants = |kind: &str| args.kind.as_deref().is_none_or(|k| k == kind);
+    let mut contracts = Vec::new();
+    if wants("route") {
+        contracts.extend(route_contracts(&load(conn, "http ")?, &mut services));
+    }
+    if wants("rpc") {
+        contracts.extend(rpc_contracts(&load(conn, "grpc ")?, &mut services));
+    }
     if let Some(query) = &args.query {
         let query = query.to_lowercase();
         contracts.retain(|c| {
@@ -294,6 +301,135 @@ fn rpc_contracts(facts: &[Fact], services: &mut Services) -> Vec<Contract> {
         }
     }
     let mut out: Vec<Contract> = contracts.into_values().collect();
+    for contract in &mut out {
+        for sites in [
+            &mut contract.definitions,
+            &mut contract.providers,
+            &mut contract.consumers,
+        ] {
+            sites.sort();
+            sites.dedup();
+        }
+    }
+    out.sort_by(|a, b| a.name.cmp(&b.name));
+    out
+}
+
+/// `(METHOD, path segments)` of an `http METHOD /path` key.
+fn http_parts(key: &str) -> Option<(&str, Vec<&str>)> {
+    let (method, path) = key.strip_prefix("http ")?.split_once(' ')?;
+    Some((method, path.split('/').filter(|s| !s.is_empty()).collect()))
+}
+
+/// Whether a request for `call` can reach `route`: the same number of
+/// segments, each equal or a parameter on either side. `Some(true)` when
+/// every segment is equal.
+fn path_match(route: &[&str], call: &[&str]) -> Option<bool> {
+    if route.len() != call.len() {
+        return None;
+    }
+    let mut exact = true;
+    for (r, c) in route.iter().zip(call) {
+        if r == c {
+            continue;
+        }
+        if *r == "{}" || *c == "{}" {
+            exact = false;
+        } else {
+            return None;
+        }
+    }
+    Some(exact)
+}
+
+fn lower(a: &str, b: &str) -> String {
+    let rank = |c: &str| match c {
+        "high" => 0,
+        "medium" => 1,
+        _ => 2,
+    };
+    if rank(a) >= rank(b) { a } else { b }.to_string()
+}
+
+/// HTTP: routes with their OpenAPI operations and the requests that reach
+/// them. A request reaches a route with the same path, segment by segment
+/// (`/orders/42` reaches `/orders/{}`), and the same method, or any method
+/// when either side does not say.
+fn route_contracts(facts: &[Fact], services: &mut Services) -> Vec<Contract> {
+    let mut contracts: BTreeMap<String, Contract> = BTreeMap::new();
+    for fact in facts.iter().filter(|f| f.kind == kind::ROUTE) {
+        let site = fact.site(services);
+        contracts
+            .entry(fact.key.clone())
+            .or_insert_with(|| contract("route", &fact.name, &fact.key))
+            .providers
+            .push(site);
+    }
+    let routes: Vec<(String, String, Vec<String>)> = contracts
+        .keys()
+        .filter_map(|key| {
+            let (method, segments) = http_parts(key)?;
+            Some((
+                key.clone(),
+                method.to_string(),
+                segments.into_iter().map(str::to_string).collect(),
+            ))
+        })
+        .collect();
+    let reach = |method: &str, segments: &[&str]| -> Vec<(String, bool)> {
+        let found: Vec<(String, bool)> = routes
+            .iter()
+            .filter(|(_, m, _)| m == method || m == "ANY" || method == "ANY")
+            .filter_map(|(key, _, route)| {
+                let route: Vec<&str> = route.iter().map(String::as_str).collect();
+                path_match(&route, segments).map(|exact| (key.clone(), exact))
+            })
+            .collect();
+        // An exact path beats a parameter match (`/users/new` over `/users/{}`).
+        if found.iter().any(|(_, exact)| *exact) {
+            found.into_iter().filter(|(_, exact)| *exact).collect()
+        } else {
+            found
+        }
+    };
+    let mut extra: BTreeMap<String, Contract> = BTreeMap::new();
+    for fact in facts
+        .iter()
+        .filter(|f| f.kind == kind::ROUTE_DEF || f.kind == kind::HTTP_CALL)
+    {
+        let Some((method, segments)) = http_parts(&fact.key) else {
+            continue;
+        };
+        let targets = reach(method, &segments);
+        let definition = fact.kind == kind::ROUTE_DEF;
+        if targets.is_empty() {
+            let site = fact.site(services);
+            let contract = extra
+                .entry(fact.key.clone())
+                .or_insert_with(|| contract("route", &fact.name, &fact.key));
+            if definition {
+                contract.definitions.push(site);
+            } else {
+                contract.consumers.push(site);
+            }
+            continue;
+        }
+        for (key, exact) in targets {
+            let mut site = fact.site(services);
+            if !exact {
+                site.confidence = lower(&site.confidence, "medium");
+            }
+            let contract = contracts
+                .get_mut(&key)
+                .expect("route keys come from contracts");
+            if definition {
+                contract.definitions.push(site);
+            } else {
+                contract.consumers.push(site);
+            }
+        }
+    }
+    let mut out: Vec<Contract> = contracts.into_values().chain(extra.into_values()).collect();
     for contract in &mut out {
         for sites in [
             &mut contract.definitions,

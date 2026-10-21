@@ -4,6 +4,8 @@
 //! time, so incremental indexing needs no link pass.
 
 pub mod grpc;
+pub mod http;
+pub mod packs;
 pub mod text;
 
 use std::path::Path;
@@ -26,6 +28,12 @@ pub mod kind {
     /// A call that may be a gRPC method call; kept when the file has a
     /// client for a service with that method.
     pub const RPC_CALL: &str = "rpc_call";
+    /// An HTTP route a server handles.
+    pub const ROUTE: &str = "route";
+    /// An HTTP request a client makes.
+    pub const HTTP_CALL: &str = "http_call";
+    /// An HTTP operation declared in an OpenAPI document.
+    pub const ROUTE_DEF: &str = "route_def";
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -93,7 +101,18 @@ pub fn extract(
     }
     let mut facts = match (language, tree) {
         (Language::Proto, _) => text::proto(content),
-        (_, Some(tree)) => grpc::code(language, content, tree),
+        (Language::OpenApi, _) => text::openapi(content),
+        (_, Some(tree)) => {
+            let mut facts = grpc::code(language, content, tree);
+            facts.extend(packs::run(language, content, tree));
+            if matches!(
+                language,
+                Language::JavaScript | Language::TypeScript | Language::Tsx
+            ) {
+                facts.extend(http::next_routes(path, content));
+            }
+            facts
+        }
         _ => Vec::new(),
     };
     facts.sort_by(|a, b| a.line.cmp(&b.line).then_with(|| a.key.cmp(&b.key)));
