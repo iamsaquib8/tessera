@@ -39,6 +39,7 @@ pub mod init;
 pub mod mcp;
 pub mod output;
 pub mod query;
+pub mod resolve;
 pub mod types;
 pub mod walk;
 pub mod watch;
