@@ -682,7 +682,9 @@ fn destructured_module_binding(cx: &Cx<'_>, node: Node<'_>) -> bool {
         ("shorthand_property_identifier_pattern", "object_pattern") => parent,
         ("identifier", "array_pattern") => parent,
         ("identifier", "pair_pattern")
-            if parent.child_by_field_name("value").is_some_and(|v| v.id() == node.id()) =>
+            if parent
+                .child_by_field_name("value")
+                .is_some_and(|v| v.id() == node.id()) =>
         {
             match parent.parent() {
                 Some(object) if object.kind() == "object_pattern" => object,

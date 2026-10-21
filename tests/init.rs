@@ -41,13 +41,23 @@ fn git(dir: &Path, args: &[&str]) {
     assert!(status.success(), "git {args:?}");
 }
 
+/// `tessera` on PATH, and the system tools git needs.
+fn path_with_tessera() -> String {
+    let bin = assert_cmd::cargo::cargo_bin("tessera");
+    format!("{}:/usr/bin:/bin", bin.parent().unwrap().display())
+}
+
 fn init(s: &Setup, args: &[&str]) -> (String, bool) {
+    init_with_path(s, args, &path_with_tessera())
+}
+
+fn init_with_path(s: &Setup, args: &[&str], path: &str) -> (String, bool) {
     let output = Command::cargo_bin("tessera")
         .unwrap()
         .current_dir(&s.root)
         .env("HOME", &s.home)
         .env("USERPROFILE", &s.home)
-        .env("PATH", "/usr/bin:/bin")
+        .env("PATH", path)
         .env_remove("TESSERA_DB")
         .arg("init")
         .args(args)
@@ -419,4 +429,23 @@ fn every_hook_adapter_is_wired_in_its_documented_shape() {
 
     let (out, _) = init(&s, &args);
     assert!(out.contains("Nothing to change"), "{out}");
+}
+
+#[test]
+fn without_tessera_on_path_configs_run_the_pinned_npm_package() {
+    let s = setup();
+    let (out, ok) = init_with_path(&s, &["--yes", "--agent", "claude"], "/usr/bin:/bin");
+    assert!(ok, "{out}");
+    let package = format!("tessera-codegraph@{}", env!("CARGO_PKG_VERSION"));
+    let mcp = json(&s.root.join(".mcp.json"));
+    assert_eq!(mcp["mcpServers"]["tessera"]["command"], "npx");
+    assert_eq!(mcp["mcpServers"]["tessera"]["args"][0], "-y");
+    assert_eq!(mcp["mcpServers"]["tessera"]["args"][1], package.as_str());
+    assert_eq!(mcp["mcpServers"]["tessera"]["args"][2], "mcp");
+    let hooks = json(&s.root.join(".claude/settings.local.json"));
+    let stop = hooks["hooks"]["Stop"][0]["hooks"][0]["command"]
+        .as_str()
+        .unwrap();
+    assert_eq!(stop, format!("npx -y {package} hook claude stop"));
+    assert!(out.contains("npx"), "{out}");
 }

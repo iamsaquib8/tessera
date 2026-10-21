@@ -90,6 +90,7 @@ struct Pending {
 
 struct Planner<'a> {
     options: &'a InitOptions,
+    on_path: bool,
     root: PathBuf,
     files: BTreeMap<String, Pending>,
     manual: Vec<ManualStep>,
@@ -151,8 +152,26 @@ impl Planner<'_> {
         self.edit(rel.to_string(), absolute, agent, apply);
     }
 
+    /// How configs start Tessera: by name when it is on PATH, otherwise the
+    /// npm package at this version through npx, so a quick start with npx
+    /// works without a global install.
+    fn launcher(&self) -> Vec<String> {
+        if self.on_path {
+            vec!["tessera".to_string()]
+        } else {
+            vec![
+                "npx".to_string(),
+                "-y".to_string(),
+                format!("tessera-codegraph@{}", env!("CARGO_PKG_VERSION")),
+            ]
+        }
+    }
+
     fn server(&self, target: &McpTarget, global: bool) -> Server {
-        let mut args = vec!["mcp".to_string()];
+        let mut launcher = self.launcher();
+        let command = launcher.remove(0);
+        let mut args = launcher;
+        args.push("mcp".to_string());
         let default_db = self.root.join(".tessera/tessera.db");
         if !global && self.options.db_path != default_db {
             args.push("--db".to_string());
@@ -161,10 +180,7 @@ impl Planner<'_> {
             args.push("--root".to_string());
             args.push("${workspaceFolder}".to_string());
         }
-        Server {
-            command: "tessera".to_string(),
-            args,
-        }
+        Server { command, args }
     }
 
     fn agent(&mut self, agent: &Agent) {
@@ -186,8 +202,9 @@ impl Planner<'_> {
             }
         }
         if let Some(hooks) = agent.hooks {
+            let command = self.launcher().join(" ");
             self.project(hooks.path, agent.id, |text| {
-                edit::hooks(text, &hooks, "tessera")
+                edit::hooks(text, &hooks, &command)
             });
         }
         if self.options.with_instructions {
@@ -243,8 +260,10 @@ pub fn plan(options: &InitOptions) -> Result<InitPlan> {
         }
     }
 
+    let on_path = agents::on_path("tessera").is_some();
     let mut planner = Planner {
         options,
+        on_path,
         root: root.clone(),
         files: BTreeMap::new(),
         manual: Vec::new(),
@@ -312,7 +331,7 @@ pub fn plan(options: &InitOptions) -> Result<InitPlan> {
         changes,
         manual: planner.manual,
         notes,
-        not_on_path: agents::on_path("tessera").is_none(),
+        not_on_path: !on_path,
     })
 }
 
@@ -368,7 +387,7 @@ impl Display for InitPlan {
         if self.not_on_path {
             writeln!(
                 f,
-                "\n`tessera` is not on your PATH, and agents run it by that name. Install it (npm, Homebrew, or cargo) or add it to PATH."
+                "\n`tessera` is not on your PATH, so these configs run it through npx, which adds a moment to each hook. For faster hooks, install it (npm i -g tessera-codegraph, Homebrew, or cargo) and put `tessera` in place of the npx command."
             )?;
         }
         Ok(())

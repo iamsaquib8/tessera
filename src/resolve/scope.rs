@@ -944,7 +944,10 @@ impl<'c> Resolver<'c> {
             let resolution = self.resolve_type(file, chain, receiver, false, depth + 1)?;
             if resolution.confidence == "high" {
                 if let [variable] = resolution.targets[..] {
-                    if self.symbol(variable)?.is_some_and(|sym| sym.kind == "variable") {
+                    if self
+                        .symbol(variable)?
+                        .is_some_and(|sym| sym.kind == "variable")
+                    {
                         return self.variable_type(variable, depth);
                     }
                 }
@@ -1480,7 +1483,13 @@ fn map_sym(row: &rusqlite::Row<'_>) -> rusqlite::Result<Sym> {
 /// `name` on this line.
 fn declares(line: &str, name: &str) -> bool {
     const MODIFIERS: &[&str] = &[
-        "public ", "private ", "protected ", "readonly ", "static ", "declare ", "override ",
+        "public ",
+        "private ",
+        "protected ",
+        "readonly ",
+        "static ",
+        "declare ",
+        "override ",
         "accessor ",
     ];
     let mut rest = line.trim_start();

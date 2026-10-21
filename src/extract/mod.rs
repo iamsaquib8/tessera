@@ -363,11 +363,23 @@ impl<'a> Cx<'a> {
                 .and_then(|child| self.called_name(child)),
             // `make("handle")(1, 2)`: the called thing is a value, with no
             // name of its own; the last identifier inside it is not one.
-            "call_expression" | "call" | "invocation_expression" | "method_invocation"
-            | "parenthesized_expression" | "await_expression" | "new_expression"
-            | "object_creation_expression" | "arrow_function" | "function_expression"
-            | "function" | "lambda" | "subscript_expression" | "index_expression"
-            | "element_access_expression" | "string" | "template_string" => None,
+            "call_expression"
+            | "call"
+            | "invocation_expression"
+            | "method_invocation"
+            | "parenthesized_expression"
+            | "await_expression"
+            | "new_expression"
+            | "object_creation_expression"
+            | "arrow_function"
+            | "function_expression"
+            | "function"
+            | "lambda"
+            | "subscript_expression"
+            | "index_expression"
+            | "element_access_expression"
+            | "string"
+            | "template_string" => None,
             _ => Some(last_identifier(&self.text(node))).filter(|name| !name.is_empty()),
         }
     }

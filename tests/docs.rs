@@ -54,6 +54,26 @@ fn concrete(command: &str) -> Option<Vec<String>> {
 fn readme_command_table_runs_against_a_fixture() {
     let temp = TempDir::new().unwrap();
     copy_dir(&fixture_dir("typescript"), temp.path());
+    for args in [
+        &["init", "-q"][..],
+        &["add", "."],
+        &[
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@example.com",
+            "commit",
+            "-qm",
+            "base",
+        ],
+    ] {
+        assert!(Command::new("git")
+            .args(args)
+            .current_dir(temp.path())
+            .status()
+            .unwrap()
+            .success());
+    }
     let commands = readme_commands();
     assert!(
         commands.len() >= 8,
@@ -93,7 +113,7 @@ fn readme_mcp_setup_works_without_a_global_install() {
         .and_then(|rest| rest.split("\n## ").next())
         .unwrap();
     assert!(
-        quick_start.contains("claude mcp add tessera -- npx -y tessera-codegraph mcp"),
-        "the quick start uses npx, so its MCP command must too"
+        quick_start.contains("npx tessera-codegraph init"),
+        "the quick start uses npx, so its setup step must too"
     );
 }
