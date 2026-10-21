@@ -1,0 +1,239 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Tessera deck</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@62..125,400..800&family=Atkinson+Hyperlegible:wght@400;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<style>
+:root {
+  --bg: #eef1f5;
+  --slide: #f8f9fb;
+  --ink: #1c2330;
+  --muted: #5b6677;
+  --line: #d5dbe3;
+  --blue: #2b4bdb;
+  --blue-2: #3a5ae8;
+  --blue-deep: #1a2f8f;
+  --teal: #2e9e8f;
+  --stop: #c2410c;
+  --term: #161c27;
+  --term-ink: #dfe3e9;
+  --display: "Archivo", "Archivo Variable", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --body: "Atkinson Hyperlegible", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --mono: "JetBrains Mono", ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; background: var(--bg); color: var(--ink); }
+body { font-family: var(--body); -webkit-font-smoothing: antialiased; overflow: hidden; }
+
+.deck { position: fixed; inset: 0; display: grid; place-items: center; }
+.slide {
+  position: absolute; width: 1280px; height: 720px; padding: 72px 88px;
+  background: var(--slide); border-radius: 18px; box-shadow: 0 1px 0 var(--line), 0 24px 60px -30px rgba(28, 35, 48, 0.35);
+  display: none; flex-direction: column; transform-origin: center center;
+}
+.slide.on { display: flex; }
+
+h1, h2 { font-family: var(--display); font-stretch: 125%; font-weight: 780; letter-spacing: -0.015em; margin: 0; line-height: 1.04; }
+h1 { font-size: 76px; max-width: 15ch; }
+h2 { font-size: 50px; max-width: 22ch; }
+p { margin: 0; }
+.lede { font-size: 24px; line-height: 1.45; color: var(--muted); max-width: 44ch; margin-top: 26px; }
+.foot { margin-top: auto; display: flex; justify-content: space-between; align-items: flex-end; font-size: 15px; color: var(--muted); }
+.foot b { color: var(--ink); font-weight: 700; }
+code, .mono { font-family: var(--mono); }
+
+/* The mark: nine tiles, one set slightly out of line, as in the logo. */
+.mark { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; width: 210px; }
+.mark i { display: block; aspect-ratio: 1; border-radius: 13px; background: var(--blue); }
+.mark i:nth-child(1) { transform: rotate(-2.2deg); }
+.mark i:nth-child(2) { background: var(--blue-2); transform: rotate(1.6deg); }
+.mark i:nth-child(3) { background: var(--teal); transform: translate(10px, -10px) rotate(9deg); }
+.mark i:nth-child(4) { background: #2442c4; transform: rotate(-1.1deg); }
+.mark i:nth-child(5) { background: var(--blue-2); transform: rotate(2deg); }
+.mark i:nth-child(6) { background: #2847cf; transform: rotate(-1.6deg); }
+.mark i:nth-child(7) { background: #3150d9; transform: rotate(1.2deg); }
+.mark i:nth-child(8) { background: #2240be; transform: rotate(-2deg); }
+.mark i:nth-child(9) { background: #3352dd; transform: rotate(1.4deg); }
+
+/* 1: title */
+.title { flex-direction: row; align-items: center; gap: 88px; }
+.title .copy { flex: 1; }
+.title .facts { margin-top: 44px; display: flex; gap: 14px; flex-wrap: wrap; }
+.title .facts span { font-size: 17px; padding: 8px 14px; border: 1.5px solid var(--line); border-radius: 999px; color: var(--ink); }
+
+/* 2: problem */
+.term { margin-top: 40px; background: var(--term); color: var(--term-ink); border-radius: 14px; padding: 26px 30px; font: 19px/1.6 var(--mono); }
+.term .who { color: #8a97aa; }
+.term .ok { color: #3cc0ae; }
+.term .bad { color: #f0814a; }
+.term .later { display: block; margin-top: 18px; padding-top: 18px; border-top: 1px dashed #2e3a4e; }
+
+/* 3: how */
+.loop { margin-top: 44px; display: grid; grid-template-columns: repeat(4, 1fr); gap: 18px; }
+.step { border-radius: 14px; padding: 22px 22px 24px; background: #fff; border: 1.5px solid var(--line); }
+.step:nth-child(1) { transform: rotate(-0.6deg); }
+.step:nth-child(2) { transform: rotate(0.5deg); }
+.step:nth-child(3) { transform: rotate(-0.4deg); }
+.step:nth-child(4) { transform: rotate(0.7deg); }
+.step h3 { margin: 0 0 4px; font: 760 23px/1.15 var(--display); font-stretch: 112%; }
+.step .cmd { font: 600 15px var(--mono); color: var(--blue); }
+.step p { margin-top: 12px; font-size: 17px; line-height: 1.45; color: var(--muted); }
+.step.gate { background: var(--blue); border-color: var(--blue); color: #fff; }
+.step.gate .cmd { color: #c9d3fb; }
+.step.gate p { color: #e4e9fd; }
+.out { margin-top: 26px; font: 15.5px/1.55 var(--mono); color: var(--muted); }
+.out .id { color: var(--stop); font-weight: 600; }
+
+/* 4: proof */
+.proof { margin-top: 40px; display: grid; grid-template-columns: repeat(3, 1fr); gap: 20px; }
+.num { border-radius: 14px; padding: 22px 24px; background: #fff; border: 1.5px solid var(--line); }
+.num b { display: block; font: 800 50px/1 var(--display); font-stretch: 118%; color: var(--blue-deep); letter-spacing: -0.02em; }
+.num span { display: block; margin-top: 12px; font-size: 17px; line-height: 1.4; color: var(--ink); }
+.num:first-child { background: var(--blue); border-color: var(--blue); transform: rotate(-1deg); }
+.num:first-child b, .num:first-child span { color: #fff; }
+.source { margin-top: 22px; font-size: 14px; color: var(--muted); }
+
+/* 5: try */
+.try { flex-direction: row; gap: 70px; }
+.try .left { flex: 1.15; display: flex; flex-direction: column; }
+.try .right { flex: 1; display: flex; flex-direction: column; justify-content: center; }
+.install { margin-top: 36px; background: var(--term); color: var(--term-ink); border-radius: 14px; padding: 22px 26px; font: 21px/1.7 var(--mono); }
+.install .c { color: #8a97aa; }
+.next h3 { margin: 0 0 14px; font: 760 22px var(--display); font-stretch: 112%; }
+.next ul { margin: 0; padding: 0; list-style: none; font-size: 19px; line-height: 1.5; }
+.next li { padding: 9px 0; border-top: 1.5px solid var(--line); }
+.next li:last-child { border-bottom: 1.5px solid var(--line); }
+.asks { margin-top: 34px; display: grid; gap: 10px; }
+.asks div { font-size: 19px; padding: 12px 16px; border-left: 5px solid var(--teal); background: #fff; border-radius: 0 10px 10px 0; }
+
+.hint { position: fixed; bottom: 14px; left: 0; right: 0; text-align: center; font-size: 13px; color: var(--muted); }
+:focus-visible { outline: 3px solid var(--teal); outline-offset: 3px; }
+
+@media (prefers-reduced-motion: no-preference) {
+  .slide.on { animation: arrive 0.32s ease-out; }
+  @keyframes arrive { from { opacity: 0; } to { opacity: 1; } }
+}
+@media print {
+  @page { size: 1280px 720px; margin: 0; }
+  html, body { overflow: visible; height: auto; background: #fff; }
+  .deck { position: static; display: block; }
+  .slide { display: flex !important; position: relative; transform: none !important; box-shadow: none; border-radius: 0; break-after: page; }
+  .hint { display: none; }
+}
+</style>
+</head>
+<body>
+<main class="deck" id="deck" aria-live="polite">
+
+<section class="slide title" aria-label="Slide 1 of 5">
+  <div class="mark" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div>
+  <div class="copy">
+    <h1>Your agent says done. Tessera checks.</h1>
+    <p class="lede">Deterministic edit safety for every AI coding agent: what an edit reaches before it happens, and what it broke right after.</p>
+    <div class="facts"><span>Local</span><span>No LLM</span><span>Any agent, any model</span><span>Apache-2.0</span></div>
+  </div>
+</section>
+
+<section class="slide" aria-label="Slide 2 of 5">
+  <h2>Agents edit code they have only partly read.</h2>
+  <div class="term" role="img" aria-label="An agent reports a rename as done; later, CI fails on a caller in another file">
+    <span class="who">agent ›</span> grep, open 3 files, rename <code>findById</code> → <code>findOne</code><br>
+    <span class="who">agent ›</span> <span class="ok">✓ Done. All references updated.</span>
+    <span class="later"><span class="who">ci, 40 minutes later ›</span> <span class="bad">src/users/repo.ts:17 error TS2339: Property 'findById' does not exist on type 'UserRepo'.</span></span>
+  </div>
+  <p class="lede">The break shows up in CI, in review, or in production, in the module or the service the agent never opened.</p>
+  <div class="foot"><span>Agents have no cheap, exact way to see what an edit reaches.</span><span>2 / 5</span></div>
+</section>
+
+<section class="slide" aria-label="Slide 3 of 5">
+  <h2>An exact local map, checked on every edit.</h2>
+  <div class="loop">
+    <div class="step"><h3>Before</h3><div class="cmd">blast · context</div><p>Every caller the change can reach, ranked, with the tests to run.</p></div>
+    <div class="step gate"><h3>After</h3><div class="cmd">verify + hooks</div><p>Missing names, wrong argument counts, broken imports. The agent is held at "done" until fixed.</p></div>
+    <div class="step"><h3>Across services</h3><div class="cmd">map</div><p>Routes, gRPC, Kafka topics and tables linked to the code on both sides.</p></div>
+    <div class="step"><h3>On the PR</h3><div class="cmd">GitHub Action · ui</div><p>One comment: what breaks, who calls it, which tests to run.</p></div>
+  </div>
+  <div class="out" aria-label="Example output">
+    $ tessera verify --changed<br>
+    <span class="id">[V5]</span> src/frontend/rpc.go:88 `ShippingService/GetQuote` is no longer served: the change removed it from src/shippingservice/main.go, and this call still uses it
+  </div>
+  <div class="foot"><span>tree-sitter parses, SQLite stores. <b>Same code, same answer.</b> Nothing leaves the machine.</span><span>3 / 5</span></div>
+</section>
+
+<section class="slide" aria-label="Slide 4 of 5">
+  <h2>Measured, not claimed.</h2>
+  <div class="proof">
+    <div class="num"><b>99.7%</b><span>of high-confidence references match compiler ground truth (TS, JS, Java)</span></div>
+    <div class="num"><b>49 / 49</b><span>gRPC servers and clients linked in microservices-demo, five languages, no wrong link</span></div>
+    <div class="num"><b>979 → 15</b><span>blocking findings left by a blind find-and-replace, before and after the fixes; all 15 real</span></div>
+    <div class="num"><b>&lt; 50 ms</b><span>p95 lookups on 10,000 files; 45,000-file repositories index in under a minute</span></div>
+    <div class="num"><b>21</b><span>agents set up by one command; edit-checking hooks in 8 of them</span></div>
+    <div class="num"><b>12</b><span>languages; TypeScript, JavaScript and Java resolved through imports and types</span></div>
+  </div>
+  <p class="source">Ground truth, scorers and adapters for other tools: github.com/iamsaquib8/tessera-bench. Accuracy method: docs/accuracy.md.</p>
+  <div class="foot"><span></span><span>4 / 5</span></div>
+</section>
+
+<section class="slide try" aria-label="Slide 5 of 5">
+  <div class="left">
+    <h2>Try it on your repository.</h2>
+    <div class="install">
+      <span class="c"># no setup: indexes on first use</span><br>
+      npx tessera-codegraph blast &lt;symbol&gt;<br>
+      <span class="c"># wire it into your agents</span><br>
+      npx tessera-codegraph init
+    </div>
+    <div class="asks">
+      <div>Run it on a real change and tell us what it missed.</div>
+      <div>Add a language, a framework pack, or an agent adapter.</div>
+      <div>Star it if it saved your agent from a bad edit.</div>
+    </div>
+    <div class="foot"><span><b>github.com/iamsaquib8/tessera</b></span></div>
+  </div>
+  <div class="right next">
+    <h3>After 1.0</h3>
+    <ul>
+      <li>Test selection in CI</li>
+      <li>Architecture rules at every edit</li>
+      <li>SCIP precise mode</li>
+      <li>VS Code and JetBrains extensions</li>
+      <li>Runtime traces over the static graph</li>
+      <li>Data lineage and PII rules</li>
+    </ul>
+  </div>
+</section>
+
+</main>
+<div class="hint">← → or space to move · P to print</div>
+<script>
+"use strict";
+const slides = Array.from(document.querySelectorAll(".slide"));
+let current = Math.min(Math.max(Number(location.hash.slice(1)) - 1 || 0, 0), slides.length - 1);
+
+function fit() {
+  const scale = Math.min(window.innerWidth / 1360, window.innerHeight / 790);
+  slides.forEach((s) => { s.style.transform = "scale(" + scale + ")"; });
+}
+function show(i) {
+  current = Math.min(Math.max(i, 0), slides.length - 1);
+  slides.forEach((s, n) => s.classList.toggle("on", n === current));
+  history.replaceState(null, "", "#" + (current + 1));
+}
+document.addEventListener("keydown", (e) => {
+  if (["ArrowRight", "PageDown", " ", "Enter"].includes(e.key)) { e.preventDefault(); show(current + 1); }
+  if (["ArrowLeft", "PageUp", "Backspace"].includes(e.key)) { e.preventDefault(); show(current - 1); }
+  if (e.key === "Home") show(0);
+  if (e.key === "End") show(slides.length - 1);
+  if (e.key === "p" || e.key === "P") window.print();
+});
+document.getElementById("deck").addEventListener("click", (e) => show(current + (e.clientX > window.innerWidth / 3 ? 1 : -1)));
+window.addEventListener("resize", fit);
+fit();
+show(current);
+</script>
+</body>
+</html>
