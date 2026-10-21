@@ -1,4 +1,4 @@
-# The plugin and the install scripts run under sh on every platform, so a
-# Windows checkout must not give them CRLF line endings.
-plugin/** text eol=lf
-*.sh text eol=lf
+# LF on every platform: the plugin and install scripts run under sh, the
+# plugin ships copies of files that must match their sources byte for byte,
+# and fixtures and snapshots should read the same on Windows as elsewhere.
+* text=auto eol=lf
