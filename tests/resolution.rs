@@ -244,6 +244,70 @@ fn parameters_and_local_variables_shadow_an_import() {
     );
 }
 
+/// Edges plus each import binding's status and target: what an incremental
+/// pass must leave exactly as a full index would.
+fn resolved_state(db: &Path) -> Vec<String> {
+    let mut out = edges(db);
+    let conn = Connection::open(db).unwrap();
+    let mut stmt = conn
+        .prepare(
+            "SELECT f.path || ' ' || b.local || ' ' || b.status || ' ' || COALESCE(b.target_path, '-')
+             FROM import_bindings b JOIN files f ON f.id = b.file_id",
+        )
+        .unwrap();
+    out.extend(
+        stmt.query_map([], |row| row.get::<_, String>(0))
+            .unwrap()
+            .map(Result::unwrap),
+    );
+    out.sort();
+    out
+}
+
+fn full_state(root: &Path) -> Vec<String> {
+    let temp = tempfile::TempDir::new().unwrap();
+    let db = temp.path().join("full.db");
+    Index::build(
+        root,
+        &db,
+        IndexOptions {
+            full: true,
+            ..IndexOptions::default()
+        },
+    )
+    .unwrap();
+    resolved_state(&db)
+}
+
+#[test]
+fn deleting_a_module_re_resolves_its_importers() {
+    let files = [
+        (
+            "a.ts",
+            "export const K = 1;\nexport function k() { return K; }\n",
+        ),
+        (
+            "b.ts",
+            "import { K, k } from \"./a\";\nexport function run() { return k() + K; }\n",
+        ),
+        // Uses the import as a value only, so no edge leads back to it.
+        (
+            "c.ts",
+            "import { K } from \"./a\";\nexport const twice = K * 2;\n",
+        ),
+    ];
+    // Through the hook's path-by-path update, and through a walk.
+    let (_temp, ws) = repo_with(&files);
+    fs::remove_file(ws.root.join("a.ts")).unwrap();
+    indexer::index_files(&ws, &["a.ts".to_string()]).unwrap();
+    assert_eq!(resolved_state(&ws.db_path), full_state(&ws.root));
+
+    let (_temp, ws) = repo_with(&files);
+    fs::remove_file(ws.root.join("a.ts")).unwrap();
+    Index::build(&ws.root, &ws.db_path, IndexOptions::default()).unwrap();
+    assert_eq!(resolved_state(&ws.db_path), full_state(&ws.root));
+}
+
 #[test]
 fn renaming_an_export_re_resolves_its_importers() {
     let (_temp, ws) = repo_with(&[

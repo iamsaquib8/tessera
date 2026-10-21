@@ -35,11 +35,37 @@ pub struct ResolveReport {
     pub fallback: bool,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub enum ResolveScope {
     All,
-    /// Files whose content changed; their dependents are added.
-    Changed(Vec<i64>),
+    /// Files whose content changed, and what the files they replaced (or
+    /// that were removed) offered; their dependents are added.
+    Changed(Vec<i64>, Before),
+}
+
+/// What re-indexed or removed files offered the rest of the repository,
+/// recorded just before an incremental index deletes their rows.
+#[derive(Debug, Default)]
+pub struct Before {
+    files: Vec<Snapshot>,
+}
+
+#[derive(Debug)]
+struct Snapshot {
+    path: String,
+}
+
+impl Before {
+    /// Records `file_id`; call it before the file's rows are deleted.
+    pub fn record(&mut self, conn: &Connection, file_id: i64) -> Result<()> {
+        let path = conn.query_row(
+            "SELECT path FROM files WHERE id = ?1",
+            params![file_id],
+            |row| row.get(0),
+        )?;
+        self.files.push(Snapshot { path });
+        Ok(())
+    }
 }
 
 /// Rewrites the edges of every file in `scope` (plus dependents for
@@ -55,8 +81,8 @@ pub fn resolve(conn: &Connection, root: &Path, scope: ResolveScope) -> Result<Re
     };
     let (files, full) = match scope {
         ResolveScope::All => (all_ids()?, true),
-        ResolveScope::Changed(changed) => {
-            let expanded = dependents(conn, &changed)?;
+        ResolveScope::Changed(changed, before) => {
+            let expanded = dependents(conn, &changed, &before)?;
             if expanded.len() > MAX_INCREMENTAL_FILES {
                 report.fallback = true;
                 (all_ids()?, true)
@@ -139,11 +165,11 @@ pub fn last_report(conn: &Connection) -> Result<Option<ResolveReport>> {
 }
 
 /// `changed` plus every file whose edges may now resolve differently: files
-/// importing a changed file (through re-export chains), files whose resolved
-/// edges lost their target, files with name-matched edges to a name the
-/// changed files define, same-package Java files, and files with unresolved
-/// relative imports that a changed file may now satisfy.
-fn dependents(conn: &Connection, changed: &[i64]) -> Result<Vec<i64>> {
+/// importing a changed or removed file (through re-export chains), files
+/// whose resolved edges lost their target, files with name-matched edges to
+/// a name the changed files define, same-package Java files, and files with
+/// unresolved relative imports that a changed file may now satisfy.
+fn dependents(conn: &Connection, changed: &[i64], before: &Before) -> Result<Vec<i64>> {
     let mut files: HashSet<i64> = changed.iter().copied().collect();
     let ids = |sql: &str, args: &[&dyn rusqlite::ToSql]| -> Result<Vec<i64>> {
         Ok(conn
@@ -173,6 +199,8 @@ fn dependents(conn: &Connection, changed: &[i64]) -> Result<Vec<i64>> {
         )?);
     }
 
+    // A removed file's importers still name it as their target.
+    paths.extend(before.files.iter().map(|file| file.path.clone()));
     let mut seen_paths: HashSet<String> = HashSet::new();
     while let Some(path) = paths.pop() {
         if !seen_paths.insert(path.clone()) || files.len() > MAX_INCREMENTAL_FILES {
