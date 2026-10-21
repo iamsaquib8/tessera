@@ -42,7 +42,7 @@ gives the same answer every time, and nothing leaves the machine.
 | Speed | Lookups under 50 ms p95 on 10,000 files; a 45,000-file repository indexes in under a minute |
 | Reach | 21 agents set up by one command; edit-checking hooks in 8 (Claude Code, Codex, Gemini CLI, Copilot CLI, Cursor, Qwen Code, Augment, Antigravity); 12 languages |
 
-The benchmark, its ground truth and adapters for other tools are public in
+The benchmark and its ground truth are public in
 [tessera-bench](https://github.com/iamsaquib8/tessera-bench).
 
 ## Why now, why this

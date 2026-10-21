@@ -252,8 +252,8 @@ repository, or a workspace of repositories, that any agent can query.
 **Is it accurate?** Measured, not claimed: on public TypeScript,
 JavaScript, and Java repositories, 99.7% of high-confidence references match
 the compiler's ground truth ([accuracy](docs/accuracy.md)). Weaker matches are
-labelled, never silent. The benchmark, its ground truth, and adapters for
-other code-graph tools are public, so you can check the numbers yourself.
+labelled, never silent. The benchmark and its ground truth are public, so
+you can check the numbers yourself.
 
 **Will it slow my agent down?** Through the MCP server, lookups take
 milliseconds: the server keeps the index fresh in the background as files

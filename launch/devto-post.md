@@ -198,8 +198,8 @@ excalidraw, nest, Ghost and two Spring applications:
 - Lookups take under 50 ms at p95 on 10,000 files, and a 45,000-file
   repository indexes in under a minute.
 
-The benchmark, its ground truth, and adapters for other code-graph tools
-are public in [tessera-bench](https://github.com/iamsaquib8/tessera-bench).
+The benchmark and its ground truth are public in
+[tessera-bench](https://github.com/iamsaquib8/tessera-bench).
 
 ## Where it falls short
 
