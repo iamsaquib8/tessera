@@ -194,8 +194,9 @@ impl ModuleResolver {
             } else {
                 normalize(&join(&base, source))
             };
+            // Above the indexed root: another part of a larger repository.
             let Some(path) = target else {
-                return ModuleTarget::Unresolved;
+                return ModuleTarget::External(source.to_string());
             };
             if let Some(id) = self.probe_js(&path) {
                 return ModuleTarget::File(id);
@@ -787,9 +788,10 @@ mod tests {
             r.resolve("src/a.ts", "./missing", ts),
             ModuleTarget::Unresolved
         );
+        // Above the indexed root: another part of a larger repository.
         assert_eq!(
             r.resolve("src/a.ts", "../../../x", ts),
-            ModuleTarget::Unresolved
+            ModuleTarget::External("../../../x".to_string())
         );
         assert_eq!(
             r.resolve("src/a.ts", "@scope/pkg/deep", ts),
