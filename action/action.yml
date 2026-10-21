@@ -1,0 +1,104 @@
+name: Tessera
+description: Comments on a pull request with what the change breaks (calls, argument counts, imports, contracts), its callers, and the tests to run.
+author: Saquib
+branding:
+  icon: grid
+  color: blue
+
+inputs:
+  version:
+    description: Tessera release to install, e.g. v1.0.0. Ignored when `binary` is set.
+    default: latest
+  binary:
+    description: Path to a tessera binary to use instead of installing one.
+    default: ""
+  base:
+    description: Revision to compare against. Defaults to the pull request's base commit.
+    default: ""
+  fail-on:
+    description: "`blocking` fails the job when the report has blocking problems; `never` only comments."
+    default: never
+  comment:
+    description: Post (or update) one comment on the pull request. Falls back to the job summary when the token cannot write.
+    default: "true"
+  token:
+    description: Token used to comment.
+    default: ${{ github.token }}
+
+outputs:
+  blocking:
+    description: "`true` when the report has blocking problems."
+    value: ${{ steps.report.outputs.blocking }}
+
+runs:
+  using: composite
+  steps:
+    - name: Install Tessera
+      if: inputs.binary == ''
+      shell: bash
+      env:
+        TESSERA_VERSION: ${{ inputs.version != 'latest' && inputs.version || '' }}
+        TESSERA_INSTALL_DIR: ${{ runner.temp }}/tessera-bin
+      run: |
+        curl -fsSL https://raw.githubusercontent.com/iamsaquib8/tessera/main/install.sh | sh
+        echo "${TESSERA_INSTALL_DIR}" >> "$GITHUB_PATH"
+
+    - name: Restore the index
+      uses: actions/cache@v4
+      with:
+        path: .tessera/tessera.db
+        key: tessera-${{ runner.os }}-${{ github.sha }}
+        restore-keys: tessera-${{ runner.os }}-
+
+    - name: Report
+      id: report
+      shell: bash
+      env:
+        BASE: ${{ inputs.base || github.event.pull_request.base.sha }}
+        TESSERA: ${{ inputs.binary || 'tessera' }}
+      run: |
+        if [ -z "$BASE" ]; then
+          echo "No base revision: pass \`base\` outside pull_request events." >&2
+          exit 1
+        fi
+        git cat-file -e "$BASE^{commit}" 2>/dev/null || git fetch --no-tags --depth=1 origin "$BASE"
+        set +e
+        "$TESSERA" --quiet verify --diff "$BASE" --format markdown > "$RUNNER_TEMP/tessera-report.md"
+        code=$?
+        set -e
+        if [ "$code" -gt 1 ]; then
+          cat "$RUNNER_TEMP/tessera-report.md" >&2
+          exit "$code"
+        fi
+        if [ "$code" -eq 1 ]; then echo "blocking=true" >> "$GITHUB_OUTPUT"; else echo "blocking=false" >> "$GITHUB_OUTPUT"; fi
+
+    - name: Comment
+      if: inputs.comment == 'true' && github.event.pull_request.number
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.token }}
+        PR: ${{ github.event.pull_request.number }}
+        REPO: ${{ github.repository }}
+      run: |
+        report="$RUNNER_TEMP/tessera-report.md"
+        existing=$(gh api "repos/$REPO/issues/$PR/comments" --paginate \
+          --jq '[.[] | select(.body | startswith("<!-- tessera -->"))][0].id' 2>/dev/null || true)
+        if [ -n "$existing" ] && [ "$existing" != "null" ]; then
+          gh api -X PATCH "repos/$REPO/issues/comments/$existing" -F body=@"$report" >/dev/null && exit 0
+        else
+          gh api -X POST "repos/$REPO/issues/$PR/comments" -F body=@"$report" >/dev/null && exit 0
+        fi
+        echo "Could not comment (a fork's token is read-only); the report is in the job summary." >&2
+        cat "$report" >> "$GITHUB_STEP_SUMMARY"
+
+    - name: Summary
+      if: inputs.comment != 'true' || !github.event.pull_request.number
+      shell: bash
+      run: cat "$RUNNER_TEMP/tessera-report.md" >> "$GITHUB_STEP_SUMMARY"
+
+    - name: Fail on blocking problems
+      if: inputs.fail-on == 'blocking' && steps.report.outputs.blocking == 'true'
+      shell: bash
+      run: |
+        echo "Tessera found blocking problems; see the comment or the job summary." >&2
+        exit 1
