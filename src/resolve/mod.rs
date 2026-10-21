@@ -15,9 +15,12 @@ use serde::{Deserialize, Serialize};
 use crate::db;
 pub use modules::{ModuleResolver, ModuleTarget};
 
-/// Re-resolving more dependents than this falls back to one full pass.
+/// An edit with more dependents than this resolves only the changed files
+/// and leaves the rest to a full pass later, so an edit never waits for one.
 pub const MAX_INCREMENTAL_FILES: usize = 2_000;
 const META_KEY: &str = "resolve";
+/// Meta key set while a full pass is owed.
+const PENDING_KEY: &str = "resolve_pending";
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ResolveReport {
@@ -31,7 +34,8 @@ pub struct ResolveReport {
     #[serde(default)]
     pub missing: usize,
     pub elapsed_ms: u128,
-    /// An incremental pass had too many dependents and resolved everything.
+    /// An incremental pass had too many dependents: it resolved only the
+    /// changed files and left a full pass pending.
     pub fallback: bool,
 }
 
@@ -231,7 +235,10 @@ pub fn resolve(conn: &Connection, root: &Path, scope: ResolveScope) -> Result<Re
             .collect::<rusqlite::Result<_>>()?)
     };
     let (files, full) = match scope {
-        ResolveScope::All => (all_ids()?, true),
+        ResolveScope::All => {
+            db::set_meta(conn, PENDING_KEY, "0")?;
+            (all_ids()?, true)
+        }
         ResolveScope::Changed(changed, before) => {
             let now: Vec<Shape> = changed
                 .iter()
@@ -241,7 +248,8 @@ pub fn resolve(conn: &Connection, root: &Path, scope: ResolveScope) -> Result<Re
             let expanded = dependents(conn, &now, &before, lost)?;
             if expanded.len() > MAX_INCREMENTAL_FILES {
                 report.fallback = true;
-                (all_ids()?, true)
+                db::set_meta(conn, PENDING_KEY, "1")?;
+                (changed, false)
             } else {
                 (expanded, false)
             }
@@ -313,6 +321,12 @@ pub fn resolve(conn: &Connection, root: &Path, scope: ResolveScope) -> Result<Re
     report.elapsed_ms = started.elapsed().as_millis();
     db::set_meta(conn, META_KEY, &serde_json::to_string(&report)?)?;
     Ok(report)
+}
+
+/// Whether an edit left dependents for a full pass that has not run yet;
+/// the next full index (any query, `tessera index`) runs it.
+pub fn pending(conn: &Connection) -> Result<bool> {
+    Ok(db::get_meta(conn, PENDING_KEY)?.as_deref() == Some("1"))
 }
 
 /// The report of the last resolve pass, if any.

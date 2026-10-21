@@ -20,6 +20,9 @@ pub enum Freshness {
     },
     /// Built by another tessera version or under a different config.
     Outdated,
+    /// Every file is indexed, but an edit with too many dependents left
+    /// them to be re-resolved by the next full pass.
+    Pending,
     Fresh,
 }
 
@@ -75,14 +78,16 @@ pub fn check(ws: &Workspace) -> Result<Freshness> {
         .iter()
         .filter(|path| seen.contains(path.as_str()) && File::open(ws.root.join(path)).is_ok())
         .count();
-    Ok(if changed + added + removed == 0 {
-        Freshness::Fresh
-    } else {
+    Ok(if changed + added + removed > 0 {
         Freshness::Stale {
             changed,
             added,
             removed,
         }
+    } else if crate::resolve::pending(&conn)? {
+        Freshness::Pending
+    } else {
+        Freshness::Fresh
     })
 }
 

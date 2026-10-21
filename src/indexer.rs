@@ -191,7 +191,7 @@ pub fn index_path_locked(
     if full {
         db::fts_rebuild(&tx)?;
     }
-    let scope = if full {
+    let scope = if full || resolve::pending(&tx)? {
         Some(ResolveScope::All)
     } else if !changed_ids.is_empty() || report.files_removed > 0 {
         Some(ResolveScope::Changed(changed_ids, before))

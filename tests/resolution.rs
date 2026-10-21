@@ -430,6 +430,52 @@ fn only_names_an_edit_adds_or_removes_reach_name_matched_callers() {
 }
 
 #[test]
+fn an_edit_with_too_many_dependents_leaves_them_for_a_later_full_pass() {
+    use tessera_codegraph::fresh::{self, Freshness};
+    use tessera_codegraph::resolve::MAX_INCREMENTAL_FILES;
+
+    let importers: Vec<(String, String)> = (0..=MAX_INCREMENTAL_FILES)
+        .map(|i| {
+            (
+                format!("m/m{i}.ts"),
+                format!(
+                    "import {{ helper }} from \"../util\";\nexport const v{i} = helper({i});\n"
+                ),
+            )
+        })
+        .collect();
+    let mut files: Vec<(&str, &str)> = vec![(
+        "util.ts",
+        "export function helper(x: number) {\n  return x;\n}\n",
+    )];
+    files.extend(importers.iter().map(|(p, c)| (p.as_str(), c.as_str())));
+    let (_temp, ws) = repo_with(&files);
+
+    fs::write(
+        ws.root.join("util.ts"),
+        "export function helpers(x: number) {\n  return x;\n}\n",
+    )
+    .unwrap();
+    let report = indexer::index_files(&ws, &["util.ts".to_string()]).unwrap();
+    let resolve = report.resolve.expect("an edit re-resolves");
+    assert!(resolve.fallback, "{resolve:?}");
+    assert_eq!(resolve.files, 1, "only the edited file is resolved now");
+    assert_eq!(fresh::check(&ws).unwrap(), Freshness::Pending);
+    let status = tessera_codegraph::query::status(&ws).unwrap();
+    assert!(
+        status.hints.iter().any(|h| h.contains("may be stale")),
+        "{:?}",
+        status.hints
+    );
+
+    // The next index finishes the pass although no file changed since.
+    let report = Index::build(&ws.root, &ws.db_path, IndexOptions::default()).unwrap();
+    assert!(report.resolve.is_some_and(|r| !r.fallback));
+    assert_eq!(fresh::check(&ws).unwrap(), Freshness::Fresh);
+    assert_eq!(resolved_state(&ws.db_path), full_state(&ws.root));
+}
+
+#[test]
 fn incremental_edits_match_a_full_index() {
     let (_temp, ws) = repo_with(&[
         (

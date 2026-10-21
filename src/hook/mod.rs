@@ -273,6 +273,16 @@ impl Hook<'_> {
             .spawn();
     }
 
+    /// Re-indexes edited files. An edit whose dependents are too many to
+    /// re-resolve now leaves them to a `tessera index` in the background.
+    fn index(&self, paths: &[String]) -> Result<()> {
+        let report = indexer::index_files(self.ws, paths)?;
+        if report.resolve.is_some_and(|resolve| resolve.fallback) {
+            self.index_in_background();
+        }
+        Ok(())
+    }
+
     /// Waits up to `wait` for an index no one is writing, starting a build
     /// when there is none; false when it is still not there.
     fn ready(&self, wait: Duration) -> bool {
@@ -326,7 +336,7 @@ impl Hook<'_> {
         if paths.is_empty() || !self.ready(EDIT_WAIT) {
             return Ok(None);
         }
-        indexer::index_files(self.ws, &paths)?;
+        self.index(&paths)?;
         let conn = db::open_ro(&self.ws.db_path)?;
         let old_texts: &[String] = if paths.len() == 1 {
             &payload.old_texts
@@ -378,7 +388,7 @@ impl Hook<'_> {
         if !self.ready(EDIT_WAIT) {
             return Ok(None);
         }
-        indexer::index_files(self.ws, &paths)?;
+        self.index(&paths)?;
         let conn = db::open_ro(&self.ws.db_path)?;
         let scope: HashSet<String> = session.edited.iter().cloned().collect();
         let result = query::verify_problems(&conn, &self.ws.root, &scope)?;
@@ -438,7 +448,7 @@ impl Hook<'_> {
         if scope.is_empty() || !self.ready(STOP_WAIT) {
             return Ok(None);
         }
-        indexer::index_files(self.ws, &scope)?;
+        self.index(&scope)?;
         let conn = db::open_ro(&self.ws.db_path)?;
         let scope: HashSet<String> = scope.into_iter().collect();
         let result = query::verify_paths(&conn, &self.ws.root, &scope, &changes)?;
