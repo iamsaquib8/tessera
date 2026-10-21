@@ -5,20 +5,20 @@ expression: graph_dump(& db)
 {
   "symbols": [
     "app.js:1-1 variable express | express = require(\"express\")",
-    "app.js:11-13 function slugify (1..1) | function slugify(x) {",
+    "app.js:11-13 function slugify (0..*) | function slugify(x) {",
     "app.js:2-2 variable EmailWorker | EmailWorker = require(\"./lib/email_worker\")",
     "app.js:4-4 variable app | app = express()",
-    "app.js:6-9 callback app.get(\"/send\") (2..2) | (req, res) => {",
+    "app.js:6-9 callback app.get(\"/send\") (0..*) | (req, res) => {",
     "lib/email_worker.js:1-1 variable BaseWorker | BaseWorker = require(\"./worker\")",
     "lib/email_worker.js:4-8 class EmailWorker | class EmailWorker extends BaseWorker {",
-    "lib/email_worker.js:5-7 method EmailWorker.perform (0..0) | perform() {",
-    "lib/i18n.js:1-3 function greet (0..0) | function greet() { //x éééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééé",
-    "lib/util.js:1-3 function slugify (1..1) | function slugify(s) {",
+    "lib/email_worker.js:5-7 method EmailWorker.perform (0..*) | perform() {",
+    "lib/i18n.js:1-3 function greet (0..*) | function greet() { //x éééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééé",
+    "lib/util.js:1-3 function slugify (0..*) | function slugify(s) {",
     "lib/worker.js:1-9 class BaseWorker | class BaseWorker {",
-    "lib/worker.js:2-4 method BaseWorker.run (0..0) | run() {",
-    "lib/worker.js:6-8 method BaseWorker.perform (0..0) | perform() {",
-    "specs/util.spec.js:3-7 callback describe(\"slugify\") (0..0) | () => {",
-    "specs/util.spec.js:4-6 callback describe(\"slugify\").it(\"lowercases\") (0..0) | () => {"
+    "lib/worker.js:2-4 method BaseWorker.run (0..*) | run() {",
+    "lib/worker.js:6-8 method BaseWorker.perform (0..*) | perform() {",
+    "specs/util.spec.js:3-7 callback describe(\"slugify\") (0..*) | () => {",
+    "specs/util.spec.js:4-6 callback describe(\"slugify\").it(\"lowercases\") (0..*) | () => {"
   ],
   "refs": [
     "app.js:1:17 call require/1 <- express",

@@ -247,6 +247,25 @@ fn comments_typed_arrows_and_tagged_templates_never_make_an_arity_mismatch() {
 }
 
 #[test]
+fn plain_javascript_argument_counts_never_make_an_arity_mismatch() {
+    let temp = repo();
+    fs::write(
+        temp.path().join("src/fmt.js"),
+        "export function fmt(value, options) {\n  return String(value) + (options || \"\");\n}\n\
+         export function sum() {\n  let total = 0;\n  for (const n of arguments) total += n;\n  return total;\n}\n",
+    )
+    .unwrap();
+    fs::write(
+        temp.path().join("src/use.js"),
+        "import { fmt, sum } from \"./fmt\";\n\nexport function use() {\n  fmt(1);\n  return sum(1, 2, 3);\n}\n",
+    )
+    .unwrap();
+    let (code, findings, _) = verify_changed(temp.path());
+    assert_eq!(code, 0, "{findings:?}");
+    assert!(findings.iter().all(|f| f.starts_with("V6")), "{findings:?}");
+}
+
+#[test]
 fn properties_default_expressions_and_destructured_exports_exist() {
     let temp = repo();
     fs::write(

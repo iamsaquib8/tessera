@@ -608,6 +608,11 @@ fn type_name(cx: &Cx<'_>, node: Node<'_>) -> Option<String> {
 }
 
 fn arity(cx: &Cx<'_>, function: Node<'_>) -> Option<(u16, Option<u16>)> {
+    // Plain JavaScript lets any call omit or add arguments (`arguments`,
+    // optional trailing parameters), so only TypeScript's counts are binding.
+    if cx.language == Language::JavaScript {
+        return Some((0, None));
+    }
     if function.child_by_field_name("parameter").is_some() {
         return Some((1, Some(1)));
     }
