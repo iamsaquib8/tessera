@@ -148,7 +148,7 @@ mod tests {
         assert_eq!(names, ["api", "docs", "web"]);
         assert!(!temp.path().join("missing").exists());
         assert_eq!(repo_prefix(&temp.path().join("web")), "web/");
-        assert_eq!(repo_prefix(&temp.path().join("other")), "");
+        assert_eq!(repo_prefix(temp.path()), "");
     }
 
     #[test]
