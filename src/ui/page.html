@@ -42,6 +42,7 @@
 * { box-sizing: border-box; }
 html, body { margin: 0; background: var(--bg); color: var(--ink); }
 body { font: 15px/1.5 var(--display); -webkit-font-smoothing: antialiased; }
+code { font-family: var(--mono); font-size: 0.9em; }
 a { color: var(--accent); text-decoration: none; }
 a:hover { text-decoration: underline; }
 a:focus-visible, button:focus-visible, input:focus-visible { outline: 2px solid var(--teal); outline-offset: 2px; border-radius: 4px; }
@@ -196,12 +197,29 @@ function fail(error) {
   main.innerHTML = '<div class="panel empty">' + esc(error.message || error) + "</div>";
 }
 
+function count(n, one, many) {
+  return "<span><b>" + n + "</b> " + (n === 1 ? one : many) + "</span>";
+}
+
+/** A service name for a tile: breaks after separators and before a
+ * trailing "service", never in the middle of a word. */
+function tileName(name) {
+  return esc(name)
+    .replace(/([/_.-])/g, "$1<wbr>")
+    .replace(/(.)(service|server|worker|api)$/i, "$1<wbr>$2");
+}
+
+/** A finding's message, with `code` spans set as code. */
+function prose(text) {
+  return esc(text).replace(/`([^`]+)`/g, "<code>$1</code>");
+}
+
 async function header() {
   try {
     const s = await get("status");
     const fresh = s.freshness && s.freshness.state === "fresh";
     document.getElementById("where").innerHTML =
-      '<span class="root" title="' + esc(s.root) + '">' + esc(s.root) + "</span> " +
+      '<span class="root" title="' + esc(s.root) + '">' + esc(s.root.split(/[\\/]/).filter(Boolean).pop() || s.root) + "</span> " +
       '<span class="pill ' + (fresh || STATIC ? "fresh" : "stale") + '">' +
       (STATIC ? "snapshot" : fresh ? "index fresh" : "index refreshing") + "</span><br>" +
       esc(s.files.toLocaleString()) + " files, " + esc(s.symbols.toLocaleString()) + " symbols";
@@ -222,12 +240,16 @@ async function impact() {
     : '<div class="panel verdict ok"><span class="count">0</span><div><b>problems found in this change</b><div class="note">Calls, argument counts, imports and contracts all resolve.</div></div></div>';
   let html = "<h1>Change impact</h1>" +
     '<p class="lede">The uncommitted changes in this repository, what they break, and what they reach.</p>' + verdict +
-    '<div class="facts"><span><b>' + blast.changed.length + "</b> changed symbols</span><span><b>" + blast.page.total +
-    "</b> callers</span><span><b>" + r.verify.tests.length + "</b> tests to run</span><span><b>" + r.contracts.length + "</b> contracts touched</span></div>";
+    '<div class="facts">' + [
+      count(blast.changed.length, "changed symbol", "changed symbols"),
+      count(blast.page.total, "caller", "callers"),
+      count(r.verify.tests.length, "test to run", "tests to run"),
+      count(r.contracts.length, "contract touched", "contracts touched"),
+    ].join("") + "</div>";
   const rows = (items, render, empty) => items.length
     ? '<ul class="panel rows">' + items.map(render).join("") + "</ul>"
     : '<div class="panel empty">' + esc(empty) + "</div>";
-  const finding = (f) => "<li><span><span class=\"tag " + (f.blocking ? "stop" : "warn") + "\">" + esc(f.id) + "</span>" + esc(f.message) + "</span>" + where(f.path, f.line) + "</li>";
+  const finding = (f) => "<li><span><span class=\"tag " + (f.blocking ? "stop" : "warn") + "\">" + esc(f.id) + "</span>" + prose(f.message) + "</span>" + where(f.path, f.line) + "</li>";
   if (blocking.length) html += "<h2>To fix</h2>" + rows(blocking, finding, "");
   if (advisory.length) html += "<h2>Worth a look</h2>" + rows(advisory, finding, "");
   html += "<h2>Contracts this change touches</h2>" + rows(r.contracts, (c) =>
@@ -271,7 +293,7 @@ async function contractMap() {
     html += '<div class="panel empty">No contracts between services were found. Tessera reads Express, Fastify, NestJS, Next.js, Spring, gRPC, Kafka and ORM code; see docs/contracts.md.</div>';
   } else {
     html += '<div class="panel mosaic" id="mosaic"><svg class="links" id="links"></svg><div class="tiles">' +
-      views.map((v, i) => '<button class="tile" data-i="' + i + '" title="' + esc(v.name) + '"><div class="name">' + esc(short(v.name)) + '</div><div class="n">serves ' +
+      views.map((v, i) => '<button class="tile" data-i="' + i + '" title="' + esc(v.name) + '"><div class="name">' + tileName(short(v.name)) + '</div><div class="n">serves ' +
         v.serves.length + ", calls " + v.calls.length + "</div></button>").join("") + "</div></div>";
   }
   html += '<h2 id="contracts-title">Contracts</h2><div id="contracts"></div>';
