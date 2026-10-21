@@ -327,3 +327,49 @@ fn a_workspace_links_contracts_across_repositories() {
         "{got:#?}"
     );
 }
+
+#[test]
+fn the_report_in_a_workspace_names_the_contracts_a_change_touches() {
+    let temp = TempDir::new().unwrap();
+    let http = fixture_dir("contracts-http");
+    for repo in ["api", "web"] {
+        let dir = temp.path().join(repo);
+        copy_dir(&http.join(repo), &dir);
+        for args in [
+            &["init", "-q"][..],
+            &["add", "."],
+            &[
+                "-c",
+                "user.name=t",
+                "-c",
+                "user.email=t@example.com",
+                "commit",
+                "-qm",
+                "base",
+            ],
+        ] {
+            assert!(std::process::Command::new("git")
+                .args(args)
+                .current_dir(&dir)
+                .status()
+                .unwrap()
+                .success());
+        }
+    }
+    std::fs::write(
+        temp.path().join("tessera.workspace.toml"),
+        "[[repo]]\npath = \"api\"\n\n[[repo]]\npath = \"web\"\n",
+    )
+    .unwrap();
+    let client = temp.path().join("web/src/client.ts");
+    let text = std::fs::read_to_string(&client).unwrap();
+    std::fs::write(&client, format!("{text}\n// touched\n")).unwrap();
+    let output = Command::cargo_bin("tessera")
+        .unwrap()
+        .current_dir(temp.path().join("web"))
+        .args(["--quiet", "verify", "--changed", "--format", "markdown"])
+        .output()
+        .unwrap();
+    let report = String::from_utf8_lossy(&output.stdout);
+    assert!(report.contains("`route GET /api/users/{}`"), "{report}");
+}

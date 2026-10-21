@@ -57,34 +57,68 @@ pub fn workspace_repos(root: &Path) -> Option<(PathBuf, Vec<PathBuf>)> {
         .find(|file| file.is_file())?;
     let dir = file.parent()?.to_path_buf();
     let content = std::fs::read_to_string(&file).ok()?;
-    let mut repos: Vec<PathBuf> = Vec::new();
-    for line in content.lines() {
-        let line = line.split('#').next().unwrap_or_default().trim();
-        let Some((key, value)) = line.split_once('=') else {
-            continue;
-        };
-        let values: Vec<String> = match key.trim() {
-            "path" => vec![value.trim().trim_matches('"').to_string()],
-            "repos" => value
-                .trim()
-                .trim_matches(['[', ']'])
-                .split(',')
-                .map(|v| v.trim().trim_matches('"').to_string())
-                .filter(|v| !v.is_empty())
-                .collect(),
-            _ => continue,
-        };
-        for value in values {
-            let path = dir.join(&value);
-            repos.push(path.canonicalize().unwrap_or(path));
+    let listed = match toml::from_str::<WorkspaceFile>(&content) {
+        Ok(listed) => listed,
+        Err(error) => {
+            eprintln!(
+                "tessera: {} is not valid TOML, mapping this repository alone: {}",
+                file.display(),
+                error.message()
+            );
+            WorkspaceFile::default()
         }
+    };
+    let mut repos: Vec<PathBuf> = Vec::new();
+    for value in listed
+        .repos
+        .into_iter()
+        .chain(listed.repo.into_iter().map(|r| r.path))
+    {
+        let path = dir.join(&value);
+        if !path.is_dir() {
+            eprintln!(
+                "tessera: {} lists {value}, which is not a directory; skipping it",
+                file.display()
+            );
+            continue;
+        }
+        repos.push(path.canonicalize().unwrap_or(path));
     }
     let root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
     if !repos.contains(&root) {
         repos.push(root);
     }
+    repos.sort();
     repos.dedup();
     Some((dir.canonicalize().unwrap_or(dir), repos))
+}
+
+/// The prefix of this repository's paths in a workspace map (`web/`), or
+/// nothing outside a workspace.
+pub fn repo_prefix(root: &Path) -> String {
+    let Some((dir, _)) = workspace_repos(root) else {
+        return String::new();
+    };
+    let here = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+    match here.strip_prefix(&dir) {
+        Ok(rel) if !rel.as_os_str().is_empty() => {
+            format!("{}/", rel.to_string_lossy().replace('\\', "/"))
+        }
+        _ => String::new(),
+    }
+}
+
+#[derive(Debug, Default, serde::Deserialize)]
+struct WorkspaceFile {
+    #[serde(default)]
+    repos: Vec<String>,
+    #[serde(default)]
+    repo: Vec<RepoEntry>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct RepoEntry {
+    path: String,
 }
 
 #[cfg(test)]
@@ -94,6 +128,28 @@ mod tests {
     use tempfile::TempDir;
 
     use super::*;
+
+    #[test]
+    fn workspace_files_are_toml() {
+        let temp = TempDir::new().unwrap();
+        for repo in ["api", "web", "docs"] {
+            fs::create_dir_all(temp.path().join(repo)).unwrap();
+        }
+        fs::write(
+            temp.path().join(WORKSPACE_FILE),
+            "repos = [\n  \"api\",\n  \"missing\", # typo\n]\n\n[[repo]]\npath = 'docs'\n",
+        )
+        .unwrap();
+        let (dir, repos) = workspace_repos(&temp.path().join("web")).unwrap();
+        let names: Vec<String> = repos
+            .iter()
+            .map(|r| r.strip_prefix(&dir).unwrap().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(names, ["api", "docs", "web"]);
+        assert!(!temp.path().join("missing").exists());
+        assert_eq!(repo_prefix(&temp.path().join("web")), "web/");
+        assert_eq!(repo_prefix(&temp.path().join("other")), "");
+    }
 
     #[test]
     fn discover_root_walks_up_to_git() {

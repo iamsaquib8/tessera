@@ -68,6 +68,10 @@ fn touched(
     changed: &HashSet<String>,
 ) -> Result<Vec<TouchedContract>> {
     let map = map::run(conn, root, &MapArgs::default())?;
+    // In a workspace, sites carry their repository's prefix (`web/src/…`).
+    let prefix = crate::workspace::repo_prefix(root);
+    let changed: HashSet<String> = changed.iter().map(|p| format!("{prefix}{p}")).collect();
+    let changed = &changed;
     let mut out = Vec::new();
     for contract in map.contracts.iter().filter(|c| c.kind != "table") {
         let provides = contract.providers.iter().any(|s| changed.contains(&s.path));
