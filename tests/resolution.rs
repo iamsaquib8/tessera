@@ -897,6 +897,25 @@ fn a_java_call_on_a_this_field_uses_the_field_type() {
 }
 
 #[test]
+fn a_typescript_namespace_is_an_export_with_members() {
+    let (_temp, ws) = repo_with(&[
+        (
+            "types.ts",
+            "export namespace TChat {\n  export interface ChatMessage {\n    id: string;\n  }\n}\n",
+        ),
+        (
+            "main.ts",
+            "import { TChat } from \"./types\";\nexport function first(messages: TChat.ChatMessage[]) {\n  return messages[0];\n}\n",
+        ),
+    ]);
+    assert_eq!(broken_bindings(&ws.db_path), Vec::<String>::new());
+    assert_has(
+        &edges(&ws.db_path),
+        &["first -type-> types.ts:TChat.ChatMessage [high/static]"],
+    );
+}
+
+#[test]
 fn commonjs_named_exports_of_any_value_exist() {
     let (_temp, ws) = repo_with(&[
         (

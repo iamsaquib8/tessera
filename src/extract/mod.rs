@@ -57,17 +57,30 @@ pub fn support_for(language: Language) -> &'static dyn LanguageSupport {
 }
 
 /// The arguments in a call's argument list, comments aside; `None` for a
-/// tagged template, whose "arguments" are a template string.
+/// tagged template, whose "arguments" are a template string, and for a call
+/// that spreads a list into its arguments (`f(...xs)`, `f(*xs)`).
 pub fn argument_count(args: Node<'_>) -> Option<u16> {
+    const SPREADS: &[&str] = &[
+        "spread_element",
+        "list_splat",
+        "dictionary_splat",
+        "splat_argument",
+        "hash_splat_argument",
+        "variadic_argument",
+        "variadic_unpacking",
+    ];
     if args.kind() == "template_string" {
         return None;
     }
     let mut cursor = args.walk();
-    let count = args
+    let args: Vec<Node<'_>> = args
         .named_children(&mut cursor)
         .filter(|arg| !arg.is_extra())
-        .count();
-    Some(count as u16)
+        .collect();
+    if args.iter().any(|arg| SPREADS.contains(&arg.kind())) {
+        return None;
+    }
+    Some(args.len() as u16)
 }
 
 pub fn parse_file(language: Language, content: &str) -> Result<ParsedFile> {
@@ -209,6 +222,14 @@ impl<'a> Cx<'a> {
         {
             self.scope.pop();
         }
+    }
+
+    /// TypeScript does not check this file (`// @ts-nocheck` at its top).
+    pub fn ts_nocheck(&self) -> bool {
+        self.lines
+            .iter()
+            .take(20)
+            .any(|line| line.contains("@ts-nocheck"))
     }
 
     pub fn current_scope(&self) -> Option<&str> {

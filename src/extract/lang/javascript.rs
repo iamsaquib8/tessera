@@ -106,6 +106,15 @@ pub(super) fn js_symbol(cx: &Cx<'_>, node: Node<'_>) -> Option<IndexedSymbol> {
             (cx.text(node), "variable", None)
         }
         "enum_declaration" => (cx.text(node.child_by_field_name("name")?), "enum", None),
+        // `namespace TChat { … }` (or `module TChat`) holds exported members;
+        // `declare module "x"` names a package instead.
+        "internal_module" | "module" => {
+            let name = node.child_by_field_name("name")?;
+            if name.kind() == "string" {
+                return None;
+            }
+            (cx.text(name), "namespace", None)
+        }
         // In a class body a bodiless signature is an overload of the method
         // that follows; that method's symbol spans it.
         "method_signature" if node.parent().is_some_and(|p| p.kind() == "class_body") => {
@@ -892,8 +901,9 @@ fn type_name(cx: &Cx<'_>, node: Node<'_>) -> Option<String> {
 
 fn arity(cx: &Cx<'_>, function: Node<'_>) -> Option<(u16, Option<u16>)> {
     // Plain JavaScript lets any call omit or add arguments (`arguments`,
-    // optional trailing parameters), so only TypeScript's counts are binding.
-    if cx.language == Language::JavaScript {
+    // optional trailing parameters), so only checked TypeScript's counts
+    // are binding.
+    if cx.language == Language::JavaScript || cx.ts_nocheck() {
         return Some((0, None));
     }
     if function.child_by_field_name("parameter").is_some() {

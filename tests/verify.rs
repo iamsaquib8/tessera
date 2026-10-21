@@ -427,6 +427,26 @@ fn imports_of_files_the_index_does_not_hold_are_not_broken() {
 }
 
 #[test]
+fn spread_arguments_and_unchecked_files_never_make_an_arity_mismatch() {
+    let temp = repo();
+    fs::write(
+        temp.path().join("src/point.ts"),
+        "export function clickAt(x: number, y: number) {\n  return x + y;\n}\n\n\
+         export function use(at: [number, number]) {\n  return clickAt(...at);\n}\n",
+    )
+    .unwrap();
+    fs::write(
+        temp.path().join("src/bindings.ts"),
+        "// @ts-nocheck\nfunction check(condition, text) {\n  return condition || text;\n}\n\n\
+         export function run() {\n  return check(true);\n}\n",
+    )
+    .unwrap();
+    let (code, findings, _) = verify_changed(temp.path());
+    assert_eq!(code, 0, "{findings:?}");
+    assert!(findings.iter().all(|f| f.starts_with("V6")), "{findings:?}");
+}
+
+#[test]
 fn plain_javascript_argument_counts_never_make_an_arity_mismatch() {
     let temp = repo();
     fs::write(
