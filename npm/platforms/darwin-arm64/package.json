@@ -1,6 +1,6 @@
 {
   "name": "tessera-codegraph-darwin-arm64",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Prebuilt tessera binary for aarch64-apple-darwin. Installed automatically by tessera-codegraph.",
   "os": [
     "darwin"
