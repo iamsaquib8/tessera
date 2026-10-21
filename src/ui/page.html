@@ -158,7 +158,8 @@ pre.body { margin: 0; padding: 14px 16px; overflow: auto; font: 12.5px/1.55 var(
 <main id="main" aria-live="polite"></main>
 <script>
 "use strict";
-const STATIC = Boolean(window.TESSERA_STATIC);
+// `tessera ui --export` turns this on.
+const STATIC = false;
 const main = document.getElementById("main");
 
 function esc(text) {

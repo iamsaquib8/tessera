@@ -89,7 +89,14 @@ fn export_writes_a_static_site_with_relative_links() {
     let out = temp.path().join("site");
     ui::export(&ws, &out).unwrap();
     let page = fs::read_to_string(out.join("index.html")).unwrap();
-    assert!(page.contains("TESSERA_STATIC"));
+    assert!(
+        page.contains("const STATIC = true;"),
+        "the export reads data/, not api/"
+    );
+    let (_, _, served) = ui::respond(&ws, "/", Some("127.0.0.1:4747"));
+    assert!(String::from_utf8(served)
+        .unwrap()
+        .contains("const STATIC = false;"));
     assert!(
         !page.contains("\"/api") && !page.contains("'/api"),
         "absolute API paths"

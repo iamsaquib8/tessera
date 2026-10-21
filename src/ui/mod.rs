@@ -230,11 +230,10 @@ pub fn export(ws: &Workspace, dir: &Path) -> Result<()> {
     let data = dir.join("data");
     fs::create_dir_all(data.join("symbols"))
         .with_context(|| format!("failed to create {}", data.display()))?;
-    let page = PAGE.replacen(
-        "<script>\n\"use strict\";",
-        "<script>window.TESSERA_STATIC = true;</script>\n<script>\n\"use strict\";",
-        1,
-    );
+    let page = PAGE.replacen("const STATIC = false;", "const STATIC = true;", 1);
+    if page == PAGE {
+        return Err(anyhow!("the UI page lost its static-mode switch"));
+    }
     fs::write(dir.join("index.html"), page)?;
     let write = |name: &str, value: Value| -> Result<()> {
         fs::write(data.join(format!("{name}.json")), value.to_string())
