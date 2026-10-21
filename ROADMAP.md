@@ -12,7 +12,7 @@ demo. Nothing is claimed until it can be reproduced. The full design is in
 | | Milestone | Status |
 | --- | --- | --- |
 | v0.10 | Foundation | done, release pending |
-| v0.11 | Precision + public accuracy benchmark | next |
+| v0.11 | Precision + public accuracy benchmark | done, release pending |
 | v0.12 | Edit-safety loop (hooks in every agent that supports them) | planned |
 | v0.13 | Cross-repo contract map | planned |
 | v1.0 | Change-impact UI, GitHub Action, stable contracts | planned |
@@ -56,6 +56,11 @@ conformance tests pass.
 
 **Gate:** high-confidence precision ≥ 0.95 and recall ≥ 0.85 for TS/JS. The
 milestone grows until that holds; the bar is not lowered.
+
+**Result:** passed on the TypeScript/JavaScript corpus: precision 0.990,
+recall 0.990 (direct calls), 0.912 (typed receivers), 0.986 (type
+references). Per-repository numbers, including the one below the bar, are in
+[docs/accuracy.md](docs/accuracy.md).
 
 ## v0.12: Edit-safety loop
 

@@ -55,16 +55,18 @@ machine-readable output. List tools are paginated: `limit` (default 25) and
 | --- | --- | --- |
 | `find` | Where a symbol is defined: kind, file:line, signature, optional body. With `path`, outline a file or directory plus its imports. | `symbol` or `path`, `include_body` |
 | `search` | Fuzzy or glob name search with filters. `unused: true` lists functions nothing calls. | `pattern`, `kinds`, `languages`, `path`, `exported`, `unused` |
-| `refs` | Every reference to a symbol, or the files importing a file. | `target`, `tests_only` |
+| `refs` | Every reference to a symbol with its confidence, or the files importing a file. | `target`, `tests_only`, `min_confidence` |
 | `blast` | Callers ranked by impact, plus test files to run, for a symbol or a git diff. | `symbol` or `diff_from` (+`diff_to`), `depth` |
 | `verify` | Does a symbol exist; does every call in a snippet resolve? | `symbol` or `snippet` + `language` |
 | `context` | Body, callees, callers, tests, and siblings in one budgeted bundle. | `symbol`, `budget_tokens` |
 | `path` | Shortest call chain from one symbol to another. | `from`, `to`, `depth` |
 | `status` | Index root, freshness, counts, and setup hints. | none |
 
-Symbols can be written `name`, `Class.method`, or `A::B`. Matching is by name
-in this version (see [limits](when-not-to-use.md)); import- and type-aware
-resolution arrives in v0.11.
+Symbols can be written `name`, `Class.method`, or `A::B`. References and
+callers are resolved through scope, imports, and declared types, and each
+carries a confidence: unmarked lines are exact, "likely" lines matched a
+unique name, "possible" lines are ambiguous or name-level. See
+[accuracy](accuracy.md).
 
 ## Checking conformance yourself
 

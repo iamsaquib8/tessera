@@ -3,31 +3,32 @@
 Tessera is deterministic: the same code always gives the same answer. That is
 not the same as complete. These are the current limits, stated plainly.
 
-## Name-level matching (until v0.11)
+## Confidence, not certainty
 
-References and callers are matched **by name**. A call to `save()` links to
-every function named `save`, whichever class it belongs to. In practice:
+Every reference has a confidence (see [accuracy](accuracy.md)). High means
+Tessera followed scope, an import, `this`, or a declared type to one
+definition; on the TypeScript/JavaScript benchmark that is right 99% of the
+time. Medium, low, and name-level results are labelled in the output
+("likely", "possible") and are exactly that.
 
-- `refs` is exact for distinct names. For common names (`get`, `update`,
-  `run`) expect extra results.
-- `blast` can over-report callers through common names. Named callers are
-  not dropped. When the traversal hits its size cap, the output says the
-  result is partial.
-- `verify` checks only bare calls and calls on capitalised receivers that are
-  in the index. It does not type-check, and calls into third-party packages
-  are never flagged.
+- **Deep tier:** TypeScript, TSX, and JavaScript (ESM and CommonJS) resolve
+  through imports, re-exports, tsconfig paths, workspaces, and declared
+  types. Java resolves through imports, packages, fields, and overloads by
+  argument count.
+- **Standard tier:** Python, Go, Rust, C, C++, C#, Ruby, and PHP resolve
+  within a file and by unique name. Common names (`get`, `run`) come back as
+  "possible".
+- `verify` checks bare calls and calls on capitalised receivers that are in
+  the index. It does not type-check, and calls into third-party packages are
+  never flagged.
 
-v0.11 adds import- and scope-aware resolution for TypeScript, JavaScript, and
-Java, with a confidence level on every edge.
+## Not followed today
 
-## Not recorded today
-
-- Class and type usage: `extends`, `implements`, type annotations, and
-  decorators or annotations. Because of this, `search --unused` checks only
-  functions and methods.
-- Calls inside anonymous callbacks, such as Jest `it(() => …)` bodies or
-  Express `app.get(…, (req, res) => …)` handlers. They have no enclosing
-  symbol, so they appear in `refs` but not as caller edges in `blast`.
+- A receiver whose type comes from a chained call (`data.key("x").index(0)`),
+  a getter, or an untyped object (`const deps = {…}` passed around).
+- Plain identifier reads (`KEYS.A` used as a value): Tessera records calls,
+  `new`, JSX, type references, `extends`/`implements`, and decorators, not
+  every read.
 - Dynamic dispatch, reflection, string-based calls, dependency injection by
   name, and code generated at build time.
 - Edges between repositories or services (routes, queues, tables). That is

@@ -29,11 +29,13 @@ method UserRepo.findById src/users/repo.ts:6-8
 
 ```console
 $ tessera blast formatName
-4 callers affected by formatName (ranked; name-level matching):
-  100.0 d2 handler src/api/handler.ts:4
-   63.7 d1 UserRepo.findById src/users/repo.ts:6
-   63.7 d1 loadUser src/util/format.ts:5
-   54.0 d2 loadUser src/users/repo.ts:15
+5 callers affected by formatName (ranked; all exact):
+  100.0 d1 UserRepo.findById src/users/repo.ts:6
+  100.0 d1 loadUser src/util/format.ts:5
+   82.2 d2 loadUser src/users/repo.ts:15
+   36.3 d3 handler src/api/handler.ts:4
+   36.3 d3 describe("loadUser").it("returns the user") test/repo.test.ts:4
+Tests to run: test/repo.test.ts
 ```
 
 Scores come from personalised PageRank over the call graph: callers that many
@@ -48,10 +50,14 @@ method UserRepo.findById src/users/repo.ts:6-8
     return formatName(this.lookup(id));
   }
 Calls:
-  function formatName(name: string): string {  (src/util/format.ts:1)
-  private lookup(id: string): string {  (src/users/repo.ts:10)
+  UserRepo.lookup  src/users/repo.ts:10  private lookup(id: string): string {
+  formatName  src/util/format.ts:1  function formatName(name: string): string {
 Called by:
-  function loadUser(id: string): string {  (src/users/repo.ts:15)
+  loadUser  src/users/repo.ts:15  function loadUser(id: string): string {
+Tests:
+  describe("loadUser").it("returns the user") (test/repo.test.ts:4)
+Related (shared callers):
+  UserRepo
 ```
 
 ## 4. Check what you (or your agent) wrote

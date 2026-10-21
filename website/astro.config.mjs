@@ -26,7 +26,7 @@ export default defineConfig({
       sidebar: [
         { label: "Start", items: ["quickstart", "first-five-minutes"] },
         { label: "Use", items: ["integrations", "configuration", "troubleshooting"] },
-        { label: "Reference", items: ["mcp", "agents", "architecture", "when-not-to-use"] },
+        { label: "Reference", items: ["mcp", "accuracy", "agents", "architecture", "when-not-to-use"] },
         { label: "Contribute", items: ["how-to-add-a-language", "how-to-add-an-agent"] },
         { label: "Roadmap", link: "https://github.com/iamsaquib8/tessera/blob/main/ROADMAP.md" },
       ],

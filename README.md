@@ -125,11 +125,18 @@ sourced matrix of hook capabilities is in [docs/agents.md](docs/agents.md).
 TypeScript, TSX/React, JavaScript (ESM and CommonJS), Java, Python, Go, Rust,
 C, C++, C#, Ruby, PHP.
 
-All twelve are indexed at the **standard** tier today. Definitions, references,
-imports, and calls are matched by name. In v0.11, TypeScript, JavaScript, and
-Java move to the **deep** tier: import- and type-aware resolution with a
-confidence level on every edge, measured against compiler ground truth in a
-public benchmark. [Current limits](docs/when-not-to-use.md) are listed plainly.
+**Deep tier: TypeScript, TSX, and JavaScript.** References resolve through
+imports, re-exports, tsconfig paths, workspace packages, and declared types,
+and every one carries a confidence. Against compiler ground truth on
+excalidraw, nest, and Ghost, high-confidence results are right **99.0%** of
+the time, and Tessera finds 99% of direct calls, 91% of calls on typed
+receivers, and 99% of type references ([accuracy](docs/accuracy.md)).
+
+**Java** resolves through imports, packages, fields, `this`, static calls,
+and overloads by argument count; its benchmark run is next. The other
+languages are at the **standard** tier: resolved within a file and by unique
+name, labelled when a match is only possible.
+[Current limits](docs/when-not-to-use.md) are listed plainly.
 
 ## FAQ
 
@@ -145,10 +152,11 @@ repository, and soon across repositories, that any agent can query.
 `.tessera/`, gitignored automatically. Tessera makes no network calls, and
 `blast --diff` runs only a local `git diff`.
 
-**Is it accurate?** It is exact about what it records, and open about what it
-doesn't record yet: see [limits](docs/when-not-to-use.md). v0.11 publishes
-precision and recall against SCIP ground truth on public repositories,
-alongside other code-graph tools, so you can check the numbers yourself.
+**Is it accurate?** Measured, not claimed: on public TypeScript and
+JavaScript repositories, 99.0% of high-confidence references match the
+compiler's ground truth ([accuracy](docs/accuracy.md)). Weaker matches are
+labelled, never silent. The benchmark, its ground truth, and adapters for
+other code-graph tools are public, so you can check the numbers yourself.
 
 **Will it slow my agent down?** Through the MCP server, lookups take
 milliseconds: the server keeps the index fresh in the background as files
@@ -161,7 +169,7 @@ under 50 ms at p95 on 10,000 files. Indexing is incremental.
 | Version | Milestone |
 | --- | --- |
 | v0.10 | Foundation: index any repo, zero setup, MCP for every agent |
-| v0.11 | Precision: import- and type-aware resolution, public accuracy benchmark |
+| v0.11 | Precision: import- and type-aware resolution, public accuracy benchmark (done) |
 | v0.12 | Edit-safety loop: hooks that check every edit, in every agent that supports hooks |
 | v0.13 | Contract map: routes, queues, and tables across repositories |
 | v1.0 | Change-impact UI, GitHub Action, stable contracts |

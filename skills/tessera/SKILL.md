@@ -59,8 +59,9 @@ exist. Fix those before saying the task is done.
   re-run with `--cursor o:25` if you need more.
 - `No exact definition of X; closest matches:` means X does not exist; use
   one of the suggestions.
-- Matching is by name for now, so common names (`get`, `run`) can show extra
-  callers. Check the file paths.
+- Unmarked results are exact. "(likely)" means matched by a unique name;
+  "(possible)" means ambiguous or name-level, so check those file paths.
+  `refs --min-confidence high` keeps only exact results.
 - Add `--json` for machine-readable output.
 
 ## Prefer MCP when available

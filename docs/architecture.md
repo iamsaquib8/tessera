@@ -49,11 +49,13 @@ calls `index_files` for the paths that changed.
 
 - `find`: definitions by exact name or qualified name, with a fuzzy fallback
   (labelled as fuzzy). With a path, it gives the file outline plus imports.
-- `refs`: references by name, or, for a file path, the files whose imports
-  resolve to it.
-- `blast`: breadth-first walk over callers, ranked by personalised PageRank
-  with the teleport set to the edited symbol. With `--diff`, the symbols in
-  git-changed hunks are the seeds.
+- `refs`: references whose edges resolve to the target's definitions, plus
+  unresolved references by the same name, each with a confidence; for a file
+  path, the files whose imports resolve to it.
+- `blast`: breadth-first walk over resolved callers, ranked by personalised
+  PageRank with the teleport set to the edited symbol; each caller carries
+  the weakest confidence on its path. With `--diff`, the symbols in
+  git-changed hunks (working tree by default) are the seeds.
 - `context`: the body, callees, callers, tests, and sibling symbols, trimmed
   to a token budget.
 - `verify`: symbol existence, and per-call checks on a parsed snippet that
@@ -62,9 +64,28 @@ calls `index_files` for the paths that changed.
 Ties are broken by path, line, and name, and the PageRank adjacency list is
 sorted, so the same index always produces byte-identical output.
 
-## What is not here yet
+## Resolution
 
-References resolve **by name**: `repo.save()` and `cache.save()` both point at
-every `save`. Import- and scope-aware resolution with confidence per edge is
-the v0.11 milestone. Until then, `refs` and `blast` say "name-level matching"
-in their output. See [when not to use Tessera](when-not-to-use.md).
+Extraction records, per file, more than names: import bindings (ESM, CommonJS,
+Java single, wildcard and static imports), type hints (declared, `new`,
+parameter, field, return types, interface properties), each reference's
+receiver and argument count, and each symbol's container and arity.
+
+After indexing, a resolve pass turns each reference into edges:
+
+1. A definition visible in scope (`local`).
+2. An import binding, followed through the module resolver (relative paths,
+   tsconfig `paths`, workspace packages, Java packages) and re-export chains
+   (`import`).
+3. `this`/`super` through the class and its supertypes (`this`).
+4. A receiver's declared type, including field chains such as
+   `this.deps.repo` (`hint`), or a class used as a receiver (`static`).
+5. Otherwise a repository-wide name match: one candidate is medium, two to
+   five are low.
+
+A name that an import, hint, or package places outside the repository gets no
+edge. Overloads are told apart by argument count. An incremental index
+re-resolves the changed files and their dependents (importers, files whose
+edges lost their target, files with name matches on a name the change
+defines); above 2,000 dependents it resolves everything and `status` says so.
+See [accuracy](accuracy.md) for the measured results.

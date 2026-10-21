@@ -2,6 +2,48 @@
 
 All notable changes to Tessera are documented here.
 
+## 0.11.0 - Unreleased
+
+The precision release. References in TypeScript, JavaScript, and Java are
+resolved, not matched by name, and every one carries a confidence that is
+measured against compiler ground truth.
+
+### Added
+
+- **Resolution.** A resolve pass after indexing turns references into edges
+  through scope, imports (ESM, CommonJS, re-exports and barrels, tsconfig
+  `paths`, workspace packages, Java packages and static imports), `this` and
+  `super`, declared types (variables, parameters, fields, interface
+  properties, field chains such as `this.deps.repo`), and class names. Java
+  overloads and TypeScript overloads are told apart by argument count.
+- **Confidence** on every reference: `high`, `medium` (unique name), `low`
+  (two to five candidates, kept as one ambiguous group), or `name`.
+  References that resolve outside the repository get no edge.
+- `refs --min-confidence high|medium|low` (MCP `min_confidence`); each hit
+  names the definition it resolved to.
+- `new`, `extends`/`implements`, decorators and annotations, type
+  references, and JSX member tags are recorded. Anonymous callbacks passed
+  to calls (`it("…", () => …)`, `app.get("/x", (req, res) => …)`), class
+  fields holding arrow functions, function-typed interface properties, and
+  module-level constants are symbols, so their calls have a caller.
+- `status` shows how many references resolved at each confidence.
+- **tessera-bench** (separate repository): SCIP ground truth on pinned
+  public repositories, precision per confidence tier, recall per category.
+  First results are in [docs/accuracy.md](docs/accuracy.md).
+
+### Changed
+
+- `refs`, `blast`, `context`, and `search --unused` use resolved edges.
+  Output names "name-level matching" only when a result contains it, and
+  marks likely and possible matches.
+- `search --unused` checks types in TypeScript, JavaScript, and Java through
+  type references, and skips interface and abstract members.
+- References are located at the called name, so a call on a continuation
+  line points at that line.
+- Indexing parses files on up to eight threads and fills the symbol search
+  index per file; a 45,000-file repository indexes with resolution in 54 s.
+- The index schema is v6; existing indexes rebuild automatically.
+
 ## 0.10.0 - Unreleased
 
 The foundation release. Tessera is repositioned as deterministic edit safety
