@@ -34,6 +34,7 @@ pub struct StatusResult {
     pub refs: usize,
     pub languages: Vec<LanguageCount>,
     pub skipped: usize,
+    pub unreadable: Vec<String>,
     pub hints: Vec<String>,
 }
 
@@ -56,6 +57,7 @@ pub fn run(ws: &Workspace) -> Result<StatusResult> {
         refs: 0,
         languages: Vec::new(),
         skipped: 0,
+        unreadable: Vec::new(),
         hints: Vec::new(),
     };
     if let Ok(conn) = db::open_ro(&ws.db_path) {
@@ -77,6 +79,7 @@ fn fill_counts(status: &mut StatusResult, conn: &Connection) -> Result<()> {
         [],
         |row| row.get::<_, i64>(0),
     )? as usize;
+    status.unreadable = db::unreadable_paths(conn)?;
     Ok(())
 }
 
@@ -90,10 +93,21 @@ fn hints(status: &StatusResult) -> Vec<String> {
         Freshness::Stale { .. } => {
             hints.push("Index is stale; the next query re-indexes changed files.".to_string())
         }
+        Freshness::Outdated => hints.push(
+            "Index was built by another tessera version or config; the next query rebuilds it."
+                .to_string(),
+        ),
         Freshness::Fresh => {}
     }
     if status.files == 0 && status.freshness != Freshness::Missing {
         hints.push("No supported source files found under the root.".to_string());
+    }
+    if let Some(first) = status.unreadable.first() {
+        let count = status.unreadable.len();
+        hints.push(format!(
+            "{count} file{} could not be read (first: {first}); check its permissions.",
+            if count == 1 { "" } else { "s" }
+        ));
     }
     for shadow in &status.shadowing {
         hints.push(format!(
@@ -155,6 +169,7 @@ impl AgentText for StatusResult {
         let freshness = match self.freshness {
             Freshness::Fresh => "fresh".to_string(),
             Freshness::Missing => "missing".to_string(),
+            Freshness::Outdated => "outdated".to_string(),
             Freshness::Stale {
                 changed,
                 added,

@@ -1,11 +1,15 @@
 mod support;
 
+use std::fs;
+use std::path::Path;
 use std::thread;
+use std::time::{Duration, Instant};
 
-use support::index_fixture;
-use tessera_codegraph::indexer::IndexOptions;
+use assert_cmd::Command;
+use support::{graph_dump, index_fixture};
+use tessera_codegraph::indexer::{self, IndexOptions};
 use tessera_codegraph::query::{BlastArgs, FindArgs, RefsArgs};
-use tessera_codegraph::Index;
+use tessera_codegraph::{fresh, Index, Workspace};
 
 #[test]
 fn concurrent_index_and_query() {
@@ -258,4 +262,191 @@ fn unchanged_size_and_mtime_skip_rereading() {
         .unwrap();
     let report = Index::build(&root, &db, IndexOptions::default()).unwrap();
     assert_eq!((report.files_indexed, report.files_reused), (0, 1));
+}
+
+fn lock_path(db: &Path) -> std::path::PathBuf {
+    db.with_file_name(format!(
+        "{}.lock",
+        db.file_name().unwrap().to_string_lossy()
+    ))
+}
+
+#[test]
+fn query_serves_the_existing_index_while_another_writer_holds_the_lock() {
+    let (temp, db) = index_fixture("typescript");
+    let root = temp.path().join("repo");
+    fs::write(
+        root.join("src/extra.ts"),
+        "export function extra() { return 1; }\n",
+    )
+    .unwrap();
+    let lock = fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(lock_path(&db))
+        .unwrap();
+    lock.lock().unwrap();
+    let holder = rusqlite::Connection::open(&db).unwrap();
+    holder.execute_batch("BEGIN IMMEDIATE").unwrap();
+
+    let started = Instant::now();
+    let output = Command::cargo_bin("tessera")
+        .unwrap()
+        .arg("--root")
+        .arg(&root)
+        .arg("--db")
+        .arg(&db)
+        .args(["find", "findById"])
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(output.status.success(), "stderr: {stderr}");
+    assert!(String::from_utf8_lossy(&output.stdout).contains("UserRepo.findById"));
+    assert!(
+        stderr.contains("another tessera process"),
+        "stderr: {stderr}"
+    );
+    assert!(started.elapsed() < Duration::from_secs(3));
+}
+
+#[test]
+fn concurrent_refreshes_do_not_fail() {
+    let (temp, db) = index_fixture("typescript");
+    let root = temp.path().join("repo").canonicalize().unwrap();
+    for i in 0..300 {
+        fs::write(
+            root.join(format!("src/gen_{i}.ts")),
+            format!("export function gen{i}() {{ return {i}; }}\n"),
+        )
+        .unwrap();
+    }
+    let workers: Vec<_> = (0..3)
+        .map(|worker| {
+            let ws = Workspace {
+                root: root.clone(),
+                db_path: db.clone(),
+            };
+            thread::spawn(move || {
+                for round in 0..5 {
+                    fs::write(
+                        ws.root.join(format!("src/w{worker}.ts")),
+                        format!("export function w{worker}() {{ return {round}; }}\n"),
+                    )
+                    .map_err(|e| e.to_string())?;
+                    fresh::ensure(&ws).map_err(|e| format!("{e:#}"))?;
+                }
+                Ok::<_, String>(())
+            })
+        })
+        .collect();
+    let errors: Vec<String> = workers
+        .into_iter()
+        .filter_map(|w| w.join().unwrap().err())
+        .collect();
+    assert!(errors.is_empty(), "{errors:?}");
+}
+
+#[test]
+fn foreign_sqlite_file_is_never_overwritten() {
+    let temp = tempfile::TempDir::new().unwrap();
+    let root = temp.path().join("repo");
+    support::copy_dir(&support::fixture_dir("typescript"), &root);
+    let app_db = temp.path().join("app.db");
+    rusqlite::Connection::open(&app_db)
+        .unwrap()
+        .execute_batch("CREATE TABLE users(id INTEGER); INSERT INTO users VALUES (1);")
+        .unwrap();
+    let output = Command::cargo_bin("tessera")
+        .unwrap()
+        .arg("--root")
+        .arg(&root)
+        .arg("--db")
+        .arg(&app_db)
+        .args(["find", "findById"])
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("not a Tessera index"));
+    let users: i64 = rusqlite::Connection::open(&app_db)
+        .unwrap()
+        .query_row("SELECT COUNT(*) FROM users", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(users, 1);
+}
+
+#[cfg(unix)]
+#[test]
+fn unreadable_file_does_not_keep_the_index_stale() {
+    use std::os::unix::fs::PermissionsExt;
+    let (temp, db) = index_fixture("typescript");
+    let root = temp.path().join("repo");
+    let locked = root.join("src/locked.ts");
+    fs::write(&locked, "export function locked() {}\n").unwrap();
+    fs::set_permissions(&locked, fs::Permissions::from_mode(0o000)).unwrap();
+    if fs::read(&locked).is_ok() {
+        return;
+    }
+    let ws = Workspace {
+        root: root.canonicalize().unwrap(),
+        db_path: db.clone(),
+    };
+    fresh::ensure(&ws).unwrap();
+    assert_eq!(fresh::check(&ws).unwrap(), fresh::Freshness::Fresh);
+    let status = Index::open(&db).unwrap().status().unwrap();
+    assert!(
+        status
+            .hints
+            .iter()
+            .any(|h| h.contains("1 file could not be read")),
+        "{status:?}"
+    );
+    fs::set_permissions(&locked, fs::Permissions::from_mode(0o644)).unwrap();
+}
+
+#[test]
+fn explicit_paths_obey_the_same_rules_as_the_walk() {
+    let (temp, db) = index_fixture("typescript");
+    let root = temp.path().join("repo");
+    fs::write(root.join(".gitignore"), "generated/\n").unwrap();
+    for dir in ["generated", ".next/server", "dist", "node_modules/pkg"] {
+        fs::create_dir_all(root.join(dir)).unwrap();
+    }
+    for file in [
+        "generated/out.ts",
+        ".next/server/page.ts",
+        "dist/bundle.ts",
+        "node_modules/pkg/index.ts",
+    ] {
+        fs::write(root.join(file), "export function leaked() { return 1; }\n").unwrap();
+    }
+    let outside = temp.path().join("outside");
+    fs::create_dir_all(&outside).unwrap();
+    fs::write(
+        outside.join("secret.ts"),
+        "export function secret() { return 1; }\n",
+    )
+    .unwrap();
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(outside.join("secret.ts"), root.join("src/link.ts")).unwrap();
+
+    let ws = Workspace {
+        root: root.canonicalize().unwrap(),
+        db_path: db.clone(),
+    };
+    indexer::index_files(
+        &ws,
+        &[
+            "generated/out.ts".to_string(),
+            ".next/server/page.ts".to_string(),
+            "dist/bundle.ts".to_string(),
+            "node_modules/pkg/index.ts".to_string(),
+            "src/link.ts".to_string(),
+        ],
+    )
+    .unwrap();
+    let dump = graph_dump(&db).to_string();
+    assert!(!dump.contains("leaked"), "{dump}");
+    assert!(!dump.contains("secret"), "{dump}");
+    assert_eq!(fresh::check(&ws).unwrap(), fresh::Freshness::Fresh);
 }

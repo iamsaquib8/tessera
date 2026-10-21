@@ -1,11 +1,12 @@
-use std::fs::File;
+use std::fs::{self, File};
 use std::io::Read;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::time::UNIX_EPOCH;
 
 use anyhow::Result;
 use globset::{Glob, GlobSet, GlobSetBuilder};
-use ignore::WalkBuilder;
+use ignore::gitignore::{Gitignore, GitignoreBuilder};
+use ignore::{Match, WalkBuilder};
 
 use crate::config::TesseraConfig;
 use crate::indexer::IndexWarning;
@@ -42,6 +43,7 @@ pub enum SkipReason {
     Minified,
     TooLarge,
     Excluded,
+    Unreadable,
 }
 
 #[derive(Debug, Clone)]
@@ -58,6 +60,7 @@ impl SkipReason {
             Self::Minified => "minified",
             Self::TooLarge => "too_large",
             Self::Excluded => "excluded",
+            Self::Unreadable => "unreadable",
         }
     }
 }
@@ -193,14 +196,11 @@ pub fn describe(
     if !path.is_file() {
         return Ok(FileStatus::Missing);
     }
-    let in_skipped_dir = Path::new(rel_path)
-        .components()
-        .any(|c| ALWAYS_SKIP.contains(&c.as_os_str().to_string_lossy().as_ref()));
     let Some(language) = path
         .extension()
         .and_then(|ext| ext.to_str())
         .and_then(Language::from_extension)
-        .filter(|_| !in_skipped_dir)
+        .filter(|_| admits(root, rel_path, config))
     else {
         return Ok(FileStatus::Unsupported);
     };
@@ -216,6 +216,73 @@ pub fn describe(
         opts,
     )
     .map_err(|warning| anyhow::anyhow!("{}: {}", warning.path, warning.message))
+}
+
+/// Whether `discover` would visit `rel_path`: the same hidden-name, skip-list,
+/// ignore-file and symlink rules, for paths that arrive one at a time (watcher
+/// events, hook-supplied paths).
+pub fn admits(root: &Path, rel_path: &str, config: &TesseraConfig) -> bool {
+    let mut names = Vec::new();
+    for component in Path::new(rel_path).components() {
+        match component {
+            Component::Normal(name) => names.push(name.to_string_lossy().into_owned()),
+            _ => return false,
+        }
+    }
+    let Some(last) = names.len().checked_sub(1) else {
+        return false;
+    };
+    for (depth, name) in names.iter().enumerate() {
+        let is_dir = depth < last;
+        if name.starts_with('.')
+            || config.ignore_names.iter().any(|skip| skip == name)
+            || (is_dir && ALWAYS_SKIP.contains(&name.as_str()))
+            || (is_dir && depth == 0 && ROOT_SKIP.contains(&name.as_str()))
+        {
+            return false;
+        }
+    }
+    let mut dirs = vec![root.to_path_buf()];
+    let mut current = root.to_path_buf();
+    for (depth, name) in names.iter().enumerate() {
+        current.push(name);
+        let is_link = fs::symlink_metadata(&current).map_or(true, |m| m.file_type().is_symlink());
+        if is_link {
+            return false;
+        }
+        if depth < last {
+            dirs.push(current.clone());
+        }
+    }
+    !ignored_by_files(root, &dirs, &current)
+}
+
+// Deeper ignore files win over shallower ones, and within one directory
+// .tesseraignore beats .ignore beats .gitignore, as in the walk.
+fn ignored_by_files(root: &Path, dirs: &[PathBuf], path: &Path) -> bool {
+    for dir in dirs.iter().rev() {
+        for name in [".tesseraignore", ".ignore", ".gitignore"] {
+            let file = dir.join(name);
+            if !file.is_file() {
+                continue;
+            }
+            let (matcher, _) = Gitignore::new(&file);
+            match matcher.matched_path_or_any_parents(path, false) {
+                Match::Ignore(_) => return true,
+                Match::Whitelist(_) => return false,
+                Match::None => {}
+            }
+        }
+    }
+    let mut exclude = GitignoreBuilder::new(root);
+    exclude.add(root.join(".git/info/exclude"));
+    let matchers = [
+        exclude.build().unwrap_or_else(|_| Gitignore::empty()),
+        GitignoreBuilder::new(root).build_global().0,
+    ];
+    matchers
+        .iter()
+        .any(|m| matches!(m.matched_path_or_any_parents(path, false), Match::Ignore(_)))
 }
 
 fn classify(

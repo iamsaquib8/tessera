@@ -13,6 +13,8 @@ use crate::types::{
 };
 
 pub const SCHEMA_VERSION: i64 = 4;
+/// `PRAGMA application_id` of every Tessera index ("TSSR").
+pub const APPLICATION_ID: i64 = 0x5453_5352;
 
 const BUSY_TIMEOUT: Duration = Duration::from_millis(5_000);
 const CONTEXT_MAX_CHARS: usize = 200;
@@ -21,6 +23,7 @@ const CONTEXT_MAX_CHARS: usize = 200;
 pub enum DbError {
     Missing(PathBuf),
     SchemaMismatch { found: i64 },
+    NotTessera(PathBuf),
     Sqlite(rusqlite::Error),
 }
 
@@ -29,8 +32,13 @@ impl fmt::Display for DbError {
         match self {
             Self::Missing(path) => write!(
                 f,
-                "Tessera index not found at {path}. Run `tessera index . --db {path}` from the repository root.",
+                "Tessera index not found at {path}. Any query builds it, or run `tessera index`.",
                 path = path.display()
+            ),
+            Self::NotTessera(path) => write!(
+                f,
+                "{} is not a Tessera index; refusing to overwrite it. Pass a different --db path.",
+                path.display()
             ),
             Self::SchemaMismatch { found } => write!(
                 f,
@@ -56,6 +64,9 @@ pub fn open_rw(path: &Path) -> Result<Connection> {
         }
     }
     let conn = Connection::open(path)?;
+    if !is_tessera_or_empty(&conn)? {
+        return Err(DbError::NotTessera(path.to_path_buf()).into());
+    }
     conn.pragma_update(None, "journal_mode", "WAL")?;
     configure(&conn)?;
     let version = user_version(&conn)?;
@@ -63,6 +74,7 @@ pub fn open_rw(path: &Path) -> Result<Connection> {
         drop_all(&conn)?;
         create_schema(&conn)?;
         conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
+        conn.pragma_update(None, "application_id", APPLICATION_ID)?;
     }
     Ok(conn)
 }
@@ -81,6 +93,23 @@ pub fn open_ro(path: &Path) -> std::result::Result<Connection, DbError> {
         return Err(DbError::SchemaMismatch { found });
     }
     Ok(conn)
+}
+
+// Indexes written before application_id existed are recognised by their tables.
+fn is_tessera_or_empty(conn: &Connection) -> Result<bool> {
+    let id: i64 = conn.query_row("PRAGMA application_id", [], |row| row.get(0))?;
+    if id == APPLICATION_ID {
+        return Ok(true);
+    }
+    let tables: Vec<String> = conn
+        .prepare("SELECT name FROM sqlite_master WHERE type = 'table'")?
+        .query_map([], |row| row.get(0))?
+        .collect::<rusqlite::Result<_>>()?;
+    Ok(id == 0
+        && (tables.is_empty()
+            || ["meta", "files", "symbols"]
+                .iter()
+                .all(|t| tables.iter().any(|n| n == t))))
 }
 
 fn configure(conn: &Connection) -> rusqlite::Result<()> {
@@ -353,6 +382,12 @@ pub fn indexed_stats(conn: &Connection) -> Result<HashMap<String, (u64, i64)>> {
     Ok(rows.collect::<rusqlite::Result<HashMap<_, _>>>()?)
 }
 
+pub fn unreadable_paths(conn: &Connection) -> Result<Vec<String>> {
+    let mut stmt = conn.prepare("SELECT path FROM skipped_files WHERE reason = 'unreadable'")?;
+    let rows = stmt.query_map([], |row| row.get(0))?;
+    Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+}
+
 pub fn insert_file(
     conn: &Connection,
     path: &str,
@@ -602,7 +637,9 @@ mod tests {
         {
             let conn = Connection::open(&path).unwrap();
             conn.execute_batch(
-                "CREATE TABLE files (id INTEGER PRIMARY KEY, path TEXT); \
+                "CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT); \
+                 CREATE TABLE symbols (id INTEGER PRIMARY KEY, name TEXT); \
+                 CREATE TABLE files (id INTEGER PRIMARY KEY, path TEXT); \
                  INSERT INTO files(path) VALUES ('old.ts'); PRAGMA user_version = 3;",
             )
             .unwrap();

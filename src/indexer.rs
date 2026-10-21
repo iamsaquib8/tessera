@@ -1,10 +1,10 @@
 use std::collections::HashMap;
-use std::fs;
-use std::path::Path;
+use std::fs::{self, File, OpenOptions, TryLockError};
+use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use anyhow::{Context, Result};
-use rusqlite::Connection;
+use rusqlite::{Connection, Transaction, TransactionBehavior};
 use sha2::{Digest, Sha256};
 
 use crate::config::TesseraConfig;
@@ -40,7 +40,54 @@ pub enum IndexMode {
 #[derive(Debug, Clone, Default)]
 pub struct IndexOptions {
     pub full: bool,
-    pub excludes: Vec<String>,
+    /// `None` keeps the excludes persisted by an earlier run; `Some` replaces them.
+    pub excludes: Option<Vec<String>>,
+}
+
+/// Exclusive advisory lock that serialises writers of one index across processes.
+pub struct IndexLock {
+    _file: File,
+}
+
+impl IndexLock {
+    pub fn path(db_path: &Path) -> PathBuf {
+        let name = db_path.file_name().unwrap_or_default().to_string_lossy();
+        db_path.with_file_name(format!("{name}.lock"))
+    }
+
+    /// Waits until no other writer holds the lock.
+    pub fn acquire(db_path: &Path) -> Result<Self> {
+        let file = Self::open(db_path)?;
+        file.lock()
+            .with_context(|| format!("failed to lock {}", Self::path(db_path).display()))?;
+        Ok(Self { _file: file })
+    }
+
+    /// Returns `None` when another writer holds the lock.
+    pub fn try_acquire(db_path: &Path) -> Result<Option<Self>> {
+        let file = Self::open(db_path)?;
+        match file.try_lock() {
+            Ok(()) => Ok(Some(Self { _file: file })),
+            Err(TryLockError::WouldBlock) => Ok(None),
+            Err(TryLockError::Error(error)) => Err(error)
+                .with_context(|| format!("failed to lock {}", Self::path(db_path).display())),
+        }
+    }
+
+    fn open(db_path: &Path) -> Result<File> {
+        if let Some(parent) = db_path.parent() {
+            if !parent.as_os_str().is_empty() {
+                fs::create_dir_all(parent)?;
+            }
+        }
+        let path = Self::path(db_path);
+        OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(&path)
+            .with_context(|| format!("failed to open {}", path.display()))
+    }
 }
 
 pub fn index_path(root: &Path, db_path: &Path) -> Result<IndexReport> {
@@ -48,8 +95,20 @@ pub fn index_path(root: &Path, db_path: &Path) -> Result<IndexReport> {
 }
 
 const EXCLUDES_META_KEY: &str = "excludes";
+const FINGERPRINT_META_KEY: &str = "fingerprint";
 
 pub fn index_path_with(root: &Path, db_path: &Path, options: IndexOptions) -> Result<IndexReport> {
+    let lock = IndexLock::acquire(db_path)?;
+    index_path_locked(&lock, root, db_path, options)
+}
+
+/// Indexes with `lock` already held by the caller.
+pub fn index_path_locked(
+    _lock: &IndexLock,
+    root: &Path,
+    db_path: &Path,
+    options: IndexOptions,
+) -> Result<IndexReport> {
     let started = Instant::now();
     let root = root
         .canonicalize()
@@ -57,25 +116,29 @@ pub fn index_path_with(root: &Path, db_path: &Path, options: IndexOptions) -> Re
     let conn = db::open_rw(db_path)?;
     ignore_index_dir(db_path)?;
     let config = TesseraConfig::load(&root);
-    if options.full {
-        db::reset(&conn)?;
-    }
-    db::set_meta(&conn, "root", &root.to_string_lossy())?;
-    db::set_meta(
-        &conn,
-        EXCLUDES_META_KEY,
-        &serde_json::to_string(&options.excludes)?,
-    )?;
+    let excludes = match options.excludes {
+        Some(excludes) => excludes,
+        None => persisted_excludes(&conn)?,
+    };
+    let fingerprint = fingerprint(&root, &excludes);
+    let outdated = db::get_meta(&conn, FINGERPRINT_META_KEY)?.as_deref() != Some(&fingerprint);
+    let full = options.full || outdated || db::count_files(&conn)? == 0;
 
-    let mut report = IndexReport::new(if options.full || db::count_files(&conn)? == 0 {
+    let mut report = IndexReport::new(if full {
         IndexMode::Full
     } else {
         IndexMode::Incremental
     });
     let mut visited_ids: Vec<i64> = Vec::new();
-    let tx = conn.unchecked_transaction()?;
+    let tx = Transaction::new_unchecked(&conn, TransactionBehavior::Immediate)?;
+    if full {
+        db::reset(&tx)?;
+    }
+    db::set_meta(&tx, "root", &root.to_string_lossy())?;
+    db::set_meta(&tx, EXCLUDES_META_KEY, &serde_json::to_string(&excludes)?)?;
+    db::set_meta(&tx, FINGERPRINT_META_KEY, &fingerprint)?;
 
-    let discovery = walk::discover(&root, &config, &walk_options(&config, &options.excludes))?;
+    let discovery = walk::discover(&root, &config, &walk_options(&config, &excludes))?;
     report.warnings.extend(discovery.warnings);
     let mut skipped: Vec<(String, u64, i64, &str)> = discovery
         .skipped
@@ -84,19 +147,18 @@ pub fn index_path_with(root: &Path, db_path: &Path, options: IndexOptions) -> Re
         .collect();
 
     for file in &discovery.files {
-        match index_one(&tx, file, options.full, &mut report)? {
+        match index_one(&tx, file, full, &mut report)? {
             FileOutcome::Indexed(id) | FileOutcome::Reused(id) => visited_ids.push(id),
-            FileOutcome::Minified => skipped.push((
+            FileOutcome::Skipped(reason) => skipped.push((
                 file.rel_path.clone(),
                 file.size,
                 file.mtime_ns,
-                SkipReason::Minified.as_str(),
+                reason.as_str(),
             )),
-            FileOutcome::Failed => {}
         }
     }
 
-    if !options.full {
+    if !full {
         report.files_removed = db::delete_files_not_in(&tx, &visited_ids)?;
     }
     report.files_skipped = skipped.len();
@@ -107,7 +169,25 @@ pub fn index_path_with(root: &Path, db_path: &Path, options: IndexOptions) -> Re
     Ok(report)
 }
 
+/// Changes whenever the binary, `.tessera/config.toml`, or the excludes change,
+/// so an index built under different rules is rebuilt rather than trusted.
+pub fn fingerprint(root: &Path, excludes: &[String]) -> String {
+    let config = fs::read(root.join(".tessera/config.toml")).unwrap_or_default();
+    let mut hasher = Sha256::new();
+    hasher.update(env!("CARGO_PKG_VERSION"));
+    hasher.update([0]);
+    hasher.update(&config);
+    hasher.update([0]);
+    hasher.update(excludes.join("\n"));
+    format!("{:x}", hasher.finalize())
+}
+
+pub fn stored_fingerprint(conn: &Connection) -> Result<Option<String>> {
+    db::get_meta(conn, FINGERPRINT_META_KEY)
+}
+
 pub fn index_files(ws: &Workspace, rel_paths: &[String]) -> Result<IndexReport> {
+    let _lock = IndexLock::acquire(&ws.db_path)?;
     let started = Instant::now();
     let root = ws
         .root
@@ -117,7 +197,7 @@ pub fn index_files(ws: &Workspace, rel_paths: &[String]) -> Result<IndexReport> 
     let config = TesseraConfig::load(&root);
     let options = walk_options(&config, &persisted_excludes(&conn)?);
     let mut report = IndexReport::new(IndexMode::Incremental);
-    let tx = conn.unchecked_transaction()?;
+    let tx = Transaction::new_unchecked(&conn, TransactionBehavior::Immediate)?;
     for rel_path in rel_paths {
         let rel_path = rel_path.trim_start_matches("./").replace('\\', "/");
         let status = walk::describe(&root, &rel_path, &config, &options)?;
@@ -136,17 +216,11 @@ pub fn index_files(ws: &Workspace, rel_paths: &[String]) -> Result<IndexReport> 
             continue;
         };
         db::delete_skipped(&tx, &rel_path)?;
-        if index_one(&tx, &file, false, &mut report)? == FileOutcome::Minified {
+        if let FileOutcome::Skipped(reason) = index_one(&tx, &file, false, &mut report)? {
             if let Some((id, _)) = db::file_sha(&tx, &rel_path)? {
                 db::delete_file_cascade(&tx, id)?;
             }
-            db::upsert_skipped(
-                &tx,
-                &rel_path,
-                file.size,
-                file.mtime_ns,
-                SkipReason::Minified.as_str(),
-            )?;
+            db::upsert_skipped(&tx, &rel_path, file.size, file.mtime_ns, reason.as_str())?;
             report.files_skipped += 1;
         }
     }
@@ -191,8 +265,7 @@ impl IndexReport {
 enum FileOutcome {
     Indexed(i64),
     Reused(i64),
-    Minified,
-    Failed,
+    Skipped(SkipReason),
 }
 
 fn index_one(
@@ -217,7 +290,7 @@ fn index_one(
                 path: rel_path.clone(),
                 message: format!("failed to read file: {error}"),
             });
-            return Ok(FileOutcome::Failed);
+            return Ok(FileOutcome::Skipped(SkipReason::Unreadable));
         }
     };
     let content = match String::from_utf8(bytes) {
@@ -240,7 +313,7 @@ fn index_one(
         .unwrap_or_default()
         .to_string_lossy();
     if walk::is_minified(&name, content.as_bytes()) {
-        return Ok(FileOutcome::Minified);
+        return Ok(FileOutcome::Skipped(SkipReason::Minified));
     }
     let sha = format!("{:x}", Sha256::digest(content.as_bytes()));
     if !full {
@@ -260,7 +333,7 @@ fn index_one(
                 path: rel_path.clone(),
                 message: format!("failed to parse {}: {error}", file.language),
             });
-            return Ok(FileOutcome::Failed);
+            return Ok(FileOutcome::Skipped(SkipReason::Unreadable));
         }
     };
     let file_id = db::insert_file(

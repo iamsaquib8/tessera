@@ -270,3 +270,94 @@ fn first_index_is_reported_as_full() {
         .success()
         .stdout(predicate::str::starts_with("[incremental]"));
 }
+
+#[test]
+fn watch_keeps_persisted_excludes() {
+    let temp = repo("typescript");
+    tessera(temp.path())
+        .args(["index", "--exclude", "test/**"])
+        .assert()
+        .success();
+    tessera(temp.path())
+        .args(["watch", "--once"])
+        .assert()
+        .success();
+    let output = tessera(temp.path())
+        .args(["--json", "refs", "loadUser", "--tests"])
+        .output()
+        .unwrap();
+    let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(value["page"]["total"], 0, "{value}");
+}
+
+#[test]
+fn raising_max_file_bytes_reindexes_skipped_files() {
+    let temp = repo("typescript");
+    let mut big = String::from("export function bigFn7() { return 7; }\n");
+    while big.len() < 1_200_000 {
+        big.push_str("// padding padding padding padding padding padding padding\n");
+    }
+    fs::write(temp.path().join("src/big.ts"), big).unwrap();
+    tessera(temp.path())
+        .args(["find", "bigFn7"])
+        .assert()
+        .stdout(predicate::str::contains("src/big.ts").not());
+    fs::write(
+        temp.path().join(".tessera/config.toml"),
+        "[index]\nmax_file_bytes = 8_000_000\n",
+    )
+    .unwrap();
+    tessera(temp.path())
+        .args(["find", "bigFn7"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("src/big.ts"));
+}
+
+#[cfg(unix)]
+#[test]
+fn queries_do_not_run_other_binaries_on_path() {
+    use std::os::unix::fs::PermissionsExt;
+    let temp = repo("typescript");
+    let bin = TempDir::new().unwrap();
+    let marker = bin.path().join("ran");
+    let fake = bin.path().join("tessera");
+    fs::write(
+        &fake,
+        format!(
+            "#!/bin/sh\ntouch '{}'\necho tessera 0.0.1\n",
+            marker.display()
+        ),
+    )
+    .unwrap();
+    fs::set_permissions(&fake, fs::Permissions::from_mode(0o755)).unwrap();
+    let path = format!(
+        "{}:{}",
+        bin.path().display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    tessera(temp.path())
+        .env("PATH", path)
+        .args(["find", "findById"])
+        .assert()
+        .success();
+    assert!(!marker.exists(), "find ran the tessera found on PATH");
+}
+
+#[test]
+fn refuses_to_index_the_home_directory() {
+    let home = TempDir::new().unwrap();
+    fs::write(
+        home.path().join("notes.ts"),
+        "export function note() { return 1; }\n",
+    )
+    .unwrap();
+    tessera(home.path())
+        .env("HOME", home.path())
+        .env("USERPROFILE", home.path())
+        .args(["find", "note"])
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("--root"));
+    assert!(!home.path().join(".tessera").exists());
+}

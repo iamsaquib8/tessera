@@ -16,6 +16,19 @@ pub fn discover_root(start: &Path) -> PathBuf {
 }
 
 impl Workspace {
+    /// True when the root is the home directory or the filesystem root, where an
+    /// auto-built index would cover far more than one project.
+    pub fn is_too_broad(&self) -> bool {
+        if self.root.parent().is_none() {
+            return true;
+        }
+        ["HOME", "USERPROFILE"]
+            .iter()
+            .filter_map(std::env::var_os)
+            .map(PathBuf::from)
+            .any(|home| home.canonicalize().unwrap_or(home) == self.root)
+    }
+
     pub fn resolve(root: Option<&Path>, db: Option<&Path>, cwd: &Path) -> Workspace {
         let root = match root {
             Some(root) => {

@@ -7,7 +7,8 @@ use anyhow::{anyhow, Result};
 use clap::{CommandFactory, Parser, Subcommand, ValueEnum};
 use serde::Serialize;
 
-use tessera_codegraph::fresh::{self, Freshness};
+use tessera_codegraph::db;
+use tessera_codegraph::fresh::{self, Freshness, Refresh};
 use tessera_codegraph::indexer::{self, IndexMode, IndexOptions, IndexReport};
 use tessera_codegraph::init::{self, InitOptions};
 use tessera_codegraph::query::{
@@ -186,9 +187,12 @@ enum Commands {
         /// Rebuild from scratch.
         #[arg(long)]
         full: bool,
-        /// Glob (relative to the root) to skip; repeatable.
+        /// Glob (relative to the root) to skip; repeatable. Remembered by later runs.
         #[arg(long = "exclude", value_name = "GLOB")]
         exclude: Vec<String>,
+        /// Forget excludes remembered from earlier runs.
+        #[arg(long)]
+        reset_excludes: bool,
     },
     /// Keep the index fresh while files change.
     Watch {
@@ -328,6 +332,13 @@ fn run() -> Result<u8> {
     let cli = Cli::parse();
     let cwd = std::env::current_dir()?;
     let ws = Workspace::resolve(cli.root.as_deref(), cli.db.as_deref(), &cwd);
+    let needs_root = !matches!(cli.command, Commands::Completions { .. });
+    if needs_root && cli.root.is_none() && ws.is_too_broad() {
+        return Err(usage(&format!(
+            "{} is your home directory or the filesystem root, not a project; run tessera inside a repository or pass --root <dir>",
+            ws.root.display()
+        )));
+    }
     let out = Output {
         json: cli.json,
         quiet: cli.quiet,
@@ -500,6 +511,7 @@ fn run() -> Result<u8> {
             path,
             full,
             exclude,
+            reset_excludes,
         } => {
             let root = path.map(|p| cwd.join(p)).unwrap_or_else(|| ws.root.clone());
             let report = indexer::index_path_with(
@@ -507,7 +519,7 @@ fn run() -> Result<u8> {
                 &ws.db_path,
                 IndexOptions {
                     full,
-                    excludes: exclude,
+                    excludes: (reset_excludes || !exclude.is_empty()).then_some(exclude),
                 },
             )?;
             if out.json {
@@ -528,7 +540,7 @@ fn run() -> Result<u8> {
                     debounce: Duration::from_millis(debounce_ms),
                     index_options: IndexOptions {
                         full,
-                        excludes: Vec::new(),
+                        excludes: None,
                     },
                     once,
                 },
@@ -580,23 +592,28 @@ impl Output {
 fn open_fresh(ws: &Workspace, out: &Output) -> Result<Option<Index>> {
     if fresh::check(ws)? != Freshness::Fresh {
         out.progress(&format!("indexing {} …", ws.root.display()));
-        if let Some(report) = fresh::ensure(ws)? {
-            out.progress(&format!(
-                "indexed {} files, {} symbols in {}ms",
-                report.files_indexed + report.files_reused,
-                report.symbols_indexed,
-                report.elapsed_ms
-            ));
-            if !report.warnings.is_empty() {
+        match fresh::refresh(ws)? {
+            Refresh::Indexed(report) => {
                 out.progress(&format!(
-                    "{} file(s) could not be indexed; run `tessera index` to see them",
-                    report.warnings.len()
+                    "indexed {} files, {} symbols in {}ms",
+                    report.files_indexed + report.files_reused,
+                    report.symbols_indexed,
+                    report.elapsed_ms
                 ));
+                if !report.warnings.is_empty() {
+                    out.progress(&format!(
+                        "{} file(s) could not be indexed; run `tessera index` to see them",
+                        report.warnings.len()
+                    ));
+                }
             }
+            Refresh::Busy => out.progress(
+                "another tessera process is indexing; answering from the existing index, which may be slightly behind",
+            ),
         }
     }
     let index = Index::open(&ws.db_path)?;
-    if index.status()?.files == 0 {
+    if db::count_files(index.connection())? == 0 {
         let message = format!(
             "No supported source files found under {}.",
             ws.root.display()

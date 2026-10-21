@@ -1,10 +1,11 @@
 use std::collections::HashSet;
+use std::fs::File;
 
 use anyhow::Result;
 
 use crate::config::TesseraConfig;
 use crate::db::{self, DbError};
-use crate::indexer::{self, IndexOptions, IndexReport};
+use crate::indexer::{self, IndexLock, IndexOptions, IndexReport};
 use crate::walk::{self, SkipReason};
 use crate::workspace::Workspace;
 
@@ -17,7 +18,16 @@ pub enum Freshness {
         added: usize,
         removed: usize,
     },
+    /// Built by another tessera version or under a different config.
+    Outdated,
     Fresh,
+}
+
+#[derive(Debug)]
+pub enum Refresh {
+    Indexed(IndexReport),
+    /// Another process is writing the index; the existing one is still readable.
+    Busy,
 }
 
 pub fn check(ws: &Workspace) -> Result<Freshness> {
@@ -27,7 +37,11 @@ pub fn check(ws: &Workspace) -> Result<Freshness> {
         Err(error) => return Err(error.into()),
     };
     let config = TesseraConfig::load(&ws.root);
-    let options = indexer::walk_options(&config, &indexer::persisted_excludes(&conn)?);
+    let excludes = indexer::persisted_excludes(&conn)?;
+    if indexer::stored_fingerprint(&conn)? != Some(indexer::fingerprint(&ws.root, &excludes)) {
+        return Ok(Freshness::Outdated);
+    }
+    let options = indexer::walk_options(&config, &excludes);
     let discovery = walk::discover(&ws.root, &config, &options)?;
     let indexed = db::indexed_stats(&conn)?;
 
@@ -56,6 +70,11 @@ pub fn check(ws: &Workspace) -> Result<Freshness> {
         .keys()
         .filter(|path| !seen.contains(path.as_str()))
         .count();
+    // Fixing permissions changes no size or mtime, so retry unreadable files directly.
+    changed += db::unreadable_paths(&conn)?
+        .iter()
+        .filter(|path| seen.contains(path.as_str()) && File::open(ws.root.join(path)).is_ok())
+        .count();
     Ok(if changed + added + removed == 0 {
         Freshness::Fresh
     } else {
@@ -67,23 +86,25 @@ pub fn check(ws: &Workspace) -> Result<Freshness> {
     })
 }
 
+/// Brings the index up to date, waiting for any other writer to finish first.
 pub fn ensure(ws: &Workspace) -> Result<Option<IndexReport>> {
     if check(ws)? == Freshness::Fresh {
         return Ok(None);
     }
-    let excludes = match db::open_ro(&ws.db_path) {
-        Ok(conn) => indexer::persisted_excludes(&conn)?,
-        Err(_) => Vec::new(),
-    };
-    let report = indexer::index_path_with(
-        &ws.root,
-        &ws.db_path,
-        IndexOptions {
-            full: false,
-            excludes,
-        },
-    )?;
+    let report = indexer::index_path_with(&ws.root, &ws.db_path, IndexOptions::default())?;
     Ok(Some(report))
+}
+
+/// Re-indexes a stale index unless another process is already doing so and the
+/// existing index is readable; waits only when there is nothing to serve yet.
+pub fn refresh(ws: &Workspace) -> Result<Refresh> {
+    let lock = match IndexLock::try_acquire(&ws.db_path)? {
+        Some(lock) => lock,
+        None if db::open_ro(&ws.db_path).is_ok() => return Ok(Refresh::Busy),
+        None => IndexLock::acquire(&ws.db_path)?,
+    };
+    let report = indexer::index_path_locked(&lock, &ws.root, &ws.db_path, IndexOptions::default())?;
+    Ok(Refresh::Indexed(report))
 }
 
 #[cfg(test)]
@@ -165,7 +186,7 @@ mod tests {
             &ws.root,
             &ws.db_path,
             IndexOptions {
-                excludes: vec!["legacy/**".to_string()],
+                excludes: Some(vec!["legacy/**".to_string()]),
                 ..IndexOptions::default()
             },
         )
