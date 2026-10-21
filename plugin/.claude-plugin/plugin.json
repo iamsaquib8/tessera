@@ -1,0 +1,14 @@
+{
+  "name": "tessera",
+  "displayName": "Tessera",
+  "version": "0.11.0",
+  "description": "Your agent says done, Tessera checks: notes on cross-file callers before an edit, broken call sites and imports reported after it, and a stop gate until they are fixed.",
+  "author": {
+    "name": "Saquib",
+    "url": "https://github.com/iamsaquib8"
+  },
+  "homepage": "https://github.com/iamsaquib8/tessera",
+  "repository": "https://github.com/iamsaquib8/tessera",
+  "license": "Apache-2.0",
+  "keywords": ["code-graph", "refactoring", "verification", "mcp", "tree-sitter"]
+}

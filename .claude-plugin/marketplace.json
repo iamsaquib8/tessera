@@ -1,0 +1,17 @@
+{
+  "name": "tessera",
+  "owner": {
+    "name": "Saquib",
+    "url": "https://github.com/iamsaquib8"
+  },
+  "description": "Tessera: your agent says done, Tessera checks. A local code graph that catches broken call sites and imports after every edit.",
+  "plugins": [
+    {
+      "name": "tessera",
+      "source": "./plugin",
+      "description": "Edit-safety hooks, the Tessera MCP server, the /tessera skill, and /tessera:blast and /tessera:verify.",
+      "category": "development",
+      "tags": ["code-graph", "refactoring", "verification", "mcp"]
+    }
+  ]
+}
