@@ -25,6 +25,7 @@ golden!(golden_csharp, "csharp");
 golden!(golden_ruby, "ruby");
 golden!(golden_php, "php");
 golden!(golden_ts_resolution, "ts-resolution");
+golden!(golden_java_resolution, "java-resolution");
 
 #[test]
 fn golden_typescript_generic_cast() {
