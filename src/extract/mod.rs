@@ -12,7 +12,7 @@ const SIGNATURE_MAX_CHARS: usize = 180;
 /// Receiver chains longer than this are not followed.
 const MAX_MEMBER_PATH: usize = 4;
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct ParsedFile {
     pub symbols: Vec<IndexedSymbol>,
     pub references: Vec<IndexedReference>,
@@ -21,6 +21,8 @@ pub struct ParsedFile {
     pub hints: Vec<IndexedTypeHint>,
     pub module: Option<String>,
     pub has_errors: bool,
+    /// Contract facts; empty unless parsed with [`parse_file_at`].
+    pub facts: Vec<crate::facts::IndexedFact>,
 }
 
 pub trait LanguageSupport: Sync {
@@ -63,6 +65,24 @@ pub fn argument_count(args: Node<'_>) -> Option<u16> {
 }
 
 pub fn parse_file(language: Language, content: &str) -> Result<ParsedFile> {
+    Ok(parse(language, content)?.0)
+}
+
+/// Parses an indexed file: symbols and references, plus its contract facts,
+/// some of which depend on where the file lives.
+pub fn parse_file_at(language: Language, path: &str, content: &str) -> Result<ParsedFile> {
+    if language.is_data() {
+        return Ok(ParsedFile {
+            facts: crate::facts::extract(language, path, content, None),
+            ..ParsedFile::default()
+        });
+    }
+    let (mut out, tree) = parse(language, content)?;
+    out.facts = crate::facts::extract(language, path, content, Some(&tree));
+    Ok(out)
+}
+
+fn parse(language: Language, content: &str) -> Result<(ParsedFile, tree_sitter::Tree)> {
     let support = support_for(language);
     let mut parser = Parser::new();
     parser.set_language(&support.grammar())?;
@@ -77,6 +97,7 @@ pub fn parse_file(language: Language, content: &str) -> Result<ParsedFile> {
         hints: Vec::new(),
         module: None,
         has_errors: tree.root_node().has_error(),
+        facts: Vec::new(),
     };
     let mut cx = Cx::new(language, content);
     let mut cursor = tree.walk();
@@ -116,7 +137,8 @@ pub fn parse_file(language: Language, content: &str) -> Result<ParsedFile> {
                 break;
             }
             if !cursor.goto_parent() {
-                return Ok(out);
+                drop(cursor);
+                return Ok((out, tree));
             }
         }
     }

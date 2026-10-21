@@ -34,6 +34,7 @@ pub mod agents;
 pub mod config;
 pub mod db;
 pub mod extract;
+pub mod facts;
 pub mod fresh;
 pub mod hook;
 pub mod indexer;
@@ -148,6 +149,10 @@ impl Index {
 
     pub fn verify(&self, args: &VerifyArgs) -> Result<VerifyResult> {
         query::verify(&self.conn, &self.root, args)
+    }
+
+    pub fn map(&self, args: &query::MapArgs) -> Result<query::MapResult> {
+        query::map(&self.conn, &self.root, args)
     }
 
     pub fn status(&self) -> Result<StatusResult> {

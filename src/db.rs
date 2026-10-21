@@ -13,7 +13,7 @@ use crate::types::{
     ReferenceRecord, SymbolRecord,
 };
 
-pub const SCHEMA_VERSION: i64 = 7;
+pub const SCHEMA_VERSION: i64 = 8;
 /// `PRAGMA application_id` of every Tessera index ("TSSR").
 pub const APPLICATION_ID: i64 = 0x5453_5352;
 
@@ -286,6 +286,25 @@ fn create_schema(conn: &Connection) -> Result<()> {
 
         CREATE INDEX idx_hints_file ON type_hints(file_id);
 
+        -- Contract facts (routes, gRPC methods, topics, tables). Facts with
+        -- the same key link at query time.
+        CREATE TABLE facts (
+            id INTEGER PRIMARY KEY,
+            file_id INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,
+            kind TEXT NOT NULL,
+            key TEXT NOT NULL,
+            name TEXT NOT NULL,
+            line INTEGER NOT NULL,
+            symbol_id INTEGER,
+            confidence TEXT NOT NULL,
+            rule TEXT NOT NULL,
+            evidence TEXT NOT NULL
+        );
+
+        CREATE INDEX idx_facts_file ON facts(file_id);
+        CREATE INDEX idx_facts_key ON facts(key);
+        CREATE INDEX idx_facts_kind ON facts(kind);
+
         CREATE INDEX idx_imports_file ON imports(file_id);
         CREATE INDEX idx_imports_source ON imports(source);
 
@@ -305,6 +324,7 @@ pub fn reset(conn: &Connection) -> Result<()> {
         DELETE FROM imports;
         DELETE FROM import_bindings;
         DELETE FROM type_hints;
+        DELETE FROM facts;
         DELETE FROM edges;
         DELETE FROM refs;
         DELETE FROM symbols;
@@ -548,6 +568,53 @@ pub fn insert_bindings(conn: &Connection, file_id: i64, bindings: &[IndexedBindi
             b.source,
             b.kind.as_str(),
             b.line as i64
+        ])?;
+    }
+    Ok(())
+}
+
+/// Facts of one file, each tied to its handler: the symbol named by the
+/// fact, or the innermost symbol around its line.
+pub fn insert_facts(
+    conn: &Connection,
+    file_id: i64,
+    facts: &[crate::facts::IndexedFact],
+    symbols: &[crate::types::IndexedSymbol],
+    symbol_ids: &[i64],
+) -> Result<()> {
+    if facts.is_empty() {
+        return Ok(());
+    }
+    let mut insert = conn.prepare_cached(
+        "INSERT INTO facts(file_id, kind, key, name, line, symbol_id, confidence, rule, evidence)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+    )?;
+    for fact in facts {
+        let named = fact.handler.as_ref().and_then(|handler| {
+            symbols
+                .iter()
+                .position(|s| &s.name == handler && s.container.is_none())
+                .or_else(|| symbols.iter().position(|s| &s.name == handler))
+        });
+        let around = || {
+            symbols
+                .iter()
+                .enumerate()
+                .filter(|(_, s)| s.start_line <= fact.line && fact.line <= s.end_line)
+                .min_by_key(|(_, s)| s.end_line - s.start_line)
+                .map(|(index, _)| index)
+        };
+        let symbol_id = named.or_else(around).map(|index| symbol_ids[index]);
+        insert.execute(params![
+            file_id,
+            fact.kind,
+            fact.key,
+            fact.name,
+            fact.line as i64,
+            symbol_id,
+            fact.confidence,
+            fact.rule,
+            fact.evidence
         ])?;
     }
     Ok(())

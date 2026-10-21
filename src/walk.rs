@@ -164,11 +164,7 @@ pub fn discover(root: &Path, config: &TesseraConfig, opts: &WalkOptions) -> Resu
             continue;
         }
         let path = entry.path();
-        let Some(language) = path
-            .extension()
-            .and_then(|ext| ext.to_str())
-            .and_then(Language::from_extension)
-        else {
+        let Some(language) = Language::from_path(path) else {
             continue;
         };
         let rel_path = relative_path(root, path);
@@ -196,11 +192,7 @@ pub fn describe(
     if !path.is_file() {
         return Ok(FileStatus::Missing);
     }
-    let Some(language) = path
-        .extension()
-        .and_then(|ext| ext.to_str())
-        .and_then(Language::from_extension)
-        .filter(|_| admits(root, rel_path, config))
+    let Some(language) = Language::from_path(&path).filter(|_| admits(root, rel_path, config))
     else {
         return Ok(FileStatus::Unsupported);
     };

@@ -161,6 +161,13 @@ enum Commands {
         #[arg(long, value_enum, default_value_t = VerifyFormat::Human)]
         format: VerifyFormat,
     },
+    /// Contracts between services: gRPC methods with their servers and clients.
+    Map {
+        /// Contract kind: rpc.
+        kind: Option<String>,
+        /// Only contracts whose name or files contain this.
+        query: Option<String>,
+    },
     /// One budgeted bundle to read before editing a symbol.
     Context {
         /// Symbol name.
@@ -563,6 +570,12 @@ fn run() -> Result<u8> {
             if !result.ok {
                 return Ok(EXIT_FINDINGS);
             }
+        }
+        Commands::Map { kind, query } => {
+            let Some(index) = open_fresh(&ws, &out)? else {
+                return Ok(0);
+            };
+            out.print(&index.map(&query::MapArgs { kind, query })?)?;
         }
         Commands::Context { symbol, budget } => {
             let Some(index) = open_fresh(&ws, &out)? else {

@@ -23,6 +23,11 @@ pub enum Language {
     CSharp,
     Ruby,
     Php,
+    /// Data files read for contract facts only, with no symbols.
+    Proto,
+    Sql,
+    OpenApi,
+    Prisma,
 }
 
 impl Language {
@@ -42,8 +47,29 @@ impl Language {
             "cs" => Some(Self::CSharp),
             "rb" => Some(Self::Ruby),
             "php" | "phtml" => Some(Self::Php),
+            "proto" => Some(Self::Proto),
+            "sql" => Some(Self::Sql),
+            "prisma" => Some(Self::Prisma),
             _ => None,
         }
+    }
+
+    /// The language of a file by name: OpenAPI documents are YAML or JSON
+    /// named after the spec (`openapi.yaml`, `petstore-swagger.json`).
+    pub fn from_path(path: &std::path::Path) -> Option<Self> {
+        let ext = path.extension()?.to_str()?;
+        let stem = path.file_stem()?.to_string_lossy().to_lowercase();
+        if matches!(ext, "yaml" | "yml" | "json")
+            && (stem.contains("openapi") || stem.contains("swagger"))
+        {
+            return Some(Self::OpenApi);
+        }
+        Self::from_extension(ext)
+    }
+
+    /// Read for contract facts only; no grammar, no symbols.
+    pub fn is_data(&self) -> bool {
+        matches!(self, Self::Proto | Self::Sql | Self::OpenApi | Self::Prisma)
     }
 
     pub fn from_name(name: &str) -> Option<Self> {
@@ -79,6 +105,10 @@ impl Language {
             Self::CSharp => "csharp",
             Self::Ruby => "ruby",
             Self::Php => "php",
+            Self::Proto => "proto",
+            Self::Sql => "sql",
+            Self::OpenApi => "openapi",
+            Self::Prisma => "prisma",
         }
     }
 }

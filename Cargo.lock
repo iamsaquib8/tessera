@@ -918,6 +918,7 @@ dependencies = [
  "insta",
  "notify-debouncer-mini",
  "predicates",
+ "regex",
  "rusqlite",
  "serde",
  "serde_json",
