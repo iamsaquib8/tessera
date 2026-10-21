@@ -109,6 +109,19 @@ pub(super) fn js_symbol(cx: &Cx<'_>, node: Node<'_>) -> Option<IndexedSymbol> {
                 None => return None,
             }
         }
+        // `save: (doc: Doc) => Promise<void>` in an interface or type literal
+        // declares a method as much as `save(doc: Doc): Promise<void>` does.
+        "property_signature" => {
+            let function = node
+                .child_by_field_name("type")
+                .and_then(|annotation| annotation.named_child(0))
+                .filter(|ty| ty.kind() == "function_type")?;
+            (
+                cx.text(node.child_by_field_name("name")?),
+                "method",
+                Some(function),
+            )
+        }
         // `onClick = () => {…}` and `static create = (…) => …` in a class body
         // behave as methods.
         "public_field_definition" | "field_definition" => {
@@ -466,6 +479,26 @@ pub(super) fn js_hints(cx: &Cx<'_>, node: Node<'_>, out: &mut Vec<IndexedTypeHin
                 push(class, format!("this.{name}"), ty, HintOrigin::Field);
             }
         }
+        // `interface Deps { repo: Repo }` and `type Deps = { repo: Repo }`:
+        // a receiver typed `Deps` has a field `repo` of type `Repo`.
+        "property_signature" => {
+            let (Some(name), Some(ty)) = (
+                node.child_by_field_name("name"),
+                node.child_by_field_name("type")
+                    .and_then(|t| type_name(cx, t)),
+            ) else {
+                return;
+            };
+            let owner = type_owner(cx, node);
+            if owner.is_some() {
+                push(
+                    owner,
+                    format!("this.{}", cx.text(name)),
+                    ty,
+                    HintOrigin::Field,
+                );
+            }
+        }
         "public_field_definition" | "field_definition" => {
             let Some(name) = node
                 .child_by_field_name("name")
@@ -783,6 +816,24 @@ fn overload_start(cx: &Cx<'_>, function: Node<'_>, name: &str, signature_kind: &
         previous = sibling.prev_named_sibling();
     }
     start
+}
+
+/// The interface or type alias a property signature belongs to.
+fn type_owner(cx: &Cx<'_>, property: Node<'_>) -> Option<String> {
+    let body = property.parent()?;
+    let owner = match body.kind() {
+        "interface_body" | "object_type" => body.parent()?,
+        _ => return None,
+    };
+    let declaration = match owner.kind() {
+        "interface_declaration" | "type_alias_declaration" => owner,
+        _ => return None,
+    };
+    let name = cx.text(declaration.child_by_field_name("name")?);
+    Some(match cx.scope_around(declaration) {
+        Some(scope) if !scope.is_empty() && scope != name => format!("{scope}.{name}"),
+        _ => name,
+    })
 }
 
 /// A declarator in a `const`/`let`/`var` statement directly in the program,
