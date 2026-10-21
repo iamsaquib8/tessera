@@ -92,6 +92,9 @@ installs a pre-commit hook that runs `tessera verify --staged`. A commit
 whose changes break a call site or an import is refused, whichever agent (or
 person) made it. `git commit --no-verify` skips it once. An existing
 pre-commit hook is never replaced; `init` prints the line to add instead.
+`verify --staged` checks the staged files as they are in the working tree:
+when only part of a file's changes is staged, the unstaged part is checked
+too.
 
 ## Session files and turning it off
 
