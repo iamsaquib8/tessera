@@ -217,3 +217,77 @@ fn agent_format_is_terse_and_sarif_is_valid() {
     assert_eq!(value["version"], "2.1.0");
     assert_eq!(value["runs"][0]["results"][0]["ruleId"], "V1");
 }
+
+#[test]
+fn comments_typed_arrows_and_tagged_templates_never_make_an_arity_mismatch() {
+    let temp = repo();
+    fs::write(
+        temp.path().join("src/shapes.ts"),
+        "export const scale = (\n  value: number,\n  /** optional factor */\n  factor = 2,\n) => value * factor;\n\n\
+         export function at(\n  points: number[],\n  index: number, // -1 for last\n): number {\n  return points[index];\n}\n\n\
+         type Render = (ui: string, options?: object) => void;\n\
+         export const render: Render = (ui, options) => {};\n\n\
+         export const tag = (parts: TemplateStringsArray, name: string) => parts[0] + name;\n",
+    )
+    .unwrap();
+    fs::write(
+        temp.path().join("src/use.ts"),
+        "import { scale, at, render, tag } from \"./shapes\";\n\n\
+         export function use() {\n  scale(1);\n  at([1], /* last */ 0);\n  render(\"x\");\n  return tag`hello ${\"you\"}`;\n}\n",
+    )
+    .unwrap();
+    fs::write(
+        temp.path().join("src/Job.java"),
+        "class Job {\n  int run(int a, /* b */ int b) { return a + b; }\n  int go() { return run(1, /* two */ 2); }\n}\n",
+    )
+    .unwrap();
+    let (code, findings, _) = verify_changed(temp.path());
+    assert_eq!(code, 0, "{findings:?}");
+    assert!(findings.iter().all(|f| f.starts_with("V6")), "{findings:?}");
+}
+
+#[test]
+fn properties_default_expressions_and_destructured_exports_exist() {
+    let temp = repo();
+    fs::write(
+        temp.path().join("src/Holder.ts"),
+        "export class Holder {\n  public handler: (() => void) | null = null;\n  private readonly done?: () => void;\n}\n",
+    )
+    .unwrap();
+    fs::write(
+        temp.path().join("src/Panel.tsx"),
+        "import React from \"react\";\nconst Panel = () => null;\nexport default React.memo(Panel);\n",
+    )
+    .unwrap();
+    fs::write(
+        temp.path().join("src/config.ts"),
+        "export default { name: \"x\" };\n",
+    )
+    .unwrap();
+    fs::write(
+        temp.path().join("src/store.ts"),
+        "import * as jotai from \"jotai\";\nexport const { useAtom, useSetAtom } = jotai;\n",
+    )
+    .unwrap();
+    fs::write(
+        temp.path().join("src/app.ts"),
+        "import { Holder } from \"./Holder\";\nimport Panel from \"./Panel\";\nimport config from \"./config\";\nimport { useAtom } from \"./store\";\n\n\
+         export function app() {\n  const h = new Holder();\n  h.handler?.();\n  useAtom();\n  return [Panel, config];\n}\n",
+    )
+    .unwrap();
+    let (code, findings, _) = verify_changed(temp.path());
+    assert_eq!(code, 0, "{findings:?}");
+}
+
+#[test]
+fn a_call_on_a_call_result_has_no_name_of_its_own() {
+    let temp = repo();
+    fs::write(
+        temp.path().join("src/events.ts"),
+        "export function handle() {}\nexport function make(event: string) {\n  return (a: number, b: number) => a + b;\n}\n\
+         export function fire() {\n  return make(\"handle\")(1, 2);\n}\n",
+    )
+    .unwrap();
+    let (code, findings, _) = verify_changed(temp.path());
+    assert_eq!(code, 0, "{findings:?}");
+}

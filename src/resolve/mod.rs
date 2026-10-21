@@ -66,7 +66,7 @@ pub fn resolve(conn: &Connection, root: &Path, scope: ResolveScope) -> Result<Re
         }
     };
     let modules = ModuleResolver::build(conn, root)?;
-    let mut resolver = scope::Resolver::new(conn, modules, full)?;
+    let mut resolver = scope::Resolver::new(conn, root, modules, full)?;
     let mut set_target = conn
         .prepare_cached("UPDATE import_bindings SET target_path = ?2, status = ?3 WHERE id = ?1")?;
     let mut delete_edges = conn.prepare_cached(

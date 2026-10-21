@@ -88,7 +88,7 @@ impl LanguageSupport for Java {
                     let mut reference = type_reference(cx, head, "new", node);
                     reference.arg_count = node
                         .child_by_field_name("arguments")
-                        .map(|args| args.named_child_count() as u16);
+                        .and_then(crate::extract::argument_count);
                     out.push(reference);
                 }
             }

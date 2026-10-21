@@ -1,4 +1,5 @@
 use std::collections::{HashMap, HashSet};
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
 use anyhow::Result;
@@ -167,6 +168,7 @@ enum Receiver {
 
 pub(super) struct Resolver<'c> {
     conn: &'c Connection,
+    root: PathBuf,
     pub modules: ModuleResolver,
     files: HashMap<i64, Rc<FileInfo>>,
     symbols: HashMap<i64, Rc<Sym>>,
@@ -178,9 +180,15 @@ pub(super) struct Resolver<'c> {
 }
 
 impl<'c> Resolver<'c> {
-    pub fn new(conn: &'c Connection, modules: ModuleResolver, preload: bool) -> Result<Self> {
+    pub fn new(
+        conn: &'c Connection,
+        root: &Path,
+        modules: ModuleResolver,
+        preload: bool,
+    ) -> Result<Self> {
         let mut resolver = Self {
             conn,
+            root: root.to_path_buf(),
             modules,
             files: HashMap::new(),
             symbols: HashMap::new(),
@@ -385,7 +393,8 @@ impl<'c> Resolver<'c> {
                     _ => Ok("ok"),
                 }
             }
-            "re_export" | "re_export_all" if local => Ok(
+            // Source "." is this file (`export default Panel`), not a path.
+            "re_export" | "re_export_all" if local && binding.source != "." => Ok(
                 match self.module(&file.path, &binding.source, file.language) {
                     ModuleTarget::Unresolved => "missing_module",
                     _ => "ok",
@@ -448,7 +457,9 @@ impl<'c> Resolver<'c> {
                         }
                         if found.is_empty() && confidence == "high" {
                             if let Some(path) = self.closed_class_file(&classes)? {
-                                return Ok(Resolution::missing(path));
+                                if !self.declares_property(&classes, name, 0)? {
+                                    return Ok(Resolution::missing(path));
+                                }
                             }
                         }
                         if found.is_empty() {
@@ -932,6 +943,11 @@ impl<'c> Resolver<'c> {
         if receiver.starts_with(|c: char| c.is_uppercase()) {
             let resolution = self.resolve_type(file, chain, receiver, false, depth + 1)?;
             if resolution.confidence == "high" {
+                if let [variable] = resolution.targets[..] {
+                    if self.symbol(variable)?.is_some_and(|sym| sym.kind == "variable") {
+                        return self.variable_type(variable, depth);
+                    }
+                }
                 return Ok(Receiver::Class(resolution.targets, "high", "static"));
             }
             if resolution.resolver == Some("external") {
@@ -939,6 +955,20 @@ impl<'c> Resolver<'c> {
             }
         }
         Ok(Receiver::Unknown)
+    }
+
+    /// The type of a variable defined elsewhere (`export const Factory = new
+    /// FactoryStatic()`), from the hint in its own file.
+    fn variable_type(&mut self, variable: i64, depth: usize) -> Result<Receiver> {
+        let Some(sym) = self.symbol(variable)? else {
+            return Ok(Receiver::Unknown);
+        };
+        let file = self.file(sym.file_id)?;
+        let chain = vec![sym.container.clone(), None];
+        match self.hint(&file, &chain, &sym.name) {
+            Some((type_name, origin)) => self.typed(&file, &chain, &type_name, &origin, depth + 1),
+            None => Ok(Receiver::Unknown),
+        }
     }
 
     /// `a.b.c`: resolve `a.b`, then the declared type of its field `c`.
@@ -1213,6 +1243,40 @@ impl<'c> Resolver<'c> {
         Ok(first)
     }
 
+    /// Whether one of `classes` or its supertypes declares a property
+    /// `name` (`handler: Fn | null = null`). Properties are not symbols, so
+    /// this reads the class body, which happens only before a member is
+    /// reported missing.
+    fn declares_property(&mut self, classes: &[i64], name: &str, depth: usize) -> Result<bool> {
+        if depth > MAX_DEPTH {
+            return Ok(true);
+        }
+        for &class in classes {
+            let Some(sym) = self.symbol(class)? else {
+                continue;
+            };
+            let file = self.file(sym.file_id)?;
+            let (start, end): (i64, i64) = self.conn.query_row(
+                "SELECT start_line, end_line FROM symbols WHERE id = ?1",
+                params![class],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )?;
+            let text = std::fs::read_to_string(self.root.join(&file.path)).unwrap_or_default();
+            let body = text
+                .lines()
+                .skip(start.saturating_sub(1) as usize)
+                .take((end - start + 1).max(0) as usize);
+            if body.into_iter().any(|line| declares(line, name)) {
+                return Ok(true);
+            }
+            let parents = self.supers(class)?;
+            if self.declares_property(&parents, name, depth + 1)? {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
     fn closed(&mut self, class: i64, depth: usize) -> Result<bool> {
         if depth > MAX_DEPTH {
             return Ok(false);
@@ -1221,6 +1285,17 @@ impl<'c> Resolver<'c> {
             return Ok(false);
         };
         let file = self.file(sym.file_id)?;
+        // A type alias, a variable, or a TypeScript interface (index
+        // signatures, declaration merging) can carry members it does not
+        // declare; only classes and Java's types list them all.
+        let closable = match sym.kind.as_str() {
+            "class" | "enum" | "record" => true,
+            "interface" | "annotation" => file.language == Language::Java,
+            _ => false,
+        };
+        if !closable {
+            return Ok(false);
+        }
         let extends: Vec<(String, Option<String>)> = self
             .conn
             .prepare_cached(
@@ -1398,5 +1473,23 @@ fn map_sym(row: &rusqlite::Row<'_>) -> rusqlite::Result<Sym> {
         exported: row.get(6)?,
         default_export: row.get(7)?,
         arity: min.map(|min| (min, max)),
+    })
+}
+
+/// `public readonly name?: T = …;` and the like: a property declaration of
+/// `name` on this line.
+fn declares(line: &str, name: &str) -> bool {
+    const MODIFIERS: &[&str] = &[
+        "public ", "private ", "protected ", "readonly ", "static ", "declare ", "override ",
+        "accessor ",
+    ];
+    let mut rest = line.trim_start();
+    while let Some(after) = MODIFIERS.iter().find_map(|m| rest.strip_prefix(m)) {
+        rest = after.trim_start();
+    }
+    let rest = rest.strip_prefix('#').unwrap_or(rest);
+    rest.strip_prefix(name).is_some_and(|after| {
+        let after = after.trim_start_matches(['?', '!']).trim_start();
+        after.starts_with(':') || after.starts_with('=') || after.starts_with(';')
     })
 }

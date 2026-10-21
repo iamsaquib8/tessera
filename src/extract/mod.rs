@@ -48,6 +48,20 @@ pub fn support_for(language: Language) -> &'static dyn LanguageSupport {
     lang::support_for(language)
 }
 
+/// The arguments in a call's argument list, comments aside; `None` for a
+/// tagged template, whose "arguments" are a template string.
+pub fn argument_count(args: Node<'_>) -> Option<u16> {
+    if args.kind() == "template_string" {
+        return None;
+    }
+    let mut cursor = args.walk();
+    let count = args
+        .named_children(&mut cursor)
+        .filter(|arg| !arg.is_extra())
+        .count();
+    Some(count as u16)
+}
+
 pub fn parse_file(language: Language, content: &str) -> Result<ParsedFile> {
     let support = support_for(language);
     let mut parser = Parser::new();
@@ -236,7 +250,7 @@ impl<'a> Cx<'a> {
         }
         reference.arg_count = node
             .child_by_field_name("arguments")
-            .map(|args| args.named_child_count() as u16);
+            .and_then(argument_count);
         Some(reference)
     }
 
@@ -347,6 +361,13 @@ impl<'a> Cx<'a> {
             "subscript" => node
                 .child_by_field_name("value")
                 .and_then(|child| self.called_name(child)),
+            // `make("handle")(1, 2)`: the called thing is a value, with no
+            // name of its own; the last identifier inside it is not one.
+            "call_expression" | "call" | "invocation_expression" | "method_invocation"
+            | "parenthesized_expression" | "await_expression" | "new_expression"
+            | "object_creation_expression" | "arrow_function" | "function_expression"
+            | "function" | "lambda" | "subscript_expression" | "index_expression"
+            | "element_access_expression" | "string" | "template_string" => None,
             _ => Some(last_identifier(&self.text(node))).filter(|name| !name.is_empty()),
         }
     }

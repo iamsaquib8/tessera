@@ -257,3 +257,39 @@ fn a_call_on_a_new_expression_resolves_to_the_class() {
         &["run -call-> get", "run -call-> repo.ts:UserRepo.get"],
     );
 }
+
+#[test]
+fn only_closed_classes_make_a_missing_member() {
+    let (_temp, ws) = repo_with(&[
+        (
+            "types.ts",
+            "export type ElementsMap = Map<string, number>;\nexport interface Route {\n  path: string;\n}\nexport interface Callable extends Function {}\n",
+        ),
+        (
+            "factory.ts",
+            "class FactoryStatic {\n  create() { return 1; }\n}\nexport const Factory = new FactoryStatic();\n",
+        ),
+        (
+            "schema.ts",
+            "import { z } from \"zod\";\nexport const Schema = z.object({});\n",
+        ),
+        (
+            "main.ts",
+            "import { ElementsMap, Route, Callable } from \"./types\";\nimport { Factory } from \"./factory\";\nimport { Schema } from \"./schema\";\n\
+             export function run(m: ElementsMap, r: Route, c: Callable) {\n  m.get(\"a\");\n  r.handler();\n  c.bind(null);\n  Schema.parse({});\n  Factory.create();\n  Factory.creat();\n}\n",
+        ),
+    ]);
+    let all = edges(&ws.db_path);
+    assert_has(
+        &all,
+        &[
+            "run -call-> factory.ts:FactoryStatic.create [high/hint]",
+            "run -call-> creat [high/missing]",
+        ],
+    );
+    let missing: Vec<&String> = all
+        .iter()
+        .filter(|e| e.ends_with("[high/missing]") && !e.contains("creat"))
+        .collect();
+    assert!(missing.is_empty(), "{missing:#?}");
+}

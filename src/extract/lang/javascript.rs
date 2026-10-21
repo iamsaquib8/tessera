@@ -79,6 +79,28 @@ pub(super) fn js_symbol(cx: &Cx<'_>, node: Node<'_>) -> Option<IndexedSymbol> {
             None,
         ),
         "type_alias_declaration" => (cx.text(node.child_by_field_name("name")?), "type", None),
+        // `export default { … }` or `export default makeStore()`: the module
+        // has a default export even though nothing names it.
+        "export_statement" => {
+            let value = node.child_by_field_name("value")?;
+            if !is_default_export_statement(node)
+                || value.kind() == "identifier"
+                || FUNCTION_KINDS.contains(&value.kind())
+                || value.kind() == "class"
+                || wrapped_identifier(cx, value).is_some()
+            {
+                return None;
+            }
+            let mut symbol = cx.symbol("default".to_string(), "variable", node, true);
+            symbol.default_export = true;
+            return Some(symbol);
+        }
+        // `export const { useAtom, useSetAtom } = jotai;` defines each name.
+        "shorthand_property_identifier_pattern" | "identifier"
+            if destructured_module_binding(cx, node) =>
+        {
+            (cx.text(node), "variable", None)
+        }
         "enum_declaration" => (cx.text(node.child_by_field_name("name")?), "enum", None),
         // In a class body a bodiless signature is an overload of the method
         // that follows; that method's symbol spans it.
@@ -164,7 +186,15 @@ pub(super) fn js_symbol(cx: &Cx<'_>, node: Node<'_>) -> Option<IndexedSymbol> {
         }
         _ => {}
     }
-    symbol.arity = params.and_then(|p| arity(cx, p));
+    // `const render: Render = (ui, options) => …`: the declared type, not the
+    // arrow's own parameter list, says how it may be called.
+    let typed = matches!(
+        node.kind(),
+        "variable_declarator" | "public_field_definition" | "field_definition"
+    ) && node.child_by_field_name("type").is_some();
+    if !typed {
+        symbol.arity = params.and_then(|p| arity(cx, p));
+    }
     Some(symbol)
 }
 
@@ -337,10 +367,14 @@ pub(super) fn js_bindings(cx: &Cx<'_>, node: Node<'_>, out: &mut Vec<IndexedBind
                 push("*".into(), None, from, BindingKind::ReExportAll);
             } else if is_default_export_statement(node) {
                 if let Some(value) = node.child_by_field_name("value") {
-                    if value.kind() == "identifier" {
+                    let exported = match value.kind() {
+                        "identifier" => Some(value),
+                        _ => wrapped_identifier(cx, value),
+                    };
+                    if let Some(exported) = exported {
                         push(
                             "default".into(),
-                            Some(cx.text(value)),
+                            Some(cx.text(exported)),
                             ".",
                             BindingKind::ReExport,
                         );
@@ -581,7 +615,7 @@ fn arity(cx: &Cx<'_>, function: Node<'_>) -> Option<(u16, Option<u16>)> {
     let mut cursor = params.walk();
     let (mut required, mut total, mut variadic) = (0u16, 0u16, false);
     let children: Vec<Node<'_>> = params.named_children(&mut cursor).collect();
-    for param in children {
+    for param in children.into_iter().filter(|param| !param.is_extra()) {
         let pattern = param.child_by_field_name("pattern").unwrap_or(param);
         let optional = param.kind() == "optional_parameter"
             || param.child_by_field_name("value").is_some()
@@ -621,6 +655,63 @@ fn callback_name(cx: &Cx<'_>, function: Node<'_>) -> Option<String> {
         Some(label) => format!("{callee}({label})"),
         None => format!("{callee}(…)"),
     })
+}
+
+/// `X` in `React.memo(X, areEqual)`, `forwardRef(X)` and the like.
+fn wrapped_identifier<'t>(cx: &Cx<'_>, value: Node<'t>) -> Option<Node<'t>> {
+    if value.kind() != "call_expression" {
+        return None;
+    }
+    let callee = cx.text(value.child_by_field_name("function")?);
+    if !COMPONENT_WRAPPERS.contains(&last_segment(&callee).as_str()) {
+        return None;
+    }
+    value
+        .child_by_field_name("arguments")?
+        .named_child(0)
+        .filter(|arg| arg.kind() == "identifier")
+}
+
+/// A name bound by destructuring in a module-level declaration:
+/// `const { a, b: c } = x` binds `a` and `c`, `const [d] = y` binds `d`.
+fn destructured_module_binding(cx: &Cx<'_>, node: Node<'_>) -> bool {
+    let Some(parent) = node.parent() else {
+        return false;
+    };
+    let pattern = match (node.kind(), parent.kind()) {
+        ("shorthand_property_identifier_pattern", "object_pattern") => parent,
+        ("identifier", "array_pattern") => parent,
+        ("identifier", "pair_pattern")
+            if parent.child_by_field_name("value").is_some_and(|v| v.id() == node.id()) =>
+        {
+            match parent.parent() {
+                Some(object) if object.kind() == "object_pattern" => object,
+                _ => return false,
+            }
+        }
+        _ => return false,
+    };
+    pattern.parent().is_some_and(|declarator| {
+        declarator.kind() == "variable_declarator"
+            && declarator
+                .child_by_field_name("name")
+                .is_some_and(|name| name.id() == pattern.id())
+            && !declarator
+                .child_by_field_name("value")
+                .is_some_and(|value| is_require_call(cx, value))
+            && is_module_level(declarator)
+    })
+}
+
+/// `require("x")` or `await import("x")`: an import, not a definition.
+fn is_require_call(cx: &Cx<'_>, value: Node<'_>) -> bool {
+    let call = match value.kind() {
+        "await_expression" => value.named_child(0),
+        _ => Some(value),
+    };
+    call.filter(|call| call.kind() == "call_expression")
+        .and_then(|call| call.child_by_field_name("function"))
+        .is_some_and(|function| function.kind() == "import" || cx.text(function) == "require")
 }
 
 fn wrapped_component<'t>(cx: &Cx<'_>, value: Node<'t>) -> Option<Node<'t>> {
