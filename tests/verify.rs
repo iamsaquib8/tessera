@@ -247,6 +247,41 @@ fn comments_typed_arrows_and_tagged_templates_never_make_an_arity_mismatch() {
 }
 
 #[test]
+fn v3_skips_a_function_that_calls_its_own_parameter() {
+    let temp = repo();
+    fs::write(
+        temp.path().join("src/apply.ts"),
+        "import { formatName } from \"./util/format\";\n\n\
+         export function apply(formatName: (s: string) => string): string {\n  return formatName(\"x\");\n}\n\n\
+         export const names = [formatName];\n",
+    )
+    .unwrap();
+    commit_all(temp.path());
+    edit(
+        temp.path(),
+        "src/util/format.ts",
+        "export function formatName(",
+        "export function formatDisplayName(",
+    );
+    edit(
+        temp.path(),
+        "src/util/format.ts",
+        "return formatName(id);",
+        "return formatDisplayName(id);",
+    );
+    let (code, findings, _) = verify_changed(temp.path());
+    assert_eq!(code, 1);
+    assert!(
+        findings.contains(&"V3 src/users/repo.ts:7".to_string()),
+        "{findings:?}"
+    );
+    assert!(
+        !findings.contains(&"V3 src/apply.ts:4".to_string()),
+        "{findings:?}"
+    );
+}
+
+#[test]
 fn v4_a_barrel_re_exporting_a_renamed_name_is_broken() {
     let temp = repo();
     fs::write(

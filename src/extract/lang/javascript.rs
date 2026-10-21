@@ -2,8 +2,8 @@ use tree_sitter::Node;
 
 use crate::extract::{first_child_with_kinds, strip_quotes, Cx, LanguageSupport};
 use crate::types::{
-    BindingKind, HintOrigin, IndexedBinding, IndexedImport, IndexedReference, IndexedSymbol,
-    IndexedTypeHint, Language, Receiver,
+    BindingKind, HintOrigin, IndexedBinding, IndexedImport, IndexedLocal, IndexedReference,
+    IndexedSymbol, IndexedTypeHint, Language, Receiver,
 };
 
 pub struct JavaScript;
@@ -55,6 +55,10 @@ impl LanguageSupport for JavaScript {
 
     fn hints(&self, cx: &Cx<'_>, node: Node<'_>, out: &mut Vec<IndexedTypeHint>) {
         js_hints(cx, node, out)
+    }
+
+    fn locals(&self, cx: &Cx<'_>, node: Node<'_>, out: &mut Vec<IndexedLocal>) {
+        js_locals(cx, node, out)
     }
 
     fn skip_ref_names(&self) -> &'static [&'static str] {
@@ -681,6 +685,109 @@ pub(super) fn js_hints(cx: &Cx<'_>, node: Node<'_>, out: &mut Vec<IndexedTypeHin
             };
             if let Some(ty) = type_name(cx, ret) {
                 push(scope, cx.text(name), ty, HintOrigin::Return);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Parameters, catch and loop variables, and variables declared inside a
+/// function, in the scope that declares them. Module-level declarations are
+/// symbols or imports instead.
+pub(super) fn js_locals(cx: &Cx<'_>, node: Node<'_>, out: &mut Vec<IndexedLocal>) {
+    const FUNCTIONS: &[&str] = &[
+        "arrow_function",
+        "function_expression",
+        "function",
+        "function_declaration",
+        "generator_function",
+        "generator_function_declaration",
+        "method_definition",
+    ];
+    let mut names = Vec::new();
+    let scope = match node.kind() {
+        "formal_parameters" if node.parent().is_some_and(|p| FUNCTIONS.contains(&p.kind())) => {
+            let mut cursor = node.walk();
+            let params: Vec<Node<'_>> = node.named_children(&mut cursor).collect();
+            for param in params {
+                pattern_names(cx, param, &mut names);
+            }
+            cx.current_scope()
+        }
+        // `x => x()`: one parameter and no parentheses.
+        "arrow_function" => {
+            let Some(param) = node.child_by_field_name("parameter") else {
+                return;
+            };
+            pattern_names(cx, param, &mut names);
+            cx.current_scope()
+        }
+        "variable_declarator" => {
+            let value = node.child_by_field_name("value");
+            let defines = value.is_some_and(|v| {
+                FUNCTION_KINDS.contains(&v.kind())
+                    || is_require_call(cx, v)
+                    || v.child_by_field_name("object")
+                        .is_some_and(|object| is_require_call(cx, object))
+            });
+            if is_module_level(node) || defines {
+                return;
+            }
+            if let Some(name) = node.child_by_field_name("name") {
+                pattern_names(cx, name, &mut names);
+            }
+            cx.scope_around(node)
+        }
+        "catch_clause" => {
+            let Some(param) = node.child_by_field_name("parameter") else {
+                return;
+            };
+            pattern_names(cx, param, &mut names);
+            cx.current_scope()
+        }
+        // `for (const x of xs)`; without a declaration it assigns an outer name.
+        "for_in_statement" if node.child_by_field_name("kind").is_some() => {
+            let Some(left) = node.child_by_field_name("left") else {
+                return;
+            };
+            pattern_names(cx, left, &mut names);
+            cx.current_scope()
+        }
+        _ => return,
+    };
+    out.extend(names.into_iter().map(|name| IndexedLocal {
+        scope: scope.map(ToOwned::to_owned),
+        name,
+    }));
+}
+
+/// The names a parameter or a destructuring pattern binds.
+fn pattern_names(cx: &Cx<'_>, node: Node<'_>, out: &mut Vec<String>) {
+    match node.kind() {
+        "identifier" | "shorthand_property_identifier_pattern" => out.push(cx.text(node)),
+        "required_parameter" | "optional_parameter" => {
+            if let Some(pattern) = node.child_by_field_name("pattern") {
+                pattern_names(cx, pattern, out);
+            }
+        }
+        "assignment_pattern" | "object_assignment_pattern" => {
+            if let Some(left) = node.child_by_field_name("left") {
+                pattern_names(cx, left, out);
+            }
+        }
+        "pair_pattern" => {
+            if let Some(value) = node.child_by_field_name("value") {
+                pattern_names(cx, value, out);
+            }
+        }
+        "rest_pattern" | "object_pattern" | "array_pattern" => {
+            let mut cursor = node.walk();
+            let parts: Vec<Node<'_>> = node
+                .named_children(&mut cursor)
+                .filter(|part| !part.is_extra())
+                .collect();
+            for part in parts {
+                pattern_names(cx, part, out);
             }
         }
         _ => {}

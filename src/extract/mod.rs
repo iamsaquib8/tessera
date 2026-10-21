@@ -1,9 +1,11 @@
 use anyhow::{anyhow, Result};
 use tree_sitter::{Node, Parser};
 
+use std::collections::HashSet;
+
 use crate::types::{
-    IndexedBinding, IndexedImport, IndexedReference, IndexedSymbol, IndexedTypeHint, Language,
-    Receiver,
+    IndexedBinding, IndexedImport, IndexedLocal, IndexedReference, IndexedSymbol, IndexedTypeHint,
+    Language, Receiver,
 };
 
 mod lang;
@@ -19,6 +21,9 @@ pub struct ParsedFile {
     pub imports: Vec<IndexedImport>,
     pub bindings: Vec<IndexedBinding>,
     pub hints: Vec<IndexedTypeHint>,
+    /// Parameters and local variables whose names the file calls or uses
+    /// as receivers.
+    pub locals: Vec<IndexedLocal>,
     pub module: Option<String>,
     pub has_errors: bool,
     /// Contract facts; empty unless parsed with [`parse_file_at`].
@@ -41,6 +46,7 @@ pub trait LanguageSupport: Sync {
     }
     fn bindings(&self, _cx: &Cx<'_>, _node: Node<'_>, _out: &mut Vec<IndexedBinding>) {}
     fn hints(&self, _cx: &Cx<'_>, _node: Node<'_>, _out: &mut Vec<IndexedTypeHint>) {}
+    fn locals(&self, _cx: &Cx<'_>, _node: Node<'_>, _out: &mut Vec<IndexedLocal>) {}
     fn module(&self, _cx: &Cx<'_>, _node: Node<'_>) -> Option<String> {
         None
     }
@@ -95,6 +101,7 @@ fn parse(language: Language, content: &str) -> Result<(ParsedFile, tree_sitter::
         imports: Vec::new(),
         bindings: Vec::new(),
         hints: Vec::new(),
+        locals: Vec::new(),
         module: None,
         has_errors: tree.root_node().has_error(),
         facts: Vec::new(),
@@ -126,6 +133,7 @@ fn parse(language: Language, content: &str) -> Result<(ParsedFile, tree_sitter::
         }
         support.bindings(&cx, node, &mut out.bindings);
         support.hints(&cx, node, &mut out.hints);
+        support.locals(&cx, node, &mut out.locals);
         if out.module.is_none() {
             out.module = support.module(&cx, node);
         }
@@ -138,10 +146,34 @@ fn parse(language: Language, content: &str) -> Result<(ParsedFile, tree_sitter::
             }
             if !cursor.goto_parent() {
                 drop(cursor);
+                keep_used_locals(&mut out);
                 return Ok((out, tree));
             }
         }
     }
+}
+
+/// Drops locals whose names no reference uses: only a called name or a
+/// receiver can be shadowed.
+fn keep_used_locals(out: &mut ParsedFile) {
+    let used: HashSet<&str> = out
+        .references
+        .iter()
+        .map(|r| match (r.receiver, r.receiver_name.as_deref()) {
+            (Receiver::Name, Some(receiver)) => {
+                let receiver = receiver.strip_prefix("new:").unwrap_or(receiver);
+                receiver.split('.').next().unwrap_or(receiver)
+            }
+            _ => r.symbol_name.as_str(),
+        })
+        .collect();
+    let mut seen = HashSet::new();
+    let locals = std::mem::take(&mut out.locals);
+    out.locals = locals
+        .into_iter()
+        .filter(|local| used.contains(local.name.as_str()))
+        .filter(|local| seen.insert((local.scope.clone(), local.name.clone())))
+        .collect();
 }
 
 #[derive(Debug, Clone)]

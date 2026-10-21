@@ -263,6 +263,14 @@ pub struct IndexedBinding {
     pub line: usize,
 }
 
+/// A parameter or local variable: not a symbol, but it shadows imports and
+/// symbols of the same name in its scope.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct IndexedLocal {
+    pub scope: Option<String>,
+    pub name: String,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum HintOrigin {

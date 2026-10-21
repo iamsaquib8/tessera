@@ -211,6 +211,40 @@ fn a_local_definition_shadows_an_import() {
 }
 
 #[test]
+fn parameters_and_local_variables_shadow_an_import() {
+    let (_temp, ws) = repo_with(&[
+        (
+            "repo.ts",
+            "export function loadUser() { return 1; }\nexport function Panel() { return null; }\n",
+        ),
+        (
+            "main.tsx",
+            "import { loadUser, Panel } from \"./repo\";\n\
+             export function param(loadUser: () => number) {\n  return loadUser();\n}\n\
+             export function destructured(deps: any) {\n  const { loadUser } = deps;\n  return loadUser();\n}\n\
+             export function variable() {\n  const loadUser = makeLoader();\n  return loadUser();\n}\n\
+             export function callback(items: Array<() => number>) {\n  return items.map((loadUser) => loadUser());\n}\n\
+             export function render({ Panel }: any) {\n  return <Panel />;\n}\n\
+             export function outer() {\n  loadUser();\n  return <Panel />;\n}\n\
+             function makeLoader() { return () => 2; }\n",
+        ),
+    ]);
+    let all = edges(&ws.db_path);
+    let to_import: Vec<&String> = all
+        .iter()
+        .filter(|e| e.contains("repo.ts:") && !e.starts_with("outer "))
+        .collect();
+    assert!(to_import.is_empty(), "{to_import:#?}");
+    assert_has(
+        &all,
+        &[
+            "outer -call-> repo.ts:loadUser [high/import]",
+            "outer -jsx-> repo.ts:Panel [high/import]",
+        ],
+    );
+}
+
+#[test]
 fn renaming_an_export_re_resolves_its_importers() {
     let (_temp, ws) = repo_with(&[
         ("a.ts", "export function foo() { return 1; }\n"),

@@ -120,6 +120,8 @@ pub(super) struct FileInfo {
     by_qname: HashMap<String, Rc<Sym>>,
     pub bindings: Vec<Binding>,
     hints: Vec<Hint>,
+    /// Name → the scopes declaring it as a parameter or local variable.
+    locals: HashMap<String, Vec<Option<String>>>,
 }
 
 #[derive(Debug)]
@@ -169,6 +171,14 @@ impl Resolution {
     fn external() -> Self {
         Self {
             resolver: Some("external"),
+            ..Self::unresolved()
+        }
+    }
+
+    /// A parameter or local variable: a value with no symbol to point at.
+    fn value() -> Self {
+        Self {
+            resolver: Some("value"),
             ..Self::unresolved()
         }
     }
@@ -328,6 +338,17 @@ impl<'c> Resolver<'c> {
                 })
             })?
             .collect::<rusqlite::Result<_>>()?;
+        let mut locals: HashMap<String, Vec<Option<String>>> = HashMap::new();
+        let mut stmt = self
+            .conn
+            .prepare_cached("SELECT scope, name FROM locals WHERE file_id = ?1")?;
+        let rows = stmt.query_map(params![file_id], |row| {
+            Ok((row.get::<_, Option<String>>(0)?, row.get::<_, String>(1)?))
+        })?;
+        for row in rows {
+            let (scope, name) = row?;
+            locals.entry(name).or_default().push(scope);
+        }
         let file = Rc::new(FileInfo {
             path,
             language: Language::from_name(&language).unwrap_or(Language::JavaScript),
@@ -336,6 +357,7 @@ impl<'c> Resolver<'c> {
             by_qname,
             bindings,
             hints,
+            locals,
         });
         self.files.insert(file_id, Rc::clone(&file));
         Ok(file)
@@ -694,9 +716,10 @@ impl<'c> Resolver<'c> {
                 Found::Missing => Resolution::unresolved(),
             });
         }
-        let local = self.local(file, chain, name, false);
-        if !local.is_empty() {
-            return self.finish(local, arity, Resolution::high(Vec::new(), "local"));
+        match self.local(file, chain, name, false) {
+            Some(local) if local.is_empty() => return Ok(Resolution::value()),
+            Some(local) => return self.finish(local, arity, Resolution::high(Vec::new(), "local")),
+            None => {}
         }
         if name == "require" {
             return Ok(Resolution::external());
@@ -725,9 +748,10 @@ impl<'c> Resolver<'c> {
         if depth > MAX_DEPTH {
             return Ok(Resolution::unresolved());
         }
-        let local = self.local(file, chain, name, types_only);
-        if !local.is_empty() {
-            return self.finish(local, None, Resolution::high(Vec::new(), "local"));
+        match self.local(file, chain, name, types_only) {
+            Some(local) if local.is_empty() => return Ok(Resolution::value()),
+            Some(local) => return self.finish(local, None, Resolution::high(Vec::new(), "local")),
+            None => {}
         }
         match self.binding_symbols(file, name)? {
             Found::Symbols(ids) => {
@@ -750,13 +774,17 @@ impl<'c> Resolver<'c> {
     }
 
     /// Definitions in this file visible from `chain`, innermost scope first.
+    ///
+    /// `Some(empty)` when the innermost is a parameter or local variable,
+    /// which has no symbol; a type (`types_only`) is never one.
     fn local(
         &self,
         file: &FileInfo,
         chain: &[Option<String>],
         name: &str,
         types_only: bool,
-    ) -> Vec<i64> {
+    ) -> Option<Vec<i64>> {
+        let values = file.locals.get(name);
         for scope in chain {
             let found: Vec<i64> = file
                 .symbols
@@ -764,15 +792,23 @@ impl<'c> Resolver<'c> {
                 .filter(|sym| sym.name == name && sym.container == *scope)
                 .filter(|sym| !types_only || TYPE_KINDS.contains(&sym.kind.as_str()))
                 .filter(|sym| !self.is_member(file, sym))
-                // `const x = require("./x")` is an import, not a definition.
-                .filter(|sym| sym.kind != "variable" || !self.has_binding(file, &sym.name))
+                // A module-level `const x = require("./x")` is an import, not
+                // a definition.
+                .filter(|sym| {
+                    sym.kind != "variable"
+                        || sym.container.is_some()
+                        || !self.has_binding(file, &sym.name)
+                })
                 .map(|sym| sym.id)
                 .collect();
             if !found.is_empty() {
-                return found;
+                return Some(found);
+            }
+            if !types_only && values.is_some_and(|scopes| scopes.contains(scope)) {
+                return Some(Vec::new());
             }
         }
-        Vec::new()
+        None
     }
 
     fn has_binding(&self, file: &FileInfo, name: &str) -> bool {
@@ -1023,6 +1059,14 @@ impl<'c> Resolver<'c> {
         if let Some((type_name, origin)) = self.hint(file, chain, receiver) {
             return self.typed(file, chain, &type_name, &origin, depth);
         }
+        // A parameter or local variable of unknown type, not the import or
+        // class of the same name.
+        if self
+            .local(file, chain, receiver, false)
+            .is_some_and(|local| local.is_empty())
+        {
+            return Ok(Receiver::Unknown);
+        }
         let module_binding = file
             .bindings
             .iter()
@@ -1046,7 +1090,7 @@ impl<'c> Resolver<'c> {
         if is_js(file.language)
             && JS_GLOBALS.contains(&receiver)
             && !self.has_binding(file, receiver)
-            && self.local(file, chain, receiver, false).is_empty()
+            && self.local(file, chain, receiver, false).is_none()
         {
             return Ok(Receiver::External);
         }

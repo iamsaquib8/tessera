@@ -322,7 +322,7 @@ enum Prepared {
         sha: String,
         loc: usize,
         lossy: bool,
-        parsed: std::result::Result<ParsedFile, String>,
+        parsed: Box<std::result::Result<ParsedFile, String>>,
     },
 }
 
@@ -354,8 +354,10 @@ fn prepare(file: &SourceFile, known_sha: Option<&str>) -> Prepared {
     }
     Prepared::Parsed {
         loc: content.lines().count(),
-        parsed: parse_file_at(file.language, &file.rel_path, &content)
-            .map_err(|error| error.to_string()),
+        parsed: Box::new(
+            parse_file_at(file.language, &file.rel_path, &content)
+                .map_err(|error| error.to_string()),
+        ),
         sha,
         lossy,
     }
@@ -476,7 +478,7 @@ fn store(
             db::delete_file_cascade(tx, existing_id)?;
         }
     }
-    let parsed = match parsed {
+    let parsed = match *parsed {
         Ok(parsed) => parsed,
         Err(error) => {
             warn(
@@ -513,6 +515,7 @@ fn store(
     db::insert_imports(tx, file_id, &parsed.imports)?;
     db::insert_bindings(tx, file_id, &parsed.bindings)?;
     db::insert_hints(tx, file_id, &parsed.hints)?;
+    db::insert_locals(tx, file_id, &parsed.locals)?;
     db::set_file_module(tx, file_id, parsed.module.as_deref())?;
     db::insert_facts(tx, file_id, &parsed.facts, &parsed.symbols, &symbol_ids)?;
     report.files_indexed += 1;
