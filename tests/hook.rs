@@ -725,6 +725,49 @@ fn antigravity_gets_empty_objects_and_a_continue_at_stop() {
 }
 
 #[test]
+fn antigravity_gets_a_decision_at_every_stop_and_no_continue_after_an_error() {
+    let temp = repo();
+    let root = temp.path();
+    index_now(root);
+    let paths = json!([root.to_string_lossy()]);
+    let stop = |extra: Value| {
+        let mut payload = json!({ "conversationId": "v", "workspacePaths": paths, "executionNum": 1, "fullyIdle": true });
+        payload
+            .as_object_mut()
+            .unwrap()
+            .extend(extra.as_object().unwrap().clone());
+        hook("antigravity", "Stop", payload)
+    };
+    hook(
+        "antigravity",
+        "SessionStart",
+        json!({ "conversationId": "v", "workspacePaths": paths }),
+    );
+    let clean = stop(json!({ "terminationReason": "model_stop" }));
+    assert!(clean["decision"].is_string(), "{clean}");
+    assert_ne!(clean["decision"], "continue", "{clean}");
+    replace_in(
+        root,
+        "src/users/repo.ts",
+        "repo.findById(id)",
+        "repo.findByIdd(id)",
+    );
+    for failed in [
+        json!({ "terminationReason": "error", "error": "model unavailable" }),
+        json!({ "terminationReason": "max_steps_exceeded" }),
+        json!({ "terminationReason": "", "error": "tool crashed" }),
+    ] {
+        let out = stop(failed.clone());
+        assert!(out["decision"].is_string(), "{failed}: {out}");
+        assert_ne!(out["decision"], "continue", "{failed}: {out}");
+    }
+    assert_eq!(
+        stop(json!({ "terminationReason": "model_stop" }))["decision"],
+        "continue"
+    );
+}
+
+#[test]
 fn qwen_gets_no_pre_edit_note_but_post_edit_context() {
     let temp = repo();
     let root = temp.path();

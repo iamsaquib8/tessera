@@ -73,6 +73,11 @@ Qwen's and Antigravity's pre-tool hooks would have to approve the edit,
 Copilot's can only allow or deny, and Antigravity's post-tool hook cannot
 return feedback. The sources are in [agents.md](agents.md).
 
+A turn that ends in an error, an interruption or a step limit is never held;
+Tessera checks only turns the agent finished. Antigravity always gets a
+`decision` at the end of a turn (`continue` with the problems, otherwise
+`stop`), as its contract requires.
+
 ## The git backstop
 
 ```sh

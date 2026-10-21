@@ -291,6 +291,8 @@ pub fn render(agent: Agent, kind: Event, event: &str, reply: Reply) -> Option<Va
 /// on every successful run.
 pub fn silent(agent: Agent, kind: Event) -> Option<Value> {
     match (agent, kind) {
+        // Its Stop output requires a decision; anything but "continue" stops.
+        (Agent::Antigravity, Event::Stop) => Some(json!({ "decision": "stop" })),
         (Agent::Codex, Event::Stop) | (Agent::Antigravity, _) => Some(json!({})),
         _ => None,
     }

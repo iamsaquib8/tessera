@@ -148,10 +148,7 @@ impl Payload {
             stop_hook_active: value["stop_hook_active"]
                 .as_bool()
                 .or_else(|| value["loop_count"].as_u64().map(|count| count > 0)),
-            stop_cause: ["status", "agent_stop_cause"]
-                .iter()
-                .find_map(|key| value[*key].as_str())
-                .map(ToOwned::to_owned),
+            stop_cause: stop_cause(&value),
             file_changes,
             client,
             event_name: value["hook_event_name"]
@@ -181,7 +178,7 @@ impl Payload {
     pub fn finished(&self) -> bool {
         self.stop_cause
             .as_deref()
-            .is_none_or(|cause| matches!(cause, "completed" | "end_turn"))
+            .is_none_or(|cause| matches!(cause, "completed" | "end_turn" | "model_stop"))
     }
 
     /// The edited files relative to `root`, dropping any outside it.
@@ -208,6 +205,25 @@ impl Payload {
         out.dedup();
         out
     }
+}
+
+/// Why the agent stopped, in any client's words; an error message (as
+/// Antigravity sends one) is a stop on error.
+fn stop_cause(value: &Value) -> Option<String> {
+    if value["error"].as_str().is_some_and(|e| !e.is_empty()) {
+        return Some("error".to_string());
+    }
+    [
+        "status",
+        "agent_stop_cause",
+        "terminationReason",
+        "stopReason",
+        "stop_reason",
+    ]
+    .iter()
+    .filter_map(|key| value[*key].as_str())
+    .find(|cause| !cause.is_empty())
+    .map(ToOwned::to_owned)
 }
 
 /// Gemini's event names; Claude-shaped agents use `PreToolUse` and so on.
