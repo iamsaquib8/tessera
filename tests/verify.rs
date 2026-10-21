@@ -447,6 +447,23 @@ fn spread_arguments_and_unchecked_files_never_make_an_arity_mismatch() {
 }
 
 #[test]
+fn overloads_getters_and_aliased_methods_take_their_callable_arity() {
+    let temp = repo();
+    fs::write(
+        temp.path().join("src/app.ts"),
+        "export class Factory {\n  create(): string;\n  create(name: string, port?: number): string;\n  create(name: string | undefined, port?: number): string {\n    return name ?? String(port);\n  }\n}\n\n\
+         export class Stream {\n  get errorHandler(): (err: Error, res: string) => void {\n    return () => {};\n  }\n}\n\n\
+         export class Logger {\n  log(message: string, ...rest: string[]) {\n    return message + rest.length;\n  }\n}\n\n\
+         const noop = () => {};\nexport class SilentLogger extends Logger {\n  log = noop;\n}\n\n\
+         export function use(f: Factory, s: Stream, quiet: SilentLogger) {\n  f.create();\n  s.errorHandler(new Error(\"x\"), \"res\");\n  return quiet.log();\n}\n",
+    )
+    .unwrap();
+    let (code, findings, _) = verify_changed(temp.path());
+    assert_eq!(code, 0, "{findings:?}");
+    assert!(findings.iter().all(|f| f.starts_with("V6")), "{findings:?}");
+}
+
+#[test]
 fn plain_javascript_argument_counts_never_make_an_arity_mismatch() {
     let temp = repo();
     fs::write(

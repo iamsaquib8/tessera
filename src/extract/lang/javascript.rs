@@ -163,13 +163,17 @@ pub(super) fn js_symbol(cx: &Cx<'_>, node: Node<'_>) -> Option<IndexedSymbol> {
         // behave as methods.
         "public_field_definition" | "field_definition" => {
             let value = node.child_by_field_name("value")?;
-            if !FUNCTION_KINDS.contains(&value.kind()) {
-                return None;
-            }
             let name = node
                 .child_by_field_name("name")
                 .or_else(|| node.child_by_field_name("property"))?;
-            (cx.text(name), "method", Some(value))
+            if FUNCTION_KINDS.contains(&value.kind()) {
+                (cx.text(name), "method", Some(value))
+            } else if matches!(value.kind(), "identifier" | "member_expression") {
+                // `log = noop` makes `log` a method whose parameters are noop's.
+                (cx.text(name), "method", None)
+            } else {
+                return None;
+            }
         }
         "assignment_expression" => {
             let right = node.child_by_field_name("right")?;
@@ -213,23 +217,43 @@ pub(super) fn js_symbol(cx: &Cx<'_>, node: Node<'_>) -> Option<IndexedSymbol> {
     };
     let mut symbol = cx.symbol(name, kind, node, has_export_ancestor(node));
     symbol.default_export = is_default_export(node);
-    match node.kind() {
-        "function_declaration" => {
-            symbol.start_line = overload_start(cx, node, &symbol.name, "function_signature") + 1
-        }
-        "method_definition" => {
-            symbol.start_line = overload_start(cx, node, &symbol.name, "method_signature") + 1
-        }
-        _ => {}
+    let signature_kind = match node.kind() {
+        "function_declaration" => Some("function_signature"),
+        "method_definition" => Some("method_signature"),
+        _ => None,
+    };
+    let overloads = signature_kind
+        .map(|kind| overloads(cx, node, &symbol.name, kind))
+        .unwrap_or_default();
+    if let Some(first) = overloads.last() {
+        symbol.start_line = first.start_position().row + 1;
     }
     // `const render: Render = (ui, options) => …`: the declared type, not the
-    // arrow's own parameter list, says how it may be called.
+    // arrow's own parameter list, says how it may be called; a getter or a
+    // setter is not called itself.
     let typed = matches!(
         node.kind(),
         "variable_declarator" | "public_field_definition" | "field_definition"
     ) && node.child_by_field_name("type").is_some();
-    if !typed {
+    let accessor =
+        node.kind() == "method_definition" && (has_token(node, "get") || has_token(node, "set"));
+    if !typed && !accessor {
         symbol.arity = params.and_then(|p| arity(cx, p));
+        // Overload signatures say how it may be called; the implementation
+        // only has to accept them all.
+        for signature in &overloads {
+            let signature = match signature.kind() {
+                "export_statement" => signature.named_child(0),
+                _ => Some(*signature),
+            };
+            symbol.arity = match (symbol.arity, signature.and_then(|sig| arity(cx, sig))) {
+                (Some((min, max)), Some((sig_min, sig_max))) => Some((
+                    min.min(sig_min),
+                    max.zip(sig_max).map(|(max, sig_max)| max.max(sig_max)),
+                )),
+                _ => None,
+            };
+        }
     }
     Some(symbol)
 }
@@ -1161,14 +1185,19 @@ fn last_segment(name: &str) -> String {
     name.rsplit('.').next().unwrap_or(name).to_string()
 }
 
-/// The first row of the TypeScript overload signatures (`function f(a: A);`)
-/// directly before an implementation, so the symbol spans every declaration.
-fn overload_start(cx: &Cx<'_>, function: Node<'_>, name: &str, signature_kind: &str) -> usize {
+/// The TypeScript overload signatures (`function f(a: A);`) directly before
+/// an implementation, nearest first (the last is where the symbol starts).
+fn overloads<'t>(
+    cx: &Cx<'_>,
+    function: Node<'t>,
+    name: &str,
+    signature_kind: &str,
+) -> Vec<Node<'t>> {
     let anchor = match function.parent() {
         Some(parent) if parent.kind() == "export_statement" => parent,
         _ => function,
     };
-    let mut start = anchor.start_position().row;
+    let mut found = Vec::new();
     let mut previous = anchor.prev_named_sibling();
     while let Some(sibling) = previous {
         if sibling.kind() == "comment" {
@@ -1189,10 +1218,10 @@ fn overload_start(cx: &Cx<'_>, function: Node<'_>, name: &str, signature_kind: &
         if !is_overload {
             break;
         }
-        start = sibling.start_position().row;
+        found.push(sibling);
         previous = sibling.prev_named_sibling();
     }
-    start
+    found
 }
 
 /// The interface or type alias a property signature belongs to.
