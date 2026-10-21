@@ -70,6 +70,7 @@ h2 { font-size: 17px; margin: 32px 0 10px; letter-spacing: -0.01em; }
 .rows { list-style: none; margin: 0; padding: 0; }
 .rows li { padding: 10px 16px; border-top: 1px solid var(--line); display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 4px 16px; align-items: baseline; }
 .rows li:first-child { border-top: 0; }
+.rows li.more { color: var(--muted); }
 .rows li > span:first-child { min-width: 0; overflow-wrap: anywhere; }
 .rows .sub { color: var(--muted); font-size: 13px; grid-column: 1 / -1; overflow-wrap: anywhere; }
 .split .rows li { grid-template-columns: minmax(0, 1fr); }
@@ -160,6 +161,7 @@ pre.body { margin: 0; padding: 14px 16px; overflow: auto; font: 12.5px/1.55 var(
 "use strict";
 // `tessera ui --export` turns this on.
 const STATIC = false;
+const LIST_LIMIT = 50;
 const main = document.getElementById("main");
 
 function esc(text) {
@@ -247,9 +249,15 @@ async function impact() {
       count(r.verify.tests.length, "test to run", "tests to run"),
       count(r.contracts.length, "contract touched", "contracts touched"),
     ].join("") + "</div>";
+  // A huge change lists the first rows of each section, not thousands.
   const rows = (items, render, empty) => items.length
-    ? '<ul class="panel rows">' + items.map(render).join("") + "</ul>"
+    ? '<ul class="panel rows">' + items.slice(0, LIST_LIMIT).map(render).join("") +
+      (items.length > LIST_LIMIT ? '<li class="more"><span>…and ' + (items.length - LIST_LIMIT).toLocaleString() + " more</span></li>" : "") + "</ul>"
     : '<div class="panel empty">' + esc(empty) + "</div>";
+  // Changed symbols that the listed callers reach come first.
+  const reach = {};
+  for (const c of blast.callers) if (c.via) reach[c.via] = (reach[c.via] || 0) + 1;
+  const changed = blast.changed.slice().sort((a, b) => (reach[b.qualified_name] || 0) - (reach[a.qualified_name] || 0));
   const finding = (f) => "<li><span><span class=\"tag " + (f.blocking ? "stop" : "warn") + "\">" + esc(f.id) + "</span>" + prose(f.message) + "</span>" + where(f.path, f.line) + "</li>";
   if (blocking.length) html += "<h2>To fix</h2>" + rows(blocking, finding, "");
   if (advisory.length) html += "<h2>Worth a look</h2>" + rows(advisory, finding, "");
@@ -257,7 +265,7 @@ async function impact() {
     '<li><span><span class="tag info">' + esc(c.kind) + "</span>" + esc(c.name) + '</span><span class="note">' +
     (c.services.length ? "also used by " + c.services.map(esc).join(", ") : "used only here") + "</span></li>",
     "No route, gRPC method or topic is defined or called in the changed files.");
-  html += "<h2>Changed symbols</h2>" + rows(blast.changed, (s) => "<li><span>" + symbolLink(s.qualified_name) + "</span>" + where(s.path, s.start_line) + "</li>", "No symbol changed.");
+  html += "<h2>Changed symbols</h2>" + rows(changed, (s) => "<li><span>" + symbolLink(s.qualified_name) + "</span>" + where(s.path, s.start_line) + "</li>", "No symbol changed.");
   html += "<h2>Callers, closest first</h2>" + rows(blast.callers, (c) =>
     "<li><span>" + symbolLink(c.symbol.qualified_name) + ' <span class="conf">' + esc(c.confidence) + "</span></span>" +
     where(c.symbol.path, c.symbol.start_line) + '<span class="sub">' + (c.depth === 1 ? "calls the changed code" : esc(c.depth) + " calls away") + "</span></li>",
