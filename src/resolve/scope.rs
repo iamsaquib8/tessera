@@ -96,6 +96,10 @@ pub(super) struct Resolution {
     pub targets: Vec<i64>,
     pub confidence: &'static str,
     pub resolver: Option<&'static str>,
+    /// For resolver `missing`: the repository file that should define the name.
+    pub missing_in: Option<String>,
+    /// The call's argument count fits none of the candidates.
+    pub arity_mismatch: bool,
 }
 
 impl Resolution {
@@ -104,6 +108,18 @@ impl Resolution {
             targets: Vec::new(),
             confidence: "name",
             resolver: None,
+            missing_in: None,
+            arity_mismatch: false,
+        }
+    }
+
+    /// The name points into the repository, and nothing there has it.
+    fn missing(path: String) -> Self {
+        Self {
+            confidence: "high",
+            resolver: Some("missing"),
+            missing_in: Some(path),
+            ..Self::unresolved()
         }
     }
 
@@ -119,6 +135,7 @@ impl Resolution {
             targets,
             confidence: "high",
             resolver: Some(resolver),
+            ..Self::unresolved()
         }
     }
 
@@ -136,6 +153,8 @@ enum Found {
     Symbols(Vec<i64>),
     External,
     Missing,
+    /// A repository module or class (this file) was searched and lacks the name.
+    Absent(String),
 }
 
 /// What a receiver expression stands for.
@@ -334,6 +353,61 @@ impl<'c> Resolver<'c> {
         }
     }
 
+    /// `ok`, `missing_module` when a local specifier resolves to no file, or
+    /// `missing_export` when a repository module lacks the imported name.
+    pub fn binding_status(
+        &mut self,
+        file: &Rc<FileInfo>,
+        binding: &Binding,
+    ) -> Result<&'static str> {
+        let local = binding.source.starts_with('.');
+        match binding.kind.as_str() {
+            "named" | "default" | "require_member" | "require" | "namespace" => {
+                match self.module(&file.path, &binding.source, file.language) {
+                    ModuleTarget::Unresolved if local => Ok("missing_module"),
+                    ModuleTarget::File(target)
+                        if binding.kind != "namespace" && binding.kind != "require" =>
+                    {
+                        let export = match binding.kind.as_str() {
+                            "default" => "default".to_string(),
+                            _ => binding
+                                .imported
+                                .clone()
+                                .unwrap_or_else(|| binding.local.clone()),
+                        };
+                        Ok(
+                            match self.export_lookup(target, &export, &mut HashSet::new(), 0)? {
+                                Found::Missing => "missing_export",
+                                _ => "ok",
+                            },
+                        )
+                    }
+                    _ => Ok("ok"),
+                }
+            }
+            "re_export" | "re_export_all" if local => Ok(
+                match self.module(&file.path, &binding.source, file.language) {
+                    ModuleTarget::Unresolved => "missing_module",
+                    _ => "ok",
+                },
+            ),
+            "java_single" => {
+                let package = binding
+                    .source
+                    .rsplit_once('.')
+                    .map_or("", |(package, _)| package);
+                Ok(match self.java_import(&binding.source, &binding.local)? {
+                    Found::Absent(_) => "missing_export",
+                    Found::External if self.modules.java_package_exists(package) => {
+                        "missing_export"
+                    }
+                    _ => "ok",
+                })
+            }
+            _ => Ok("ok"),
+        }
+    }
+
     pub fn resolve_ref(&mut self, file: &Rc<FileInfo>, reference: &Ref) -> Result<Resolution> {
         let chain = self.scope_chain(file, reference.from)?;
         let name = reference.name.as_str();
@@ -363,13 +437,19 @@ impl<'c> Resolver<'c> {
                                 self.finish(ids, arity, Resolution::high(Vec::new(), "import"))?
                             }
                             Found::External => Resolution::external(),
-                            Found::Missing => Resolution::unresolved(),
+                            Found::Absent(path) => Resolution::missing(path),
+                            Found::Missing => Resolution::missing(self.file(module)?.path.clone()),
                         }
                     }
                     Receiver::Class(classes, confidence, resolver) => {
                         let mut found = Vec::new();
-                        for class in classes {
-                            found.extend(self.members(class, name, 0)?);
+                        for class in &classes {
+                            found.extend(self.members(*class, name, 0)?);
+                        }
+                        if found.is_empty() && confidence == "high" {
+                            if let Some(path) = self.closed_class_file(&classes)? {
+                                return Ok(Resolution::missing(path));
+                            }
                         }
                         if found.is_empty() {
                             Resolution::unresolved()
@@ -410,15 +490,35 @@ impl<'c> Resolver<'c> {
         if found.is_empty() {
             return Ok(Resolution::unresolved());
         }
+        let arity_mismatch = self.no_arity_fits(&found, arity)?;
         let targets = self.filter_arity(found, arity)?;
         Ok(Resolution {
             targets,
+            arity_mismatch,
             ..template
         })
     }
 
     /// Drops candidates whose parameter count cannot take `arity` arguments,
     /// unless that would drop them all.
+    /// True when every candidate declares its parameters and none accepts
+    /// `arity` arguments.
+    fn no_arity_fits(&mut self, ids: &[i64], arity: Option<i64>) -> Result<bool> {
+        let Some(count) = arity else {
+            return Ok(false);
+        };
+        for id in ids {
+            match self.symbol(*id)?.and_then(|sym| sym.arity) {
+                Some((min, max)) if count >= min && max.is_none_or(|max| count <= max) => {
+                    return Ok(false)
+                }
+                Some(_) => {}
+                None => return Ok(false),
+            }
+        }
+        Ok(!ids.is_empty())
+    }
+
     fn filter_arity(&mut self, mut ids: Vec<i64>, arity: Option<i64>) -> Result<Vec<i64>> {
         ids.sort_unstable();
         ids.dedup();
@@ -496,6 +596,7 @@ impl<'c> Resolver<'c> {
                     self.finish(ids, arity, Resolution::high(Vec::new(), "import"))?
                 }
                 Found::External => Resolution::external(),
+                Found::Absent(path) => Resolution::missing(path),
                 Found::Missing => Resolution::unresolved(),
             });
         }
@@ -511,6 +612,7 @@ impl<'c> Resolver<'c> {
                 return self.finish(ids, arity, Resolution::high(Vec::new(), "import"))
             }
             Found::External => return Ok(Resolution::external()),
+            Found::Absent(path) => return Ok(Resolution::missing(path)),
             Found::Missing if self.has_binding(file, name) => return Ok(Resolution::unresolved()),
             Found::Missing => {}
         }
@@ -538,6 +640,7 @@ impl<'c> Resolver<'c> {
                 return self.finish(ids, None, Resolution::high(Vec::new(), "import"))
             }
             Found::External => return Ok(Resolution::external()),
+            Found::Absent(path) => return Ok(Resolution::missing(path)),
             Found::Missing if self.has_binding(file, name) => return Ok(Resolution::unresolved()),
             Found::Missing => {}
         }
@@ -594,14 +697,22 @@ impl<'c> Resolver<'c> {
     }
 
     fn binding_symbols_uncached(&mut self, file: &Rc<FileInfo>, name: &str) -> Result<Found> {
-        let bindings: Vec<(String, Option<String>, String)> = file
+        let bindings: Vec<(String, Option<String>, String, bool)> = file
             .bindings
             .iter()
             .filter(|b| b.local == name || (b.local == "*" && b.kind.starts_with("java")))
-            .map(|b| (b.kind.clone(), b.imported.clone(), b.source.clone()))
+            .map(|b| {
+                (
+                    b.kind.clone(),
+                    b.imported.clone(),
+                    b.source.clone(),
+                    b.local == "*",
+                )
+            })
             .collect();
         let mut external = false;
-        for (kind, imported, source) in bindings {
+        let mut absent = None;
+        for (kind, imported, source, wildcard) in bindings {
             let found = match kind.as_str() {
                 "named" | "require_member" | "default" | "require" => {
                     let export = if kind == "default" || kind == "require" {
@@ -611,7 +722,10 @@ impl<'c> Resolver<'c> {
                     };
                     match self.module(&file.path, &source, file.language) {
                         ModuleTarget::File(target) => {
-                            self.export_lookup(target, &export, &mut HashSet::new(), 0)?
+                            match self.export_lookup(target, &export, &mut HashSet::new(), 0)? {
+                                Found::Missing => Found::Absent(self.file(target)?.path.clone()),
+                                other => other,
+                            }
                         }
                         ModuleTarget::External(_) => Found::External,
                         ModuleTarget::Unresolved => Found::Missing,
@@ -625,13 +739,22 @@ impl<'c> Resolver<'c> {
                 "java_static" => match self.java_import(&source, "")? {
                     Found::Symbols(classes) => {
                         let mut members = Vec::new();
-                        for class in classes {
-                            members.extend(self.members(class, name, 0)?);
+                        for class in &classes {
+                            members.extend(self.members(*class, name, 0)?);
                         }
-                        if members.is_empty() {
+                        if !members.is_empty() {
+                            Found::Symbols(members)
+                        } else if wildcard {
+                            // `import static a.B.*` only says where a member
+                            // might come from.
                             Found::Missing
                         } else {
-                            Found::Symbols(members)
+                            match self.symbol(classes[0])? {
+                                Some(class) => {
+                                    Found::Absent(self.file(class.file_id)?.path.clone())
+                                }
+                                None => Found::Missing,
+                            }
                         }
                     }
                     other => other,
@@ -641,11 +764,14 @@ impl<'c> Resolver<'c> {
             match found {
                 Found::Symbols(ids) => return Ok(Found::Symbols(ids)),
                 Found::External => external = true,
+                Found::Absent(path) => absent = Some(path),
                 Found::Missing => {}
             }
         }
         Ok(if external {
             Found::External
+        } else if let Some(path) = absent {
+            Found::Absent(path)
         } else {
             Found::Missing
         })
@@ -669,7 +795,7 @@ impl<'c> Resolver<'c> {
                     .map(|s| s.id)
                     .collect();
                 Ok(if ids.is_empty() {
-                    Found::Missing
+                    Found::Absent(file.path.clone())
                 } else {
                     Found::Symbols(ids)
                 })
@@ -753,7 +879,7 @@ impl<'c> Resolver<'c> {
             match found {
                 Found::Symbols(ids) => return Ok(Found::Symbols(ids)),
                 Found::External => external = true,
-                Found::Missing => {}
+                Found::Missing | Found::Absent(_) => {}
             }
         }
         Ok(if external {
@@ -868,7 +994,7 @@ impl<'c> Resolver<'c> {
                         }
                     }
                     Found::External => Receiver::External,
-                    Found::Missing => Receiver::Unknown,
+                    Found::Missing | Found::Absent(_) => Receiver::Unknown,
                 },
             ),
             other => Ok(other),
@@ -977,7 +1103,7 @@ impl<'c> Resolver<'c> {
         if file.language == Language::Java {
             return Ok(match self.java_import(type_name, "")? {
                 Found::Symbols(ids) => Resolution::high(ids, "import"),
-                Found::External | Found::Missing => Resolution::external(),
+                Found::External | Found::Missing | Found::Absent(_) => Resolution::external(),
             });
         }
         match self.receiver(file, chain, head, depth + 1)? {
@@ -1050,6 +1176,66 @@ impl<'c> Resolver<'c> {
             }
         }
         Ok(None)
+    }
+
+    /// The file of the first class when every class's whole supertype chain is
+    /// in the repository and in a typed language, so a member that is not
+    /// found really does not exist; `None` when anything is inherited from
+    /// outside or the class can grow at runtime (plain JavaScript).
+    fn closed_class_file(&mut self, classes: &[i64]) -> Result<Option<String>> {
+        let mut first = None;
+        for class in classes {
+            if !self.closed(*class, 0)? {
+                return Ok(None);
+            }
+            let Some(sym) = self.symbol(*class)? else {
+                return Ok(None);
+            };
+            let file = self.file(sym.file_id)?;
+            if !matches!(
+                file.language,
+                Language::TypeScript | Language::Tsx | Language::Java
+            ) {
+                return Ok(None);
+            }
+            first.get_or_insert_with(|| file.path.clone());
+        }
+        Ok(first)
+    }
+
+    fn closed(&mut self, class: i64, depth: usize) -> Result<bool> {
+        if depth > MAX_DEPTH {
+            return Ok(false);
+        }
+        let Some(sym) = self.symbol(class)? else {
+            return Ok(false);
+        };
+        let file = self.file(sym.file_id)?;
+        let extends: Vec<(String, Option<String>)> = self
+            .conn
+            .prepare_cached(
+                "SELECT symbol_name, receiver_name FROM refs
+                 WHERE from_symbol_id = ?1 AND kind = 'extends' ORDER BY id",
+            )?
+            .query_map(params![class], |row| Ok((row.get(0)?, row.get(1)?)))?
+            .collect::<rusqlite::Result<_>>()?;
+        let chain = vec![Some(sym.qname.clone()), None];
+        for (name, receiver) in extends {
+            let type_name = match receiver {
+                Some(receiver) => format!("{receiver}.{name}"),
+                None => name,
+            };
+            let parent = self.resolve_qualified_type(&file, &chain, &type_name, 0)?;
+            if parent.confidence != "high" || parent.targets.is_empty() {
+                return Ok(false);
+            }
+            for target in parent.targets {
+                if target != class && !self.closed(target, depth + 1)? {
+                    return Ok(false);
+                }
+            }
+        }
+        Ok(true)
     }
 
     /// Members named `name` of `class`, then of its supertypes.
@@ -1137,11 +1323,13 @@ impl<'c> Resolver<'c> {
                 targets: candidates,
                 confidence: "medium",
                 resolver: Some("name"),
+                ..Resolution::unresolved()
             },
             n if n <= MAX_AMBIGUOUS => Resolution {
                 targets: candidates,
                 confidence: "low",
                 resolver: Some("name"),
+                ..Resolution::unresolved()
             },
             _ => Resolution::unresolved(),
         })

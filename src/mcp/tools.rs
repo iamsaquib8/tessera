@@ -302,7 +302,10 @@ fn verify_schema() -> Value {
         json!({
             "symbol": { "type": "string", "description": "Symbol name to check exists." },
             "snippet": { "type": "string", "description": "Code whose calls should be checked." },
-            "language": { "type": "string", "enum": ["typescript", "tsx", "javascript", "python", "go", "rust", "java", "c", "cpp", "csharp", "ruby", "php"] }
+            "language": { "type": "string", "enum": ["typescript", "tsx", "javascript", "python", "go", "rust", "java", "c", "cpp", "csharp", "ruby", "php"] },
+            "changed": { "type": "boolean", "description": "Check every change in the working tree against HEAD: calls to names that do not exist, wrong argument counts, references the change broke, broken imports, and tests to run." },
+            "staged": { "type": "boolean", "description": "Check the staged changes instead." },
+            "diff_from": { "type": "string", "description": "Check the working tree against this git revision instead." }
         }),
         &[],
     )

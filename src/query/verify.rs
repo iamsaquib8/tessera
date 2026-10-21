@@ -1,15 +1,25 @@
+use std::collections::{BTreeSet, HashSet};
 use std::fmt;
+use std::path::Path;
+use std::process::Command;
 
-use anyhow::{bail, Result};
-use rusqlite::Connection;
+use anyhow::{anyhow, bail, Result};
+use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
 
-use super::common::known_global;
-use super::legacy;
+use super::common::{is_test_path, known_global};
+use super::{graph, legacy};
 use crate::extract::parse_file;
 use crate::output::{AgentText, Confidence};
 use crate::types::Receiver;
 use crate::types::{Language, SymbolSuggestion};
+
+/// Symbols reached from the changed code are walked at most this far to find
+/// tests, visiting at most this many symbols each.
+const TEST_DEPTH: usize = 4;
+const TEST_SCAN_CAP: usize = 2_000;
+/// Agent output lists at most this many findings; the rest are counted.
+const AGENT_MAX_FINDINGS: usize = 8;
 
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -18,6 +28,12 @@ pub struct VerifyArgs {
     pub snippet: Option<String>,
     #[serde(deserialize_with = "language_by_name")]
     pub language: Option<Language>,
+    /// Check the working tree against `HEAD`, including untracked files.
+    pub changed: bool,
+    /// Check the staged changes.
+    pub staged: bool,
+    /// Check the working tree against this revision.
+    pub diff_from: Option<String>,
 }
 
 fn language_by_name<'de, D: serde::Deserializer<'de>>(
@@ -35,6 +51,8 @@ fn language_by_name<'de, D: serde::Deserializer<'de>>(
 pub struct Finding {
     pub id: String,
     pub confidence: Confidence,
+    /// Only blocking findings fail `verify` (exit 1) and hooks.
+    pub blocking: bool,
     pub message: String,
     pub path: Option<String>,
     pub line: Option<usize>,
@@ -45,9 +63,43 @@ pub struct Finding {
 pub struct VerifyResult {
     pub ok: bool,
     pub findings: Vec<Finding>,
+    /// Test files that reach the changed code (V6).
+    pub tests: Vec<String>,
 }
 
-pub fn run(conn: &Connection, args: &VerifyArgs) -> Result<VerifyResult> {
+impl VerifyResult {
+    fn new(mut findings: Vec<Finding>, tests: Vec<String>) -> Self {
+        findings.sort_by(|a, b| {
+            b.blocking
+                .cmp(&a.blocking)
+                .then_with(|| a.id.cmp(&b.id))
+                .then_with(|| a.path.cmp(&b.path))
+                .then(a.line.cmp(&b.line))
+        });
+        findings.dedup_by(|a, b| a.id == b.id && a.path == b.path && a.line == b.line);
+        Self {
+            ok: !findings.iter().any(|f| f.blocking),
+            findings,
+            tests,
+        }
+    }
+
+    pub fn blocking(&self) -> usize {
+        self.findings.iter().filter(|f| f.blocking).count()
+    }
+}
+
+pub fn run(conn: &Connection, root: &Path, args: &VerifyArgs) -> Result<VerifyResult> {
+    if args.changed || args.staged || args.diff_from.is_some() {
+        let changes = if args.staged {
+            Changes::Staged
+        } else if let Some(rev) = &args.diff_from {
+            Changes::Since(rev.clone())
+        } else {
+            Changes::WorkingTree
+        };
+        return verify_changes(conn, root, &changes);
+    }
     let mut findings = Vec::new();
     if let Some(symbol) = &args.symbol {
         let check = legacy::validate_conn(conn, symbol)?;
@@ -85,12 +137,9 @@ pub fn run(conn: &Connection, args: &VerifyArgs) -> Result<VerifyResult> {
         }
     }
     if args.symbol.is_none() && args.snippet.is_none() {
-        bail!("pass a symbol, or --snippet with --language");
+        bail!("pass a symbol, --snippet with --language, or --changed");
     }
-    Ok(VerifyResult {
-        ok: findings.is_empty(),
-        findings,
-    })
+    Ok(VerifyResult::new(findings, Vec::new()))
 }
 
 fn unresolved(name: &str, line: Option<usize>, suggestions: Vec<SymbolSuggestion>) -> Finding {
@@ -101,11 +150,368 @@ fn unresolved(name: &str, line: Option<usize>, suggestions: Vec<SymbolSuggestion
     Finding {
         id: "V1".to_string(),
         confidence: Confidence::Name,
+        blocking: true,
         message: format!("`{name}` is not defined anywhere in the index{hint}"),
         path: None,
         line,
         suggestions,
     }
+}
+
+/// Which change to check.
+#[derive(Debug, Clone)]
+pub enum Changes {
+    WorkingTree,
+    Staged,
+    Since(String),
+}
+
+/// V1–V4 and V6 over the files a change touches and the code that depends on
+/// them. The index must already reflect the working tree.
+pub fn verify_changes(conn: &Connection, root: &Path, changes: &Changes) -> Result<VerifyResult> {
+    let changed = changed_paths(root, changes)?;
+    verify_paths(conn, root, &changed, changes)
+}
+
+/// The same checks for an explicit set of changed files (hooks pass the
+/// files an agent edited).
+pub fn verify_paths(
+    conn: &Connection,
+    root: &Path,
+    changed: &HashSet<String>,
+    changes: &Changes,
+) -> Result<VerifyResult> {
+    let mut findings = Vec::new();
+    missing_names(conn, changed, &mut findings)?;
+    arity_mismatches(conn, changed, &mut findings)?;
+    broken_imports(conn, changed, &mut findings)?;
+    let tests = tests_to_run(conn, root, changed, changes)?;
+    for test in &tests {
+        findings.push(Finding {
+            id: "V6".to_string(),
+            confidence: Confidence::High,
+            blocking: false,
+            message: "reaches the changed code; run it".to_string(),
+            path: Some(test.clone()),
+            line: None,
+            suggestions: Vec::new(),
+        });
+    }
+    Ok(VerifyResult::new(findings, tests))
+}
+
+/// Deep-tier languages, whose high-confidence findings block.
+fn blocks(path: &str) -> bool {
+    let extension = path.rsplit('.').next().unwrap_or_default();
+    Language::from_extension(extension).is_some_and(|l| {
+        matches!(
+            l,
+            Language::TypeScript | Language::Tsx | Language::JavaScript | Language::Java
+        )
+    })
+}
+
+fn finding(id: &str, path: String, line: usize, message: String) -> Finding {
+    let blocking = blocks(&path);
+    Finding {
+        id: id.to_string(),
+        confidence: if blocking {
+            Confidence::High
+        } else {
+            Confidence::Medium
+        },
+        blocking,
+        message,
+        path: Some(path),
+        line: Some(line),
+        suggestions: Vec::new(),
+    }
+}
+
+/// V1 (in changed files) and V3 (elsewhere, into a changed file): a name
+/// resolved into a repository module or class that does not have it.
+fn missing_names(
+    conn: &Connection,
+    changed: &HashSet<String>,
+    findings: &mut Vec<Finding>,
+) -> Result<()> {
+    let mut stmt = conn.prepare(
+        "SELECT f.path, r.line, r.symbol_name, e.missing_in
+         FROM edges e JOIN refs r ON r.id = e.ref_id JOIN files f ON f.id = r.file_id
+         WHERE e.resolver = 'missing'",
+    )?;
+    let rows: Vec<(String, usize, String, Option<String>)> = stmt
+        .query_map([], |row| {
+            Ok((
+                row.get(0)?,
+                row.get::<_, i64>(1)? as usize,
+                row.get(2)?,
+                row.get(3)?,
+            ))
+        })?
+        .collect::<rusqlite::Result<_>>()?;
+    for (path, line, name, missing_in) in rows {
+        let missing_in = missing_in.unwrap_or_default();
+        if changed.contains(&path) {
+            let hint = legacy::validate_conn(conn, &name)?
+                .candidates
+                .first()
+                .map(|s| format!("; did you mean {}?", s.qualified_name))
+                .unwrap_or_default();
+            findings.push(finding(
+                "V1",
+                path,
+                line,
+                format!("`{name}` is not defined in {missing_in}{hint}"),
+            ));
+        } else if changed.contains(&missing_in) {
+            findings.push(finding(
+                "V3",
+                path,
+                line,
+                format!("`{name}` no longer exists in {missing_in}, which this change edited"),
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// V2: a resolved call passes an argument count its target cannot take, where
+/// the call or the target changed.
+fn arity_mismatches(
+    conn: &Connection,
+    changed: &HashSet<String>,
+    findings: &mut Vec<Finding>,
+) -> Result<()> {
+    type Row = (
+        String,
+        usize,
+        Option<i64>,
+        String,
+        Option<i64>,
+        Option<i64>,
+        String,
+    );
+    let mut stmt = conn.prepare(
+        "SELECT f.path, r.line, r.arg_count, ts.qualified_name, ts.arity_min, ts.arity_max, tf.path
+         FROM edges e JOIN refs r ON r.id = e.ref_id JOIN files f ON f.id = r.file_id
+         JOIN symbols ts ON ts.id = e.to_symbol_id JOIN files tf ON tf.id = ts.file_id
+         WHERE e.arity_mismatch = 1 AND e.confidence = 'high'",
+    )?;
+    let rows: Vec<Row> = stmt
+        .query_map([], |row| {
+            Ok((
+                row.get(0)?,
+                row.get::<_, i64>(1)? as usize,
+                row.get(2)?,
+                row.get(3)?,
+                row.get(4)?,
+                row.get(5)?,
+                row.get(6)?,
+            ))
+        })?
+        .collect::<rusqlite::Result<_>>()?;
+    for (path, line, args, target, min, max, target_path) in rows {
+        if !changed.contains(&path) && !changed.contains(&target_path) {
+            continue;
+        }
+        let expected = match (min, max) {
+            (Some(min), Some(max)) if min == max => min.to_string(),
+            (Some(min), Some(max)) => format!("{min} to {max}"),
+            (Some(min), None) => format!("at least {min}"),
+            _ => "a different number of".to_string(),
+        };
+        findings.push(finding(
+            "V2",
+            path,
+            line,
+            format!(
+                "`{target}` takes {expected} arguments; this call passes {}",
+                args.unwrap_or_default()
+            ),
+        ));
+    }
+    Ok(())
+}
+
+/// V4: an import whose local module is gone or does not export the name, in a
+/// changed file or pointing at one.
+fn broken_imports(
+    conn: &Connection,
+    changed: &HashSet<String>,
+    findings: &mut Vec<Finding>,
+) -> Result<()> {
+    type Row = (
+        String,
+        usize,
+        String,
+        Option<String>,
+        String,
+        String,
+        Option<String>,
+    );
+    let changed_stems: HashSet<String> = changed.iter().map(|p| strip_extension(p)).collect();
+    let mut stmt = conn.prepare(
+        "SELECT f.path, b.line, b.local, b.imported, b.source, b.status, b.target_path
+         FROM import_bindings b JOIN files f ON f.id = b.file_id
+         WHERE b.status != 'ok'",
+    )?;
+    let rows: Vec<Row> = stmt
+        .query_map([], |row| {
+            Ok((
+                row.get(0)?,
+                row.get::<_, i64>(1)? as usize,
+                row.get(2)?,
+                row.get(3)?,
+                row.get(4)?,
+                row.get(5)?,
+                row.get(6)?,
+            ))
+        })?
+        .collect::<rusqlite::Result<_>>()?;
+    for (path, line, local, imported, source, status, target) in rows {
+        let points_at_change = target.as_ref().is_some_and(|t| changed.contains(t))
+            || lexical_target(&path, &source).is_some_and(|candidate| {
+                changed_stems.contains(&candidate)
+                    || changed_stems.contains(&format!("{candidate}/index"))
+            });
+        if !changed.contains(&path) && !points_at_change {
+            continue;
+        }
+        let message = if status == "missing_module" {
+            format!("`{source}` does not resolve to a file")
+        } else {
+            format!(
+                "`{}` is not exported by {source}",
+                imported.unwrap_or(local)
+            )
+        };
+        findings.push(finding("V4", path, line, message));
+    }
+    Ok(())
+}
+
+fn strip_extension(path: &str) -> String {
+    match path.rsplit_once('.') {
+        Some((stem, ext)) if !ext.contains('/') => stem.trim_end_matches(".d").to_string(),
+        _ => path.to_string(),
+    }
+}
+
+/// `./x` from `a/b.ts` is `a/x`; `None` for package specifiers.
+fn lexical_target(from: &str, source: &str) -> Option<String> {
+    if !source.starts_with('.') {
+        return None;
+    }
+    let mut parts: Vec<&str> = from.split('/').collect();
+    parts.pop();
+    for segment in source.split('/') {
+        match segment {
+            "." | "" => {}
+            ".." => {
+                parts.pop()?;
+            }
+            other => parts.push(other),
+        }
+    }
+    Some(strip_extension(&parts.join("/")))
+}
+
+/// V6: test files that reach a changed symbol, plus changed test files.
+fn tests_to_run(
+    conn: &Connection,
+    root: &Path,
+    changed: &HashSet<String>,
+    changes: &Changes,
+) -> Result<Vec<String>> {
+    let mut tests: BTreeSet<String> = changed
+        .iter()
+        .filter(|p| is_test_path(p))
+        .cloned()
+        .collect();
+    let rev = match changes {
+        Changes::Since(rev) => rev.as_str(),
+        _ => "HEAD",
+    };
+    let mut seeds: Vec<i64> = legacy::diff_changed_symbols(conn, root, rev, None)
+        .map(|(_, symbols)| symbols.into_iter().map(|s| s.id).collect())
+        .unwrap_or_default();
+    let mut in_file = conn
+        .prepare("SELECT s.id FROM symbols s JOIN files f ON f.id = s.file_id WHERE f.path = ?1")?;
+    for path in changed {
+        if !tracked(root, path) {
+            for id in in_file.query_map(params![path], |row| row.get(0))? {
+                seeds.push(id?);
+            }
+        }
+    }
+    seeds.sort_unstable();
+    seeds.dedup();
+    for seed in seeds {
+        for test in graph::tests_reaching(conn, seed, TEST_DEPTH, TEST_SCAN_CAP)? {
+            tests.insert(test.path);
+        }
+    }
+    Ok(tests.into_iter().collect())
+}
+
+fn tracked(root: &Path, path: &str) -> bool {
+    Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args(["ls-files", "--error-unmatch", "--", path])
+        .output()
+        .is_ok_and(|out| out.status.success())
+}
+
+/// Repository-relative paths the change touches, deleted files included.
+pub fn changed_paths(root: &Path, changes: &Changes) -> Result<HashSet<String>> {
+    let git = |args: &[&str]| -> Result<String> {
+        let out = Command::new("git")
+            .arg("-C")
+            .arg(root)
+            .args(["-c", "core.quotePath=false"])
+            .args(args)
+            .output()
+            .map_err(|e| anyhow!("git failed: {e}"))?;
+        if !out.status.success() {
+            bail!(
+                "verify needs a git repository: {}",
+                String::from_utf8_lossy(&out.stderr).trim()
+            );
+        }
+        Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+    };
+    let mut paths = String::new();
+    match changes {
+        Changes::WorkingTree => {
+            paths.push_str(&git(&["diff", "--name-only", "--relative", "HEAD"])?);
+            paths.push_str(&git(&["ls-files", "--others", "--exclude-standard"])?);
+        }
+        Changes::Staged => {
+            paths.push_str(&git(&["diff", "--name-only", "--relative", "--cached"])?);
+        }
+        Changes::Since(rev) => {
+            if rev.starts_with('-') {
+                bail!("invalid git revision {rev:?}");
+            }
+            let commit = git(&[
+                "rev-parse",
+                "--verify",
+                "--quiet",
+                "--end-of-options",
+                &format!("{rev}^{{commit}}"),
+            ])?;
+            paths.push_str(&git(&["diff", "--name-only", "--relative", commit.trim()])?);
+            paths.push_str(&git(&["ls-files", "--others", "--exclude-standard"])?);
+        }
+    }
+    Ok(paths
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .map(|l| l.replace('\\', "/"))
+        .collect())
 }
 
 impl fmt::Display for VerifyResult {
@@ -116,17 +522,130 @@ impl fmt::Display for VerifyResult {
 
 impl AgentText for VerifyResult {
     fn agent_text(&self) -> String {
-        if self.ok {
-            return "✓ verify: no problems found.\n".to_string();
+        let problems: Vec<&Finding> = self.findings.iter().filter(|f| f.id != "V6").collect();
+        let mut out = if problems.is_empty() {
+            "✓ verify: no problems found.\n".to_string()
+        } else {
+            let blocking = self.blocking();
+            let mut out = format!("✗ verify: {} problem(s)", problems.len());
+            if blocking < problems.len() {
+                out.push_str(&format!(", {blocking} blocking"));
+            }
+            out.push('\n');
+            out
+        };
+        for finding in &problems {
+            let at = match (&finding.path, finding.line) {
+                (Some(path), Some(line)) => format!(" {path}:{line}"),
+                (None, Some(line)) => format!(" (line {line})"),
+                _ => String::new(),
+            };
+            let advisory = if finding.blocking { "" } else { " (advisory)" };
+            out.push_str(&format!(
+                "  [{}]{at} {}{advisory}\n",
+                finding.id, finding.message
+            ));
         }
-        let mut out = format!("✗ verify: {} problem(s)\n", self.findings.len());
-        for finding in &self.findings {
-            let at = finding
-                .line
-                .map(|line| format!(" (line {line})"))
-                .unwrap_or_default();
-            out.push_str(&format!("  [{}] {}{at}\n", finding.id, finding.message));
+        if !self.tests.is_empty() {
+            out.push_str(&format!("Tests to run: {}\n", self.tests.join(", ")));
         }
         out
+    }
+}
+
+impl VerifyResult {
+    /// One line per blocking problem, for hook output and agents.
+    pub fn agent_brief(&self) -> String {
+        let problems: Vec<&Finding> = self.findings.iter().filter(|f| f.blocking).collect();
+        if problems.is_empty() {
+            return "tessera verify: ok".to_string();
+        }
+        let mut out = format!("tessera verify: {} problem(s) to fix", problems.len());
+        for finding in problems.iter().take(AGENT_MAX_FINDINGS) {
+            let at = match (&finding.path, finding.line) {
+                (Some(path), Some(line)) => format!("{path}:{line} "),
+                _ => String::new(),
+            };
+            out.push_str(&format!("\n{} {at}{}", finding.id, finding.message));
+        }
+        if problems.len() > AGENT_MAX_FINDINGS {
+            out.push_str(&format!(
+                "\n… and {} more",
+                problems.len() - AGENT_MAX_FINDINGS
+            ));
+        }
+        out
+    }
+
+    /// SARIF 2.1.0 for code-scanning uploads.
+    pub fn sarif(&self) -> serde_json::Value {
+        let rules = [
+            ("V1", "Call to a name that does not exist where it points"),
+            ("V2", "Argument count does not match the target"),
+            ("V3", "Reference to a name the change removed"),
+            ("V4", "Import of a missing module or export"),
+            ("V6", "Test that reaches the changed code"),
+        ];
+        let results: Vec<serde_json::Value> = self
+            .findings
+            .iter()
+            .map(|f| {
+                let level = if f.blocking {
+                    "error"
+                } else if f.id == "V6" {
+                    "note"
+                } else {
+                    "warning"
+                };
+                serde_json::json!({
+                    "ruleId": f.id,
+                    "level": level,
+                    "message": { "text": f.message },
+                    "locations": [{
+                        "physicalLocation": {
+                            "artifactLocation": { "uri": f.path.clone().unwrap_or_default() },
+                            "region": { "startLine": f.line.unwrap_or(1) }
+                        }
+                    }]
+                })
+            })
+            .collect();
+        let rules: Vec<serde_json::Value> = rules
+            .iter()
+            .map(|(id, text)| serde_json::json!({ "id": id, "shortDescription": { "text": text } }))
+            .collect();
+        serde_json::json!({
+            "version": "2.1.0",
+            "$schema": "https://json.schemastore.org/sarif-2.1.0.json",
+            "runs": [{
+                "tool": {
+                    "driver": {
+                        "name": "tessera",
+                        "version": env!("CARGO_PKG_VERSION"),
+                        "informationUri": "https://github.com/iamsaquib8/tessera",
+                        "rules": rules
+                    }
+                },
+                "results": results
+            }]
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn lexical_targets_follow_relative_specifiers() {
+        assert_eq!(
+            lexical_target("src/users/repo.ts", "../util/format").as_deref(),
+            Some("src/util/format")
+        );
+        assert_eq!(
+            lexical_target("src/a.ts", "./b.js").as_deref(),
+            Some("src/b")
+        );
+        assert_eq!(lexical_target("src/a.ts", "react"), None);
     }
 }

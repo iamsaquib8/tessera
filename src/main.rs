@@ -138,6 +138,18 @@ enum Commands {
         /// Language of the snippet.
         #[arg(long, value_enum)]
         language: Option<LangArg>,
+        /// Check every change in the working tree against HEAD, untracked files included.
+        #[arg(long, conflicts_with_all = ["symbol", "snippet", "staged", "diff"])]
+        changed: bool,
+        /// Check the staged changes (for a pre-commit hook).
+        #[arg(long, conflicts_with_all = ["symbol", "snippet", "diff"])]
+        staged: bool,
+        /// Check the working tree against this git revision.
+        #[arg(long, value_name = "REV", conflicts_with_all = ["symbol", "snippet"])]
+        diff: Option<String>,
+        /// Output: human (default), agent (one line per blocking problem), json, or sarif.
+        #[arg(long, value_enum, default_value_t = VerifyFormat::Human)]
+        format: VerifyFormat,
     },
     /// One budgeted bundle to read before editing a symbol.
     Context {
@@ -291,6 +303,14 @@ impl From<GraphGroupArg> for ExportGroupBy {
             GraphGroupArg::Language => ExportGroupBy::Language,
         }
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+enum VerifyFormat {
+    Human,
+    Agent,
+    Json,
+    Sarif,
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
@@ -471,10 +491,15 @@ fn run() -> Result<u8> {
             symbol,
             snippet,
             language,
+            changed,
+            staged,
+            diff,
+            format,
         } => {
-            if symbol.is_none() && snippet.is_none() {
+            let changes = changed || staged || diff.is_some();
+            if symbol.is_none() && snippet.is_none() && !changes {
                 return Err(usage(
-                    "pass a symbol, or --snippet <file|-> with --language",
+                    "pass a symbol, --snippet <file|-> with --language, or --changed",
                 ));
             }
             if snippet.is_some() && language.is_none() {
@@ -488,8 +513,19 @@ fn run() -> Result<u8> {
                 symbol,
                 snippet,
                 language: language.map(Language::from),
+                changed,
+                staged,
+                diff_from: diff,
             })?;
-            out.print(&result)?;
+            match format {
+                _ if out.json => out.print_json(&result)?,
+                VerifyFormat::Human => out.print(&result)?,
+                VerifyFormat::Agent => println!("{}", result.agent_brief()),
+                VerifyFormat::Json => out.print_json(&result)?,
+                VerifyFormat::Sarif => {
+                    println!("{}", serde_json::to_string_pretty(&result.sarif())?)
+                }
+            }
             if !result.ok {
                 return Ok(EXIT_FINDINGS);
             }

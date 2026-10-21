@@ -13,7 +13,7 @@ use crate::types::{
     ReferenceRecord, SymbolRecord,
 };
 
-pub const SCHEMA_VERSION: i64 = 6;
+pub const SCHEMA_VERSION: i64 = 7;
 /// `PRAGMA application_id` of every Tessera index ("TSSR").
 pub const APPLICATION_ID: i64 = 0x5453_5352;
 
@@ -237,7 +237,11 @@ fn create_schema(conn: &Connection) -> Result<()> {
             resolver TEXT,
             ambiguous_group INTEGER,
             ref_id INTEGER REFERENCES refs(id) ON DELETE CASCADE,
-            weight REAL NOT NULL DEFAULT 1.0
+            weight REAL NOT NULL DEFAULT 1.0,
+            -- resolver 'missing': the module or class file that lacks the name
+            missing_in TEXT,
+            -- the call passes an argument count no candidate accepts
+            arity_mismatch INTEGER NOT NULL DEFAULT 0
         );
 
         CREATE INDEX idx_edges_to ON edges(to_symbol_name);
@@ -261,7 +265,10 @@ fn create_schema(conn: &Connection) -> Result<()> {
             source TEXT NOT NULL,
             kind TEXT NOT NULL,
             line INTEGER NOT NULL,
-            target_path TEXT
+            target_path TEXT,
+            -- ok, missing_module (a local specifier resolves to no file),
+            -- or missing_export (the module does not export the name)
+            status TEXT NOT NULL DEFAULT 'ok'
         );
 
         CREATE INDEX idx_bindings_file ON import_bindings(file_id);

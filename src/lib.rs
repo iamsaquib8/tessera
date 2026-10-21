@@ -145,7 +145,7 @@ impl Index {
     }
 
     pub fn verify(&self, args: &VerifyArgs) -> Result<VerifyResult> {
-        query::verify(&self.conn, args)
+        query::verify(&self.conn, &self.root, args)
     }
 
     pub fn status(&self) -> Result<StatusResult> {

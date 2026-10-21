@@ -18,7 +18,9 @@ pub use path::PathArgs;
 pub use refs::{RefHit, RefsArgs, RefsResult};
 pub use search::{SearchArgs, SearchResults};
 pub use status::{ShadowBinary, StatusResult};
-pub use verify::{Finding, VerifyArgs, VerifyResult};
+pub use verify::{
+    changed_paths, verify_changes, verify_paths, Changes, Finding, VerifyArgs, VerifyResult,
+};
 
 pub use blast::run as blast;
 pub use context::run as context;

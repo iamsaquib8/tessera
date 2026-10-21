@@ -27,6 +27,9 @@ pub struct ResolveReport {
     pub medium: usize,
     pub low: usize,
     pub unresolved: usize,
+    /// References to a repository module or class that lacks the name.
+    #[serde(default)]
+    pub missing: usize,
     pub elapsed_ms: u128,
     /// An incremental pass had too many dependents and resolved everything.
     pub fallback: bool,
@@ -64,26 +67,29 @@ pub fn resolve(conn: &Connection, root: &Path, scope: ResolveScope) -> Result<Re
     };
     let modules = ModuleResolver::build(conn, root)?;
     let mut resolver = scope::Resolver::new(conn, modules, full)?;
-    let mut set_target =
-        conn.prepare_cached("UPDATE import_bindings SET target_path = ?2 WHERE id = ?1")?;
+    let mut set_target = conn
+        .prepare_cached("UPDATE import_bindings SET target_path = ?2, status = ?3 WHERE id = ?1")?;
     let mut delete_edges = conn.prepare_cached(
         "DELETE FROM edges WHERE ref_id IN (SELECT id FROM refs WHERE file_id = ?1)",
     )?;
     let mut insert_edge = conn.prepare_cached(
         "INSERT INTO edges(from_symbol_id, to_symbol_name, to_symbol_id, kind, confidence,
-                           resolver, ambiguous_group, ref_id, weight)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                           resolver, ambiguous_group, ref_id, weight, missing_in,
+                           arity_mismatch)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
     )?;
     for file_id in &files {
         let file = resolver.file(*file_id)?;
         for binding in &file.bindings {
             let target = resolver.binding_target_path(&file, binding);
-            set_target.execute(params![binding.id, target])?;
+            let status = resolver.binding_status(&file, binding)?;
+            set_target.execute(params![binding.id, target, status])?;
         }
         delete_edges.execute(params![file_id])?;
         for reference in resolver.refs(*file_id)? {
             let resolution = resolver.resolve_ref(&file, &reference)?;
             match resolution.confidence {
+                _ if resolution.resolver == Some("missing") => report.missing += 1,
                 "high" => report.high += 1,
                 "medium" => report.medium += 1,
                 "low" => report.low += 1,
@@ -111,7 +117,9 @@ pub fn resolve(conn: &Connection, root: &Path, scope: ResolveScope) -> Result<Re
                     resolution.resolver,
                     group,
                     reference.id,
-                    weight
+                    weight,
+                    resolution.missing_in,
+                    resolution.arity_mismatch
                 ])?;
                 report.edges += 1;
             }

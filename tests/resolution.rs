@@ -171,8 +171,14 @@ fn barrels_that_re_export_each_other_terminate() {
         ),
     ]);
     let all = edges(&ws.db_path);
-    assert_has(&all, &["run -call-> a/thing.ts:thing [high/import]"]);
-    assert_lacks(&all, &["run -call-> missing [high"]);
+    assert_has(
+        &all,
+        &[
+            "run -call-> a/thing.ts:thing [high/import]",
+            // the barrels resolve, and none of them exports `missing`
+            "run -call-> missing [high/missing]",
+        ],
+    );
 }
 
 #[test]

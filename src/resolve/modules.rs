@@ -113,6 +113,11 @@ impl ModuleResolver {
             .copied()
     }
 
+    /// Whether any indexed Java file declares `package`.
+    pub fn java_package_exists(&self, package: &str) -> bool {
+        !package.is_empty() && self.java_classes.keys().any(|(p, _)| p == package)
+    }
+
     pub fn file_id(&self, path: &str) -> Option<i64> {
         self.files.get(path).copied()
     }
