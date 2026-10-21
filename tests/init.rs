@@ -8,6 +8,7 @@ use assert_cmd::Command;
 use serde_json::Value;
 use support::{copy_dir, fixture_dir};
 use tempfile::TempDir;
+use tessera_codegraph::init::{self, InitOptions};
 
 /// A project and an empty home directory, so detection sees only what a test
 /// puts there.
@@ -466,6 +467,77 @@ fn every_hook_adapter_is_wired_in_its_documented_shape() {
 
     let (out, _) = init(&s, &args);
     assert!(out.contains("Nothing to change"), "{out}");
+}
+
+fn library_options(s: &Setup, agents: &[&str], global: bool) -> InitOptions {
+    InitOptions {
+        root: s.root.clone(),
+        db_path: s.root.join(".tessera/tessera.db"),
+        agents: agents.iter().map(|a| a.to_string()).collect(),
+        global,
+        with_instructions: false,
+        git_hook: false,
+        home: Some(s.home.clone()),
+    }
+}
+
+/// Claude Code rewrites ~/.claude.json all the time, so it may change
+/// between the diff `init` shows and the write.
+#[test]
+fn a_file_that_changed_after_the_plan_keeps_both_changes() {
+    let s = setup();
+    let original = "{\n  \"numStartups\": 1,\n  \"mcpServers\": {}\n}\n";
+    touch(&s.home, ".claude.json", original);
+    let plan = init::plan(&library_options(&s, &["claude"], true)).unwrap();
+    assert!(plan.changes.iter().any(|c| c.path == "~/.claude.json"));
+    touch(
+        &s.home,
+        ".claude.json",
+        "{\n  \"numStartups\": 2,\n  \"tipsHistory\": {},\n  \"mcpServers\": {}\n}\n",
+    );
+    init::apply(&plan).unwrap();
+    let claude = json(&s.home.join(".claude.json"));
+    assert_eq!(claude["numStartups"], 2, "{claude}");
+    assert!(claude["tipsHistory"].is_object(), "{claude}");
+    assert_eq!(
+        claude["mcpServers"]["tessera"]["args"][0], "mcp",
+        "{claude}"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn apply_replaces_files_whole_and_keeps_their_mode_and_links() {
+    use std::os::unix::fs::PermissionsExt;
+    let s = setup();
+    touch(&s.home, ".claude.json", "{}\n");
+    fs::set_permissions(
+        s.home.join(".claude.json"),
+        fs::Permissions::from_mode(0o600),
+    )
+    .unwrap();
+    touch(&s.root, "shared/mcp.json", "{}\n");
+    std::os::unix::fs::symlink("shared/mcp.json", s.root.join(".mcp.json")).unwrap();
+    let plan = init::plan(&library_options(&s, &["claude"], true)).unwrap();
+    init::apply(&plan).unwrap();
+    let mode = fs::metadata(s.home.join(".claude.json"))
+        .unwrap()
+        .permissions()
+        .mode();
+    assert_eq!(mode & 0o777, 0o600);
+    assert!(fs::symlink_metadata(s.root.join(".mcp.json"))
+        .unwrap()
+        .file_type()
+        .is_symlink());
+    assert!(json(&s.root.join("shared/mcp.json"))["mcpServers"]["tessera"].is_object());
+    for dir in [&s.home, &s.root] {
+        let leftovers: Vec<String> = fs::read_dir(dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .filter(|name| name.contains("tessera-") && name.ends_with(".tmp"))
+            .collect();
+        assert!(leftovers.is_empty(), "{leftovers:?}");
+    }
 }
 
 #[test]

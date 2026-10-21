@@ -78,6 +78,9 @@ pub struct InitPlan {
     pub notes: Vec<Note>,
     /// `tessera` is not on PATH, and every config runs it by that name.
     pub not_on_path: bool,
+    /// What the plan was made from, so `apply` can plan a file again.
+    #[serde(skip)]
+    options: InitOptions,
 }
 
 struct Pending {
@@ -332,21 +335,111 @@ pub fn plan(options: &InitOptions) -> Result<InitPlan> {
         manual: planner.manual,
         notes,
         not_on_path: !on_path,
+        options: options.clone(),
     })
 }
 
-/// Writes the planned changes.
-pub fn apply(plan: &InitPlan) -> Result<()> {
+/// What [`apply`] did, by display path.
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct Applied {
+    pub written: Vec<String>,
+    /// Files that changed after the plan was made: planned again from their
+    /// new content, and written.
+    pub replanned: Vec<String>,
+    /// Files left alone, and why.
+    pub skipped: Vec<(String, String)>,
+}
+
+/// Writes the planned changes. A file that changed since the plan was made
+/// (Claude Code rewrites `~/.claude.json` all the time) is planned again
+/// from what it holds now, so nothing written in between is lost. Each file
+/// is replaced whole, through a temporary file in its directory, keeping
+/// its permissions; a symlinked config is written where the link points.
+pub fn apply(plan: &InitPlan) -> Result<Applied> {
+    let mut applied = Applied::default();
+    let mut again: Option<InitPlan> = None;
     for change in &plan.changes {
-        if let Some(parent) = change.absolute.parent() {
-            fs::create_dir_all(parent)
-                .with_context(|| format!("failed to create {}", parent.display()))?;
+        let current = read_existing(&change.absolute)?;
+        let change = if current == change.before {
+            change.clone()
+        } else {
+            if again.is_none() {
+                again = Some(self::plan(&plan.options)?);
+            }
+            let replanned = again
+                .as_ref()
+                .and_then(|p| p.changes.iter().find(|c| c.path == change.path));
+            match replanned {
+                Some(fresh) if fresh.before == current => {
+                    applied.replanned.push(change.path.clone());
+                    fresh.clone()
+                }
+                Some(_) => {
+                    applied.skipped.push((
+                        change.path.clone(),
+                        "it kept changing while init ran; run init again".to_string(),
+                    ));
+                    continue;
+                }
+                None => {
+                    applied.skipped.push((
+                        change.path.clone(),
+                        "it changed after the plan, and now needs nothing".to_string(),
+                    ));
+                    continue;
+                }
+            }
+        };
+        write_whole(&change.absolute, &change.after, change.executable)?;
+        applied.written.push(change.path.clone());
+    }
+    Ok(applied)
+}
+
+/// The file's text, or `None` when it does not exist.
+fn read_existing(path: &Path) -> Result<Option<String>> {
+    match fs::read_to_string(path) {
+        Ok(text) => Ok(Some(text)),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error).with_context(|| format!("failed to read {}", path.display())),
+    }
+}
+
+/// Replaces `path` with `content` by a rename, so a reader never sees half
+/// a file.
+fn write_whole(path: &Path, content: &str, executable: bool) -> Result<()> {
+    use std::io::Write;
+
+    let is_link = fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_symlink());
+    let path = if is_link {
+        fs::canonicalize(path).with_context(|| format!("failed to follow {}", path.display()))?
+    } else {
+        path.to_path_buf()
+    };
+    let dir = path.parent().unwrap_or(Path::new("."));
+    fs::create_dir_all(dir).with_context(|| format!("failed to create {}", dir.display()))?;
+    let name = path.file_name().unwrap_or_default().to_string_lossy();
+    let tmp = dir.join(format!(".{name}.tessera-{}.tmp", std::process::id()));
+    let permissions = fs::metadata(&path).ok().map(|m| m.permissions());
+    let written = (|| -> std::io::Result<()> {
+        let _ = fs::remove_file(&tmp);
+        let mut file = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&tmp)?;
+        file.write_all(content.as_bytes())?;
+        file.sync_all()?;
+        if let Some(permissions) = permissions {
+            fs::set_permissions(&tmp, permissions)?;
         }
-        fs::write(&change.absolute, &change.after)
-            .with_context(|| format!("failed to write {}", change.absolute.display()))?;
-        if change.executable {
-            make_executable(&change.absolute)?;
-        }
+        fs::rename(&tmp, &path)
+    })();
+    if let Err(error) = written {
+        let _ = fs::remove_file(&tmp);
+        return Err(error).with_context(|| format!("failed to write {}", path.display()));
+    }
+    if executable {
+        make_executable(&path)?;
     }
     Ok(())
 }

@@ -765,19 +765,35 @@ fn run_init(plan: &init::InitPlan, yes: bool, dry_run: bool, out: &Output) -> Re
     } else {
         false
     };
-    if apply {
-        init::apply(plan)?;
-    }
+    let applied = if apply {
+        Some(init::apply(plan)?)
+    } else {
+        None
+    };
     if out.json {
         let mut value = serde_json::to_value(plan)?;
         value["applied"] = serde_json::Value::Bool(apply);
+        if let Some(applied) = &applied {
+            value["written"] = serde_json::to_value(&applied.written)?;
+            value["replanned"] = serde_json::to_value(&applied.replanned)?;
+            value["skipped"] = serde_json::to_value(&applied.skipped)?;
+        }
         out.print_json(&value)?;
         return Ok(0);
     }
     let summary = if plan.changes.is_empty() {
         "Nothing to change.".to_string()
-    } else if apply {
-        format!("Wrote {} file(s).", plan.changes.len())
+    } else if let Some(applied) = &applied {
+        let mut summary = format!("Wrote {} file(s).", applied.written.len());
+        for path in &applied.replanned {
+            summary.push_str(&format!(
+                "\n{path} changed after the diff above; Tessera's entry was added to its new content."
+            ));
+        }
+        for (path, why) in &applied.skipped {
+            summary.push_str(&format!("\nLeft {path} alone: {why}."));
+        }
+        summary
     } else if dry_run {
         "Dry run: nothing written.".to_string()
     } else if yes || std::io::stdin().is_terminal() {
