@@ -65,10 +65,10 @@ fn grpc_clients_link_to_servers_in_five_languages() {
     let got = summary(&result);
     for expected in [
         "CartService/AddItem: cart/CartService.cs -> gateway/cart.gateway.ts",
-        "CartService/GetCart: cart/CartService.cs -> frontend/rpc.go",
-        "CurrencyService/Convert: currency/server.js -> frontend/rpc.go",
+        "CartService/GetCart: cart/CartService.cs -> cart/CartServiceTests.cs,currency-cpp/server.cpp,frontend/rpc.go",
+        "CurrencyService/Convert: currency-cpp/server.cpp,currency/server.js -> frontend/rpc.go",
         "CurrencyService/GetSupportedCurrencies: currency/server.js -> frontend/rpc.go",
-        "ProductCatalogService/ListProducts:  -> recommendation/client.py",
+        "ProductCatalogService/ListProducts:  -> ad/src/main/java/shop/Recommender.java,recommendation/client.py",
         "EmailService/SendOrderConfirmation: email/email_server.py -> checkout/main.go",
         "CheckoutService/PlaceOrder: checkout/main.go -> ",
         "AdService/GetAds: ad/src/main/java/shop/AdService.java -> ad/src/main/java/shop/AdServiceClient.java",
@@ -94,7 +94,12 @@ fn every_site_names_its_handler_service_and_definition() {
     assert_eq!(provider["symbol"], "CartService.GetCart");
     assert_eq!(provider["service"], "cart");
     assert_eq!(provider["confidence"], "high");
-    let consumer = &cart["consumers"][0];
+    let consumer = cart["consumers"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["path"] == "frontend/rpc.go")
+        .unwrap();
     assert_eq!(consumer["symbol"], "frontendServer.getCart");
     assert_eq!(consumer["service"], "frontend");
     assert_eq!(consumer["line"], 10);

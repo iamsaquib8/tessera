@@ -22,6 +22,8 @@ static JAVA_GRPC: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^(\w+)Grpc$").
 static JAVA_IMPL: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^(\w+)ImplBase$").unwrap());
 static CS_CLIENT: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^(\w+)Client$").unwrap());
 static CS_BASE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^(\w+)Base$").unwrap());
+static JAVA_STUB_TYPE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^(\w+?)(?:Blocking|Future|BlockingV2)?Stub$").unwrap());
 const JAVA_STUBS: &[&str] = &[
     "newBlockingStub",
     "newStub",
@@ -133,6 +135,7 @@ fn assigned_to(scan: &Scan<'_>, node: Node<'_>) -> Option<String> {
                 .child_by_field_name("name")
                 .or_else(|| parent.named_child(0)),
             "var_spec" => parent.child_by_field_name("name"),
+            "init_declarator" => parent.child_by_field_name("declarator"),
             // `NewXClient(conn).GetCart(…)`: the client is used, not stored.
             "selector_expression"
             | "member_expression"
@@ -172,6 +175,7 @@ fn relevant(language: Language, source: &str) -> bool {
             source.contains("grpc") || source.contains("Grpc")
         }
         Language::Java | Language::CSharp => source.contains("Grpc"),
+        Language::Cpp => source.contains("grpc"),
         Language::Python => source.contains("grpc") || source.contains("_pb2"),
         _ => false,
     }
@@ -300,6 +304,7 @@ fn visit(scan: &mut Scan<'_>, node: Node<'_>) {
         Language::Java => java(scan, node),
         Language::CSharp => csharp(scan, node),
         Language::JavaScript | Language::TypeScript | Language::Tsx => javascript(scan, node),
+        Language::Cpp => cpp(scan, node),
         _ => {}
     }
 }
@@ -446,6 +451,36 @@ fn python(scan: &mut Scan<'_>, node: Node<'_>) {
 
 fn java(scan: &mut Scan<'_>, node: Node<'_>) {
     match node.kind() {
+        // `private final CatalogServiceBlockingStub catalog;` or a parameter
+        // of that type: a client handed in rather than created here.
+        "field_declaration" | "local_variable_declaration" | "formal_parameter" => {
+            let Some(ty) = node.child_by_field_name("type") else {
+                return;
+            };
+            let type_text = scan
+                .text(ty)
+                .split('<')
+                .next()
+                .unwrap_or_default()
+                .to_string();
+            let Some(service) = service_of(&JAVA_STUB_TYPE, &type_text) else {
+                return;
+            };
+            let mut names = Vec::new();
+            if node.kind() == "formal_parameter" {
+                names.extend(node.child_by_field_name("name"));
+            } else {
+                let mut cursor = node.walk();
+                for declarator in node.children_by_field_name("declarator", &mut cursor) {
+                    names.extend(declarator.child_by_field_name("name"));
+                }
+            }
+            for name in names {
+                let variable = scan.text(name).to_string();
+                scan.stubs.push((variable, service.clone()));
+            }
+            scan.push(kind::RPC_CLIENT, service, node, "grpc.java.stub_type");
+        }
         "class_declaration" => {
             let service = node
                 .child_by_field_name("superclass")
@@ -555,11 +590,11 @@ fn csharp(scan: &mut Scan<'_>, node: Node<'_>) {
             };
             let text = scan.text(ty).to_string();
             let mut parts = text.rsplit('.');
-            let (Some(name), Some(outer)) = (parts.next(), parts.next()) else {
-                return;
-            };
+            let name = parts.next().unwrap_or_default();
+            let outer = parts.next();
+            // `CartServiceClient` alone comes in through `using static`.
             if let Some(service) = service_of(&CS_CLIENT, name) {
-                if service == outer.trim() {
+                if outer.is_none_or(|outer| service == outer.trim()) {
                     scan.client(service, node, "grpc.csharp.client");
                 }
             }
@@ -614,6 +649,85 @@ fn javascript(scan: &mut Scan<'_>, node: Node<'_>) {
             let name = last_segment(scan.text(constructor)).to_string();
             if name.starts_with(|c: char| c.is_ascii_uppercase()) {
                 scan.client(name, node, "grpc.node.client");
+            }
+        }
+        _ => {}
+    }
+}
+
+fn cpp(scan: &mut Scan<'_>, node: Node<'_>) {
+    match node.kind() {
+        // `class CurrencyServiceImpl final : public shop::CurrencyService::Service`
+        "class_specifier" | "struct_specifier" => {
+            let mut cursor = node.walk();
+            let Some(bases) = node
+                .named_children(&mut cursor)
+                .find(|child| child.kind() == "base_class_clause")
+            else {
+                return;
+            };
+            let bases = scan.text(bases).to_string();
+            let Some(service) = bases
+                .split([',', ' ', ':'])
+                .filter(|part| !part.is_empty())
+                .collect::<Vec<_>>()
+                .windows(2)
+                .find(|w| w[1] == "Service")
+                .map(|w| w[0].to_string())
+            else {
+                return;
+            };
+            let Some(body) = node.child_by_field_name("body") else {
+                return;
+            };
+            scan.push(kind::RPC_SERVER, service.clone(), node, "grpc.cpp.service");
+            let mut cursor = body.walk();
+            for member in body.named_children(&mut cursor) {
+                if member.kind() != "function_definition" {
+                    continue;
+                }
+                let head_end = member
+                    .child_by_field_name("body")
+                    .map_or(member.end_byte(), |b| b.start_byte());
+                let head = &scan.source[member.start_byte()..head_end];
+                if !head.contains("override") {
+                    continue;
+                }
+                let name = member
+                    .child_by_field_name("declarator")
+                    .and_then(|d| d.child_by_field_name("declarator"));
+                if let Some(name) = name {
+                    let method = scan.text(name).to_string();
+                    scan.push(
+                        kind::RPC_IMPL,
+                        format!("{service}/{method}"),
+                        name,
+                        "grpc.cpp.impl",
+                    );
+                }
+            }
+        }
+        "call_expression" => {
+            let Some(function) = node.child_by_field_name("function") else {
+                return;
+            };
+            match function.kind() {
+                // `shop::CartService::NewStub(channel)`
+                "qualified_identifier" => {
+                    let text = scan.text(function).to_string();
+                    let parts: Vec<&str> = text.split("::").collect();
+                    if parts.len() >= 2 && parts[parts.len() - 1] == "NewStub" {
+                        let service = parts[parts.len() - 2].trim().to_string();
+                        scan.client(service, node, "grpc.cpp.stub");
+                    }
+                }
+                // `stub->GetCart(&context, request, &response)`
+                "field_expression" => {
+                    if let Some(field) = function.child_by_field_name("field") {
+                        scan.call(field, function.child_by_field_name("argument"), None);
+                    }
+                }
+                _ => {}
             }
         }
         _ => {}
