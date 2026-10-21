@@ -1052,15 +1052,9 @@ impl<'c> Resolver<'c> {
                     };
                     return Ok(
                         match self.typed(&owner, &owner_chain, &type_name, &origin, depth + 1)? {
-                            Receiver::Class(types, field_confidence, _) => Receiver::Class(
-                                types,
-                                if confidence == "high" && field_confidence == "high" {
-                                    "high"
-                                } else {
-                                    "medium"
-                                },
-                                "hint",
-                            ),
+                            Receiver::Class(types, field_confidence, _) => {
+                                Receiver::Class(types, weaker(confidence, field_confidence), "hint")
+                            }
                             other => other,
                         },
                     );
@@ -1174,7 +1168,13 @@ impl<'c> Resolver<'c> {
             if resolution.targets.is_empty() {
                 return Ok(Receiver::External);
             }
-            let confidence = if origin == "return" { "medium" } else { "high" };
+            // A type found only by a repo-wide name match may be a global
+            // (`parent: Node`) or one of several classes of that name.
+            let confidence = if origin == "return" {
+                weaker(resolution.confidence, "medium")
+            } else {
+                resolution.confidence
+            };
             (resolution.targets, confidence)
         };
         Ok(Receiver::Class(classes, confidence, "hint"))
@@ -1526,6 +1526,21 @@ fn map_sym(row: &rusqlite::Row<'_>) -> rusqlite::Result<Sym> {
         default_export: row.get(7)?,
         arity: min.map(|min| (min, max)),
     })
+}
+
+/// The lower of two confidence levels.
+fn weaker(a: &'static str, b: &'static str) -> &'static str {
+    let rank = |c: &str| match c {
+        "high" => 3,
+        "medium" => 2,
+        "low" => 1,
+        _ => 0,
+    };
+    if rank(a) <= rank(b) {
+        a
+    } else {
+        b
+    }
 }
 
 fn is_js(language: Language) -> bool {

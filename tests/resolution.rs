@@ -317,6 +317,36 @@ fn calls_on_js_globals_never_match_repository_methods_by_name() {
 }
 
 #[test]
+fn a_receiver_typed_by_a_name_match_is_no_stronger_than_the_match() {
+    let (_temp, ws) = repo_with(&[
+        ("a/foo.ts", "class Foo {\n  run() { return 1; }\n}\n"),
+        ("b/foo.ts", "class Foo {\n  run() { return 2; }\n}\n"),
+        (
+            "tree.ts",
+            "export class Node {\n  id() { return 1; }\n}\n",
+        ),
+        (
+            "main.ts",
+            "export function go(x: Foo) {\n  return x.run();\n}\n\
+             export function attach(parent: Node, child: Node) {\n  parent.appendChild(child);\n}\n",
+        ),
+    ]);
+    let all = edges(&ws.db_path);
+    let high: Vec<&String> = all
+        .iter()
+        .filter(|e| (e.starts_with("go ") || e.starts_with("attach ")) && e.contains("[high/"))
+        .collect();
+    assert!(high.is_empty(), "{high:#?}");
+    assert_has(
+        &all,
+        &[
+            "go -call-> a/foo.ts:Foo.run [low/hint]",
+            "go -call-> b/foo.ts:Foo.run [low/hint]",
+        ],
+    );
+}
+
+#[test]
 fn a_java_call_on_a_this_field_uses_the_field_type() {
     let (_temp, ws) = repo_with(&[
         (
