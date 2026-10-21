@@ -29,7 +29,7 @@ expression: graph_dump(& db)
     "specs/util.spec.js describe(\"slugify\").it(\"lowercases\") -call-> toBe [name]"
   ],
   "hints": [
-    "app.js app::app: call:express (return)"
+    "app.js app: call:express (return)"
   ],
   "imports": [
     "app.js:1 require express",

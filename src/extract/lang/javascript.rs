@@ -80,6 +80,11 @@ pub(super) fn js_symbol(cx: &Cx<'_>, node: Node<'_>) -> Option<IndexedSymbol> {
         ),
         "type_alias_declaration" => (cx.text(node.child_by_field_name("name")?), "type", None),
         "enum_declaration" => (cx.text(node.child_by_field_name("name")?), "enum", None),
+        // In a class body a bodiless signature is an overload of the method
+        // that follows; that method's symbol spans it.
+        "method_signature" if node.parent().is_some_and(|p| p.kind() == "class_body") => {
+            return None
+        }
         "method_definition" | "method_signature" | "abstract_method_signature" => (
             cx.text(node.child_by_field_name("name")?),
             "method",
@@ -137,8 +142,14 @@ pub(super) fn js_symbol(cx: &Cx<'_>, node: Node<'_>) -> Option<IndexedSymbol> {
     };
     let mut symbol = cx.symbol(name, kind, node, has_export_ancestor(node));
     symbol.default_export = is_default_export(node);
-    if node.kind() == "function_declaration" {
-        symbol.start_line = overload_start(cx, node, &symbol.name) + 1;
+    match node.kind() {
+        "function_declaration" => {
+            symbol.start_line = overload_start(cx, node, &symbol.name, "function_signature") + 1
+        }
+        "method_definition" => {
+            symbol.start_line = overload_start(cx, node, &symbol.name, "method_signature") + 1
+        }
+        _ => {}
     }
     symbol.arity = params.and_then(|p| arity(cx, p));
     Some(symbol)
@@ -392,7 +403,11 @@ pub(super) fn js_bindings(cx: &Cx<'_>, node: Node<'_>, out: &mut Vec<IndexedBind
 }
 
 pub(super) fn js_hints(cx: &Cx<'_>, node: Node<'_>, out: &mut Vec<IndexedTypeHint>) {
-    let scope = cx.current_scope().map(ToOwned::to_owned);
+    let scope = if node.kind() == "variable_declarator" {
+        cx.scope_around(node).map(ToOwned::to_owned)
+    } else {
+        cx.current_scope().map(ToOwned::to_owned)
+    };
     let mut push = |scope: Option<String>, name: String, type_name: String, origin| {
         out.push(IndexedTypeHint {
             scope,
@@ -498,6 +513,8 @@ fn value_type(cx: &Cx<'_>, value: Node<'_>) -> Option<String> {
                 .then(|| format!("call:{text}"))
         }
         "await_expression" => value.named_child(0).and_then(|v| value_type(cx, v)),
+        // `const scene = app.scene` has whatever type the field has.
+        "member_expression" => cx.member_path(value).map(|path| format!("path:{path}")),
         _ => None,
     }
 }
@@ -736,7 +753,7 @@ fn last_segment(name: &str) -> String {
 
 /// The first row of the TypeScript overload signatures (`function f(a: A);`)
 /// directly before an implementation, so the symbol spans every declaration.
-fn overload_start(cx: &Cx<'_>, function: Node<'_>, name: &str) -> usize {
+fn overload_start(cx: &Cx<'_>, function: Node<'_>, name: &str, signature_kind: &str) -> usize {
     let anchor = match function.parent() {
         Some(parent) if parent.kind() == "export_statement" => parent,
         _ => function,
@@ -754,7 +771,7 @@ fn overload_start(cx: &Cx<'_>, function: Node<'_>, name: &str) -> usize {
             Some(sibling)
         };
         let is_overload = signature.is_some_and(|sig| {
-            sig.kind() == "function_signature"
+            sig.kind() == signature_kind
                 && sig
                     .child_by_field_name("name")
                     .is_some_and(|n| cx.text(n) == name)

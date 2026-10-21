@@ -76,6 +76,11 @@ fn typescript_edges_resolve_through_imports_hints_and_scope() {
             "default -jsx-> src/ui/Badge.tsx:Badge [high/local]",
             // a type alias is a type
             "Badge -type-> src/ui/Badge.tsx:Props [high/local]",
+            // a module-level variable typed by `new`
+            "useShared -call-> src/data/repo.ts:UserRepo.get [high/hint]",
+            // a field's declared type, directly and through a local copy
+            "Shop.direct -call-> src/services/users.ts:UserService.name [high/hint]",
+            "Shop.label -call-> src/services/users.ts:UserService.name [high/hint]",
             "describe(\"UserService\").it(\"names a user\") -call-> src/services/users.ts:makeService [high/import]",
             // unknown receiver: unique name match, capped at medium
             "UserService.name -call-> src/domain/user.ts:User.display [medium/name]",

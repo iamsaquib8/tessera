@@ -9,6 +9,8 @@ use crate::types::{
 mod lang;
 
 const SIGNATURE_MAX_CHARS: usize = 180;
+/// Receiver chains longer than this are not followed.
+const MAX_MEMBER_PATH: usize = 4;
 
 #[derive(Debug)]
 pub struct ParsedFile {
@@ -70,6 +72,7 @@ pub fn parse_file(language: Language, content: &str) -> Result<ParsedFile> {
         if let Some(symbol) = support.symbol(&cx, node) {
             cx.scope.push(ScopeFrame {
                 name: symbol.qualified_name.clone(),
+                start_byte: node.start_byte(),
                 end_byte: node.end_byte(),
                 index: out.symbols.len(),
             });
@@ -108,6 +111,7 @@ pub fn parse_file(language: Language, content: &str) -> Result<ParsedFile> {
 #[derive(Debug, Clone)]
 struct ScopeFrame {
     name: String,
+    start_byte: usize,
     end_byte: usize,
     index: usize,
 }
@@ -141,6 +145,16 @@ impl<'a> Cx<'a> {
 
     pub fn current_scope(&self) -> Option<&str> {
         self.scope.last().map(|scope| scope.name.as_str())
+    }
+
+    /// The innermost scope around `node`, not counting a symbol `node` itself
+    /// declares (a module-level `const x = new X()` is in the file's scope).
+    pub fn scope_around(&self, node: Node<'_>) -> Option<&str> {
+        self.scope
+            .iter()
+            .rev()
+            .find(|frame| frame.start_byte != node.start_byte())
+            .map(|frame| frame.name.as_str())
     }
 
     pub fn text(&self, node: Node<'_>) -> String {
@@ -228,15 +242,8 @@ impl<'a> Cx<'a> {
 
     pub fn classify_receiver(&self, node: Node<'_>) -> (Receiver, Option<String>) {
         if node.kind() == "member_expression" {
-            let object = node.child_by_field_name("object");
-            let property = node.child_by_field_name("property");
-            if let (Some(object), Some(property)) = (object, property) {
-                if object.kind() == "this" {
-                    return (
-                        Receiver::Name,
-                        Some(format!("this.{}", self.text(property))),
-                    );
-                }
+            if let Some(path) = self.member_path(node) {
+                return (Receiver::Name, Some(path));
             }
         }
         let text = self.text(node);
@@ -258,6 +265,31 @@ impl<'a> Cx<'a> {
             ),
             _ => (Receiver::Other, None),
         }
+    }
+
+    /// `a.b.c` or `this.a.b` as text when every link is a plain name, so the
+    /// resolver can follow field types; `None` for calls, indexing and the like.
+    pub fn member_path(&self, node: Node<'_>) -> Option<String> {
+        let mut parts = Vec::new();
+        let mut current = node;
+        while current.kind() == "member_expression" {
+            let property = current.child_by_field_name("property")?;
+            if property.kind() != "property_identifier" {
+                return None;
+            }
+            parts.push(self.text(property));
+            current = current.child_by_field_name("object")?;
+            if parts.len() > MAX_MEMBER_PATH {
+                return None;
+            }
+        }
+        match current.kind() {
+            "this" => parts.push("this".to_string()),
+            "identifier" => parts.push(self.text(current)),
+            _ => return None,
+        }
+        parts.reverse();
+        Some(parts.join("."))
     }
 
     pub fn import(&self, source: String, kind: &str, node: Node<'_>) -> Option<IndexedImport> {

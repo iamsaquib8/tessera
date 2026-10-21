@@ -790,8 +790,8 @@ impl<'c> Resolver<'c> {
                 ModuleTarget::Unresolved => Receiver::Unknown,
             });
         }
-        if receiver.contains('.') && !receiver.starts_with("this.") {
-            return Ok(Receiver::Unknown);
+        if receiver.contains('.') {
+            return self.receiver_path(file, chain, receiver, depth);
         }
         if receiver.starts_with(|c: char| c.is_uppercase()) {
             let resolution = self.resolve_type(file, chain, receiver, false, depth + 1)?;
@@ -803,6 +803,110 @@ impl<'c> Resolver<'c> {
             }
         }
         Ok(Receiver::Unknown)
+    }
+
+    /// `a.b.c`: resolve `a.b`, then the declared type of its field `c`.
+    fn receiver_path(
+        &mut self,
+        file: &Rc<FileInfo>,
+        chain: &[Option<String>],
+        path: &str,
+        depth: usize,
+    ) -> Result<Receiver> {
+        let Some((head, field)) = path.rsplit_once('.') else {
+            return Ok(Receiver::Unknown);
+        };
+        let base = if head == "this" {
+            match self.enclosing_class(file, chain) {
+                Some(class) => Receiver::Class(vec![class], "high", "this"),
+                None => Receiver::Unknown,
+            }
+        } else {
+            self.receiver(file, chain, head, depth + 1)?
+        };
+        match base {
+            Receiver::Class(classes, confidence, _) => {
+                for class in classes {
+                    let Some((owner, owner_chain, type_name, origin)) =
+                        self.field_type(class, field, 0)?
+                    else {
+                        continue;
+                    };
+                    return Ok(
+                        match self.typed(&owner, &owner_chain, &type_name, &origin, depth + 1)? {
+                            Receiver::Class(types, field_confidence, _) => Receiver::Class(
+                                types,
+                                if confidence == "high" && field_confidence == "high" {
+                                    "high"
+                                } else {
+                                    "medium"
+                                },
+                                "hint",
+                            ),
+                            other => other,
+                        },
+                    );
+                }
+                Ok(Receiver::Unknown)
+            }
+            Receiver::Module(module) => Ok(
+                match self.export_lookup(module, field, &mut HashSet::new(), 0)? {
+                    Found::Symbols(ids) => {
+                        let mut classes = Vec::new();
+                        for id in ids {
+                            if self
+                                .symbol(id)?
+                                .is_some_and(|s| CLASS_KINDS.contains(&s.kind.as_str()))
+                            {
+                                classes.push(id);
+                            }
+                        }
+                        if classes.is_empty() {
+                            Receiver::Unknown
+                        } else {
+                            Receiver::Class(classes, "high", "import")
+                        }
+                    }
+                    Found::External => Receiver::External,
+                    Found::Missing => Receiver::Unknown,
+                },
+            ),
+            other => Ok(other),
+        }
+    }
+
+    /// The declared type of `field` on `class` or a supertype, with the file
+    /// and scope chain its type name resolves in.
+    #[allow(clippy::type_complexity)]
+    fn field_type(
+        &mut self,
+        class: i64,
+        field: &str,
+        depth: usize,
+    ) -> Result<Option<(Rc<FileInfo>, Vec<Option<String>>, String, String)>> {
+        if depth > MAX_DEPTH {
+            return Ok(None);
+        }
+        let Some(sym) = self.symbol(class)? else {
+            return Ok(None);
+        };
+        let file = self.file(sym.file_id)?;
+        let name = format!("this.{field}");
+        let declared = file
+            .hints
+            .iter()
+            .find(|h| h.name == name && h.scope.as_deref() == Some(sym.qname.as_str()))
+            .map(|h| (h.type_name.clone(), h.origin.clone()));
+        if let Some((type_name, origin)) = declared {
+            let chain = vec![Some(sym.qname.clone()), None];
+            return Ok(Some((file, chain, type_name, origin)));
+        }
+        for parent in self.supers(class)?.iter() {
+            if let Some(found) = self.field_type(*parent, field, depth + 1)? {
+                return Ok(Some(found));
+            }
+        }
+        Ok(None)
     }
 
     /// The type hint for `name` in the innermost scope that has one. Java
@@ -839,6 +943,9 @@ impl<'c> Resolver<'c> {
         origin: &str,
         depth: usize,
     ) -> Result<Receiver> {
+        if let Some(path) = type_name.strip_prefix("path:") {
+            return self.receiver(file, chain, path, depth + 1);
+        }
         let (classes, confidence) = if let Some(callee) = type_name.strip_prefix("call:") {
             match self.call_return_type(file, chain, callee, depth)? {
                 Some(classes) => (classes, "medium"),
