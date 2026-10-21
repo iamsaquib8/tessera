@@ -432,6 +432,28 @@ fn edits_to_ignored_files_are_not_checked() {
 }
 
 #[test]
+fn deleting_an_ignored_file_is_not_checked() {
+    let temp = repo();
+    let root = temp.path();
+    write(root, ".gitignore", "generated/\n");
+    fs::create_dir_all(root.join("generated")).unwrap();
+    write(root, "generated/kept.ts", "export const kept = 1;\n");
+    claude(root, "SessionStart", json!({}));
+    for path in ["generated/old.ts", "src/gone.ts"] {
+        claude(
+            root,
+            "PostToolUse",
+            json!({
+                "tool_name": "apply_patch",
+                "tool_input": { "command": format!("*** Begin Patch\n*** Delete File: {path}\n*** End Patch\n") }
+            }),
+        );
+    }
+    let edited = session_file(root, "s1")["edited"].clone();
+    assert_eq!(edited, json!(["src/gone.ts"]), "{edited}");
+}
+
+#[test]
 fn breakage_from_before_the_session_does_not_block_stop() {
     let temp = repo();
     let root = temp.path();

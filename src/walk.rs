@@ -238,7 +238,11 @@ pub fn admits(root: &Path, rel_path: &str, config: &TesseraConfig) -> bool {
     let mut current = root.to_path_buf();
     for (depth, name) in names.iter().enumerate() {
         current.push(name);
-        let is_link = fs::symlink_metadata(&current).map_or(true, |m| m.file_type().is_symlink());
+        // A path that is gone (a deleted file) is judged by its name alone.
+        let is_link = match fs::symlink_metadata(&current) {
+            Ok(meta) => meta.file_type().is_symlink(),
+            Err(error) => error.kind() != std::io::ErrorKind::NotFound,
+        };
         if is_link {
             return false;
         }

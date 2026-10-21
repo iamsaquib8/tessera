@@ -377,16 +377,17 @@ impl Hook<'_> {
         }
     }
 
-    /// Edited files Tessera indexes: inside the root, not ignored or
-    /// generated. Deleted files stay, so their importers are checked.
+    /// Edited files Tessera indexes: inside the root, not ignored, skipped
+    /// or excluded. Deleted files are judged by their path the same way, and
+    /// stay so their importers are checked.
     fn admitted(&self, paths: impl IntoIterator<Item = String>) -> Vec<String> {
         let config = TesseraConfig::load(&self.ws.root);
         let mut out: Vec<String> = paths
             .into_iter()
             .filter(|path| {
                 walk::admits(&self.ws.root, path, &config)
-                    || (!self.ws.root.join(path).exists()
-                        && !path.split('/').any(|name| name.starts_with('.')))
+                    && config.includes_path(path)
+                    && !config.excludes_path(path)
             })
             .collect();
         out.sort();
