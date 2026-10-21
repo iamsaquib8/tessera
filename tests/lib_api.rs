@@ -295,7 +295,11 @@ fn refs_follow_resolved_edges_and_report_confidence() {
     let lines = ref_lines(&result);
     assert_eq!(
         lines,
-        vec!["src/data/repo.ts:15 High", "src/services/users.ts:17 High"],
+        vec![
+            "src/data/repo.ts:15 High",
+            "src/services/users.ts:17 High",
+            "src/services/users.ts:28 High"
+        ],
         "`this.rows.get` on a Map is not a reference to UserRepo.get"
     );
     assert!(!result.agent_text().contains("name-level matching"));
