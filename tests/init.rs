@@ -402,6 +402,28 @@ fn commands(value: &Value, out: &mut Vec<String>) {
     }
 }
 
+/// A hook's command, or for a wrapper script the command it runs.
+fn hook_command(command: &str) -> String {
+    let path = Path::new(command);
+    if !path.is_absolute() || !command.ends_with(".sh") {
+        return command.to_string();
+    }
+    let script = fs::read_to_string(path).unwrap();
+    assert!(script.starts_with("#!/bin/sh\n"), "{script}");
+    assert!(!script.contains('\r'), "LF only: {script:?}");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = fs::metadata(path).unwrap().permissions().mode();
+        assert!(mode & 0o111 != 0, "{command} mode {mode:o}");
+    }
+    script
+        .lines()
+        .find_map(|line| line.strip_prefix("exec "))
+        .unwrap_or_else(|| panic!("{script}"))
+        .to_string()
+}
+
 #[test]
 fn every_hook_adapter_is_wired_in_its_documented_shape() {
     use tessera_codegraph::hook::{Agent, Event};
@@ -437,6 +459,17 @@ fn every_hook_adapter_is_wired_in_its_documented_shape() {
         let value = json(&s.root.join(path));
         let mut found = Vec::new();
         commands(&value, &mut found);
+        if agent == "augment" {
+            // Augment's `command` must be a script; Tessera writes one per event.
+            let scripts = s.root.canonicalize().unwrap().join(".augment/hooks");
+            for command in &found {
+                assert!(
+                    Path::new(command).starts_with(&scripts) && command.ends_with(".sh"),
+                    "{command}"
+                );
+            }
+        }
+        let found: Vec<String> = found.iter().map(|c| hook_command(c)).collect();
         let hooks: Vec<&String> = found.iter().filter(|c| c.contains(" hook ")).collect();
         assert_eq!(hooks.len(), count, "{path}: {found:?}");
         for command in hooks {

@@ -2,6 +2,8 @@
 //! there. A file that cannot be changed safely is left alone, and the caller
 //! shows the snippet to add by hand.
 
+use std::path::Path;
+
 use serde_json::{json, Value};
 use yaml_rust2::{Yaml, YamlLoader};
 
@@ -313,8 +315,16 @@ fn yaml_document(text: &str) -> Option<Yaml> {
 }
 
 /// One handler for `event` in the agent's layout.
-fn hook_entry(config: &HookConfig, event: &HookEvent, command: &str) -> Value {
-    let command = format!("{command} hook {} {}", config.agent, event.event);
+fn hook_entry(
+    config: &HookConfig,
+    event: &HookEvent,
+    command: &str,
+    scripts: Option<&Path>,
+) -> Value {
+    let command = match scripts {
+        Some(dir) => dir.join(script_name(event)).to_string_lossy().into_owned(),
+        None => format!("{command} hook {} {}", config.agent, event.event),
+    };
     let handler = match config.layout {
         HookLayout::Nested | HookLayout::Antigravity => {
             json!({ "type": "command", "command": command, "timeout": event.seconds })
@@ -345,7 +355,12 @@ fn hook_entry(config: &HookConfig, event: &HookEvent, command: &str) -> Value {
 
 /// Tessera's hooks added to an agent's hook file, next to whatever hooks
 /// are already there.
-pub fn hooks(existing: Option<&str>, config: &HookConfig, command: &str) -> Edit {
+pub fn hooks(
+    existing: Option<&str>,
+    config: &HookConfig,
+    command: &str,
+    scripts: Option<&Path>,
+) -> Edit {
     let (wrapper, versioned) = match config.layout {
         HookLayout::Antigravity => ("tessera", false),
         HookLayout::Copilot | HookLayout::Cursor => ("hooks", true),
@@ -357,7 +372,7 @@ pub fn hooks(existing: Option<&str>, config: &HookConfig, command: &str) -> Edit
         for event in config.events {
             events.insert(
                 event.name.to_string(),
-                json!([hook_entry(config, event, command)]),
+                json!([hook_entry(config, event, command, scripts)]),
             );
         }
         let mut root = serde_json::Map::new();
@@ -390,10 +405,11 @@ pub fn hooks(existing: Option<&str>, config: &HookConfig, command: &str) -> Edit
         };
         let ours = list.iter().any(|entry| {
             let text = entry.to_string();
-            text.contains("tessera") && text.contains(&marker)
+            text.contains("tessera")
+                && (text.contains(&marker) || text.contains(&script_name(event)))
         });
         if !ours {
-            list.push(hook_entry(config, event, command));
+            list.push(hook_entry(config, event, command, scripts));
             added = true;
         }
     }
@@ -401,6 +417,26 @@ pub fn hooks(existing: Option<&str>, config: &HookConfig, command: &str) -> Edit
         return Edit::Unchanged;
     }
     Edit::Write(pretty(&root, &indent_of(existing.unwrap_or_default())))
+}
+
+/// The wrapper script for `event`, for agents whose hooks run scripts.
+pub fn script_name(event: &HookEvent) -> String {
+    format!("tessera-{}.sh", event.event)
+}
+
+/// A wrapper script that runs `tessera hook <agent> <event>` with the hook's
+/// input; an existing script that does not run Tessera is left alone.
+pub fn hook_script(existing: Option<&str>, command: &str, agent: &str, event: &HookEvent) -> Edit {
+    let run = format!("exec {command} hook {agent} {}", event.event);
+    let script = format!(
+        "#!/bin/sh\n# Added by `tessera init`: {agent} runs hook scripts, so this one runs Tessera's.\n{run}\n"
+    );
+    match existing {
+        None => Edit::Write(script),
+        Some(text) if text.contains(&run) => Edit::Unchanged,
+        Some(text) if text.contains("Added by `tessera init`") => Edit::Write(script),
+        Some(_) => manual("a script of that name already exists", script),
+    }
 }
 
 pub const INSTRUCTIONS: &str = "## Code graph (Tessera)\n\n\

@@ -206,8 +206,20 @@ impl Planner<'_> {
         }
         if let Some(hooks) = agent.hooks {
             let command = self.launcher().join(" ");
+            if let Some(dir) = hooks.scripts {
+                for event in hooks.events {
+                    let rel = format!("{dir}/{}", edit::script_name(event));
+                    self.project(&rel, agent.id, |text| {
+                        edit::hook_script(text, &command, hooks.agent, event)
+                    });
+                    if let Some(pending) = self.files.get_mut(&rel) {
+                        pending.executable = true;
+                    }
+                }
+            }
+            let scripts = hooks.scripts.map(|dir| self.root.join(dir));
             self.project(hooks.path, agent.id, |text| {
-                edit::hooks(text, &hooks, &command)
+                edit::hooks(text, &hooks, &command, scripts.as_deref())
             });
         }
         if self.options.with_instructions {

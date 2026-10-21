@@ -68,7 +68,7 @@ answer) and exits 0.
 | Gemini CLI | – | report | retry | `.gemini/settings.json` |
 | GitHub Copilot CLI | – | report | block | `.github/hooks/tessera.json` |
 | Cursor | – | report | follow-up message | `.cursor/hooks.json` |
-| Augment (Auggie CLI) | – | report | block | `.augment/settings.local.json` |
+| Augment (Auggie CLI) | – | report | block | `.augment/settings.local.json`, which runs the scripts `init` writes in `.augment/hooks/` |
 | Google Antigravity | – | – | continue with the problems | `.agents/hooks.json` |
 | Everything else | – | – | – | `tessera init --git-hook` |
 
@@ -101,5 +101,6 @@ open, and counts of notes, reports and blocks. Files untouched for a week are
 removed.
 
 To turn the hooks off, remove Tessera's entries from the hook file in the
-table above, or uninstall the plugin. `tessera init` only ever adds entries,
+table above (for Augment, also the `tessera-*.sh` scripts in `.augment/hooks/`), or
+uninstall the plugin. `tessera init` only ever adds entries,
 so your own hooks are untouched either way.
