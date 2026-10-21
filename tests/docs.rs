@@ -27,7 +27,8 @@ fn readme_commands() -> Vec<String> {
 }
 
 fn concrete(command: &str) -> Option<Vec<String>> {
-    if command.contains("<rev>") || command.starts_with("--") {
+    // `ui` serves until stopped; tests/ui.rs covers it.
+    if command.contains("<rev>") || command.starts_with("--") || command == "tessera ui" {
         return None;
     }
     let filled = command
@@ -118,4 +119,56 @@ fn readme_mcp_setup_works_without_a_global_install() {
         quick_start.contains("npx tessera-codegraph init"),
         "the quick start uses npx, so its setup step must too"
     );
+}
+
+#[test]
+fn readme_agent_grid_matches_the_registry() {
+    let readme = fs::read_to_string("README.md").unwrap();
+    for agent in tessera_codegraph::agents::AGENTS {
+        let row = readme
+            .lines()
+            .find(|line| line.starts_with(&format!("| {} |", agent.name)))
+            .unwrap_or_else(|| panic!("README grid lacks {}", agent.name));
+        let cells: Vec<&str> = row.split('|').map(str::trim).collect();
+        assert_eq!(
+            cells[3].starts_with('✓'),
+            agent.hooks.is_some(),
+            "{}: hooks column",
+            agent.name
+        );
+        assert_eq!(
+            cells[2].contains("--global"),
+            agent.mcp.is_none() && agent.global_mcp.is_some(),
+            "{}: MCP column",
+            agent.name
+        );
+    }
+}
+
+#[test]
+fn translated_readmes_are_drafts_with_working_links() {
+    for lang in ["zh-CN", "ja", "ko", "es", "pt-BR"] {
+        let name = format!("README.{lang}.md");
+        let text = fs::read_to_string(&name).unwrap();
+        assert!(
+            text.contains("Draft translation awaiting review"),
+            "{name} must say it is a draft"
+        );
+        assert!(
+            fs::read_to_string("README.md").unwrap().contains(&name),
+            "README.md must link {name}"
+        );
+        for target in text
+            .split("](")
+            .skip(1)
+            .chain(text.split("href=\"").skip(1))
+            .filter_map(|rest| rest.split([')', '"', '#']).next())
+            .filter(|target| !target.is_empty() && !target.starts_with("http"))
+        {
+            assert!(
+                std::path::Path::new(target).exists(),
+                "{name} links to missing {target}"
+            );
+        }
+    }
 }

@@ -20,6 +20,15 @@
 </p>
 
 <p align="center">
+  English ·
+  <a href="README.zh-CN.md">简体中文</a> ·
+  <a href="README.ja.md">日本語</a> ·
+  <a href="README.ko.md">한국어</a> ·
+  <a href="README.es.md">Español</a> ·
+  <a href="README.pt-BR.md">Português (Brasil)</a>
+</p>
+
+<p align="center">
   <img src="assets/demo.svg" alt="tessera blast ranks the callers of formatName; tessera context shows findById with its callers and callees; tessera verify catches two calls to functions that do not exist" width="760">
 </p>
 
@@ -45,6 +54,8 @@ against it:
   and tables to the code on both sides, in any language Tessera reads, so a
   changed endpoint shows the frontend code that calls it, and `verify`
   catches a removed route that a client still calls.
+- **On every pull request:** the GitHub Action comments what the change
+  breaks, who calls the changed code, and which tests to run.
 
 The map is deterministic. tree-sitter parses, SQLite stores, and the same code
 always gives the same answer. No model builds it, and nothing leaves your
@@ -110,33 +121,96 @@ docker run --rm -v "$PWD:/work" ghcr.io/iamsaquib8/tessera status
 | `tessera search <pattern>` / `--unused` | Which symbols match? Which functions are never called? |
 | `tessera path <from> <to>` | Does A reach B, and how? Follows routes and gRPC calls across services |
 | `tessera map <route\|rpc\|topic\|table\|service> [query]` | Which services call this endpoint, method, topic, or table? |
+| `tessera ui` | What does my working tree change, and how do the services connect? In the browser |
 | `tessera status` | Is the index fresh? Is anything misconfigured? |
 | `tessera init` | Wire Tessera into the agents this project uses |
 
-Everything but `init` is also an MCP tool (`tessera mcp`). The tools are read-only,
+The queries are also MCP tools (`tessera mcp`). The tools are read-only,
 paginated, and return compact text so they cost few tokens. Every command
 takes `--json`. See [the five-minute tour](docs/first-five-minutes.md) for
 real output.
 
+## See the impact
+
+```sh
+tessera ui --open
+```
+
+<p align="center">
+  <img src="assets/ui-impact.png" alt="Change impact for a renamed gRPC handler in microservices-demo: two problems to fix, the checkout and frontend calls to ShippingService/GetQuote that it no longer serves" width="49%">
+  <img src="assets/ui-map.png" alt="The contract map of microservices-demo: one tile per service, linked by the gRPC methods between them" width="49%">
+</p>
+
+A local page on `127.0.0.1` shows what your uncommitted work (or any
+revision range) touches: blocking problems, changed symbols, their callers
+ranked by impact, contracts with services on the other side, and the tests
+to run. The contract map draws services and the routes, gRPC methods,
+topics, and tables between them; every symbol links to its definition,
+callers, and tests. Nothing loads from the network. `tessera ui --export
+site/` writes the same page as a static site for a demo or an internal wiki.
+
+## On every pull request
+
+```yaml
+# .github/workflows/tessera.yml
+name: Tessera
+on: pull_request
+permissions:
+  contents: read
+  pull-requests: write
+jobs:
+  tessera:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: iamsaquib8/tessera/action@v1
+        with:
+          fail-on: blocking   # or `never` (default) to only comment
+```
+
+One comment per pull request, updated on every push: problems to fix,
+contracts the change touches, callers of the changed code, and tests to
+run. On forks it writes the job summary instead. The same report is
+`tessera verify --diff <base> --format markdown` for any other CI.
+[action/README.md](action/README.md) lists the inputs.
+
 ## Works with every agent and every model
 
 Tessera never calls a model, so Claude, GPT, Gemini, Grok, DeepSeek, Qwen, and
-local models all work. Support is per agent:
+local models all work. `tessera init` sets up each agent below.
 
-- **MCP today:**
-  - Claude Code, Cursor, Codex CLI, Gemini CLI, Antigravity, GitHub Copilot
-    (VS Code and CLI), Grok Build, Qwen Code.
-  - OpenCode, Kilo Code, Cline, Continue, Zed, Goose, Amp, Kiro, Junie,
-    Augment, Warp, Crush, Devin Desktop.
-  - Aider through its lint loop.
-- **Checks before and after every edit:** hooks for Claude Code (plugin or
-  `init`), Codex CLI, Gemini CLI, GitHub Copilot CLI, Cursor, Qwen Code,
-  Augment, and Antigravity; see [docs/hooks.md](docs/hooks.md).
-- **Every agent, and people:** `tessera init --git-hook` refuses a commit
-  that breaks a call site or an import.
+| Agent | MCP tools | Checks every edit |
+| --- | --- | --- |
+| Claude Code | ✓ | ✓ plugin or `init` |
+| Codex CLI | ✓ | ✓ |
+| Gemini CLI | ✓ | ✓ |
+| GitHub Copilot CLI | ✓ | ✓ |
+| Cursor | ✓ | ✓ |
+| Qwen Code | ✓ | ✓ |
+| Augment (Auggie) | ✓ `--global` | ✓ |
+| Google Antigravity | ✓ | ✓ reported at stop |
+| VS Code Copilot agent | ✓ | git hook |
+| Grok Build | ✓ | git hook |
+| OpenCode | ✓ | git hook |
+| Kilo Code | ✓ | git hook |
+| Kiro | ✓ | git hook |
+| JetBrains Junie | ✓ | git hook |
+| Amp | ✓ | git hook |
+| Warp | ✓ | git hook |
+| Continue | ✓ | git hook |
+| Cline | ✓ `--global` | git hook |
+| Devin Desktop | ✓ `--global` | git hook |
+| Zed | ✓ `--global` | git hook |
+| Goose | ✓ `--global` | git hook |
+| Aider | lint loop | git hook |
 
-Config for each one is in [docs/integrations.md](docs/integrations.md). The
-sourced matrix of hook capabilities is in [docs/agents.md](docs/agents.md).
+**Checks every edit** means hooks that run `verify` after each edit and
+hold the agent at "done" while a break remains ([docs/hooks.md](docs/hooks.md)).
+**git hook** is `tessera init --git-hook`: a pre-commit check that refuses a
+commit that breaks a call site or an import, for any agent and for people.
+`--global` agents keep MCP config only in the home directory. Config for each
+agent is in [docs/integrations.md](docs/integrations.md); the sourced matrix
+of hook capabilities is in [docs/agents.md](docs/agents.md).
 
 ## Languages
 
@@ -155,15 +229,20 @@ The other languages are at the **standard** tier: resolved within a file and
 by unique name, labelled when a match is only possible.
 [Current limits](docs/when-not-to-use.md) are listed plainly.
 
+Contracts between services are read in every language that has them: gRPC in
+Go, C#, Node, Python, Java and C++; HTTP in Express, Fastify, NestJS,
+Next.js, Spring and their clients; Kafka; SQL, JPA, TypeORM, Sequelize and
+Prisma ([docs/contracts.md](docs/contracts.md)).
+
 ## FAQ
 
 **Why not just run `tsc` or use an LSP?** Run them too. Tessera checks only
 the changed code against an index of the whole repository, so it fits in an
 agent's edit loop. It works the same way in all twelve languages, including
-JavaScript, Python, and Ruby projects that have no type checker, and in v0.13
-it covers breaks between services that no compiler sees. An LSP answers one
+JavaScript, Python, and Ruby projects that have no type checker, and it
+covers breaks between services that no compiler sees. An LSP answers one
 editor's questions about one project; Tessera keeps one index for the whole
-repository, and soon across repositories, that any agent can query.
+repository, or a workspace of repositories, that any agent can query.
 
 **Does my code leave my machine?** No. The index is a SQLite file in
 `.tessera/`, gitignored automatically. Tessera makes no network calls, and
@@ -181,18 +260,24 @@ change. A CLI query first checks that the index is fresh, a stat walk of the
 repository. Perf budgets run in CI: freshness check under 100 ms and lookups
 under 50 ms at p95 on 10,000 files. Indexing is incremental.
 
+**Can I build on it?** Yes. Commands, flags, `--json` fields, MCP tool
+schemas, hook replies, and exit codes are stable for 1.x, and a test suite
+pins them ([docs/stability.md](docs/stability.md)).
+
 ## Roadmap
 
 | Version | Milestone |
 | --- | --- |
 | v0.10 | Foundation: index any repo, zero setup, MCP for every agent |
-| v0.11 | Precision: import- and type-aware resolution, public accuracy benchmark (done) |
-| v0.12 | Edit-safety loop: hooks that check every edit, `tessera init`, Claude Code plugin, git backstop (done) |
-| v0.13 | Contract map: routes, gRPC, topics, and tables across services and repositories (done) |
-| v1.0 | Change-impact UI, GitHub Action, stable contracts |
+| v0.11 | Precision: import- and type-aware resolution, public accuracy benchmark |
+| v0.12 | Edit-safety loop: hooks that check every edit, `tessera init`, Claude Code plugin, git backstop |
+| v0.13 | Contract map: routes, gRPC, topics, and tables across services and repositories |
+| v1.0 | Change-impact UI, GitHub Action, stable contracts (this release) |
+| v1.1 | Contract map completed: mounted routers, GraphQL, config keys, `path` across repositories, Go/Python/Ruby web frameworks |
+| v1.2 | Team and CI: test selection, a shared index cache, findings in code scanning |
+| v1.x | Architecture rules, SCIP precise mode, editor extensions, runtime traces, data lineage, refactor plans |
 
-Further out: CI test selection, architecture rules, SCIP precise mode, editor
-extensions, runtime traces, and data lineage. See [ROADMAP.md](ROADMAP.md).
+See [ROADMAP.md](ROADMAP.md) for each theme and what proves it done.
 
 ## Contributing
 
