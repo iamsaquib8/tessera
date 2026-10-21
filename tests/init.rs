@@ -275,6 +275,38 @@ fn files_it_cannot_parse_are_left_alone_with_a_snippet() {
 }
 
 #[test]
+fn toml_and_yaml_configs_stay_valid() {
+    let s = setup();
+    let codex = "[mcp_servers]\ntessera = { command = \"tessera\", args = [\"mcp\"] }\n";
+    touch(&s.root, ".codex/config.toml", codex);
+    let inline = "mcp_servers = { other = { command = \"o\" } }\n";
+    touch(&s.root, ".grok/config.toml", inline);
+    let goose = "extensions:  # mine\n  developer:\n    enabled: true\n";
+    touch(&s.home, ".config/goose/config.yaml", goose);
+    let (out, ok) = init(
+        &s,
+        &[
+            "--yes", "--global", "--agent", "codex", "--agent", "grok", "--agent", "goose",
+        ],
+    );
+    assert!(ok, "{out}");
+    assert_eq!(
+        fs::read_to_string(s.root.join(".codex/config.toml")).unwrap(),
+        codex
+    );
+    assert_eq!(
+        fs::read_to_string(s.root.join(".grok/config.toml")).unwrap(),
+        inline
+    );
+    assert!(out.contains(".grok/config.toml"), "{out}");
+    let goose = fs::read_to_string(s.home.join(".config/goose/config.yaml")).unwrap();
+    assert_eq!(goose.matches("extensions:").count(), 1, "{goose}");
+    let docs = yaml_rust2::YamlLoader::load_from_str(&goose).unwrap();
+    assert!(!docs[0]["extensions"]["developer"].is_badvalue(), "{goose}");
+    assert!(!docs[0]["extensions"]["tessera"].is_badvalue(), "{goose}");
+}
+
+#[test]
 fn no_agents_found_still_explains_what_to_do() {
     let s = setup();
     let (out, ok) = init(&s, &["--yes"]);
