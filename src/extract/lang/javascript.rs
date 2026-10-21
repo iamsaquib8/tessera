@@ -2,8 +2,8 @@ use tree_sitter::Node;
 
 use crate::extract::{first_child_with_kinds, strip_quotes, Cx, LanguageSupport};
 use crate::types::{
-    BindingKind, HintOrigin, IndexedBinding, IndexedImport, IndexedReference, IndexedSymbol,
-    IndexedTypeHint, Language, Receiver,
+    BindingKind, HintOrigin, IndexedBinding, IndexedImport, IndexedLocal, IndexedReference,
+    IndexedSymbol, IndexedTypeHint, Language, Receiver, REQUIRED_MODULE,
 };
 
 pub struct JavaScript;
@@ -57,6 +57,10 @@ impl LanguageSupport for JavaScript {
         js_hints(cx, node, out)
     }
 
+    fn locals(&self, cx: &Cx<'_>, node: Node<'_>, out: &mut Vec<IndexedLocal>) {
+        js_locals(cx, node, out)
+    }
+
     fn skip_ref_names(&self) -> &'static [&'static str] {
         JS_SKIP
     }
@@ -102,10 +106,35 @@ pub(super) fn js_symbol(cx: &Cx<'_>, node: Node<'_>) -> Option<IndexedSymbol> {
             (cx.text(node), "variable", None)
         }
         "enum_declaration" => (cx.text(node.child_by_field_name("name")?), "enum", None),
+        // `namespace TChat { … }` (or `module TChat`) holds exported members;
+        // `declare module "x"` names a package instead.
+        "internal_module" | "module" => {
+            let name = node.child_by_field_name("name")?;
+            if name.kind() == "string" {
+                return None;
+            }
+            (cx.text(name), "namespace", None)
+        }
         // In a class body a bodiless signature is an overload of the method
-        // that follows; that method's symbol spans it.
-        "method_signature" if node.parent().is_some_and(|p| p.kind() == "class_body") => {
+        // that follows, whose symbol spans it; without one (`declare class`)
+        // it is the method.
+        "method_signature"
+            if node.parent().is_some_and(|p| p.kind() == "class_body")
+                && implemented_later(cx, node, "method_definition") =>
+        {
             return None
+        }
+        // `export declare function f(): T;`, or an overload of the
+        // implementation that follows.
+        "function_signature" => {
+            if implemented_later(cx, node, "function_declaration") {
+                return None;
+            }
+            (
+                cx.text(node.child_by_field_name("name")?),
+                "function",
+                Some(node),
+            )
         }
         "method_definition" | "method_signature" | "abstract_method_signature" => (
             cx.text(node.child_by_field_name("name")?),
@@ -114,12 +143,14 @@ pub(super) fn js_symbol(cx: &Cx<'_>, node: Node<'_>) -> Option<IndexedSymbol> {
         ),
         "variable_declarator" => {
             let name = node.child_by_field_name("name")?;
-            let value = node.child_by_field_name("value")?;
-            let function = if FUNCTION_KINDS.contains(&value.kind()) {
-                Some(value)
-            } else {
-                wrapped_component(cx, value)
-            };
+            // `export let service: Service | undefined;` has no initializer.
+            let function = node.child_by_field_name("value").and_then(|value| {
+                if FUNCTION_KINDS.contains(&value.kind()) {
+                    Some(value)
+                } else {
+                    wrapped_component(cx, value)
+                }
+            });
             match function {
                 Some(function) => (cx.text(name), "function", Some(function)),
                 // A module-level constant is a symbol too, so calls in its
@@ -148,20 +179,45 @@ pub(super) fn js_symbol(cx: &Cx<'_>, node: Node<'_>) -> Option<IndexedSymbol> {
         // behave as methods.
         "public_field_definition" | "field_definition" => {
             let value = node.child_by_field_name("value")?;
-            if !FUNCTION_KINDS.contains(&value.kind()) {
-                return None;
-            }
             let name = node
                 .child_by_field_name("name")
                 .or_else(|| node.child_by_field_name("property"))?;
-            (cx.text(name), "method", Some(value))
+            if FUNCTION_KINDS.contains(&value.kind()) {
+                (cx.text(name), "method", Some(value))
+            } else if matches!(value.kind(), "identifier" | "member_expression") {
+                // `log = noop` makes `log` a method whose parameters are noop's.
+                (cx.text(name), "method", None)
+            } else {
+                return None;
+            }
         }
         "assignment_expression" => {
             let right = node.child_by_field_name("right")?;
+            let left = node.child_by_field_name("left")?;
+            // `module.exports = function () {…}` or `= class Store {…}`: the
+            // module's default export, named after the function if it has one.
+            if cx.text(left) == "module.exports"
+                && (FUNCTION_KINDS.contains(&right.kind()) || right.kind() == "class")
+            {
+                let name = right
+                    .child_by_field_name("name")
+                    .map_or_else(|| "default".to_string(), |n| cx.text(n));
+                let kind = if right.kind() == "class" {
+                    "class"
+                } else {
+                    "function"
+                };
+                let mut symbol = cx.symbol(name, kind, node, true);
+                symbol.default_export = true;
+                if kind == "function" {
+                    symbol.arity = arity(cx, right);
+                }
+                return Some(symbol);
+            }
             if !FUNCTION_KINDS.contains(&right.kind()) {
                 return None;
             }
-            let name = commonjs_export_name(cx, node.child_by_field_name("left")?)?;
+            let name = commonjs_export_name(cx, left)?;
             let mut symbol = cx.symbol(name, "function", node, true);
             symbol.arity = arity(cx, right);
             return Some(symbol);
@@ -177,23 +233,43 @@ pub(super) fn js_symbol(cx: &Cx<'_>, node: Node<'_>) -> Option<IndexedSymbol> {
     };
     let mut symbol = cx.symbol(name, kind, node, has_export_ancestor(node));
     symbol.default_export = is_default_export(node);
-    match node.kind() {
-        "function_declaration" => {
-            symbol.start_line = overload_start(cx, node, &symbol.name, "function_signature") + 1
-        }
-        "method_definition" => {
-            symbol.start_line = overload_start(cx, node, &symbol.name, "method_signature") + 1
-        }
-        _ => {}
+    let signature_kind = match node.kind() {
+        "function_declaration" => Some("function_signature"),
+        "method_definition" => Some("method_signature"),
+        _ => None,
+    };
+    let overloads = signature_kind
+        .map(|kind| overloads(cx, node, &symbol.name, kind))
+        .unwrap_or_default();
+    if let Some(first) = overloads.last() {
+        symbol.start_line = first.start_position().row + 1;
     }
     // `const render: Render = (ui, options) => …`: the declared type, not the
-    // arrow's own parameter list, says how it may be called.
+    // arrow's own parameter list, says how it may be called; a getter or a
+    // setter is not called itself.
     let typed = matches!(
         node.kind(),
         "variable_declarator" | "public_field_definition" | "field_definition"
     ) && node.child_by_field_name("type").is_some();
-    if !typed {
+    let accessor =
+        node.kind() == "method_definition" && (has_token(node, "get") || has_token(node, "set"));
+    if !typed && !accessor {
         symbol.arity = params.and_then(|p| arity(cx, p));
+        // Overload signatures say how it may be called; the implementation
+        // only has to accept them all.
+        for signature in &overloads {
+            let signature = match signature.kind() {
+                "export_statement" => signature.named_child(0),
+                _ => Some(*signature),
+            };
+            symbol.arity = match (symbol.arity, signature.and_then(|sig| arity(cx, sig))) {
+                (Some((min, max)), Some((sig_min, sig_max))) => Some((
+                    min.min(sig_min),
+                    max.zip(sig_max).map(|(max, sig_max)| max.max(sig_max)),
+                )),
+                _ => None,
+            };
+        }
     }
     Some(symbol)
 }
@@ -365,6 +441,17 @@ pub(super) fn js_bindings(cx: &Cx<'_>, node: Node<'_>, out: &mut Vec<IndexedBind
                 }
             } else if source.is_some() {
                 push("*".into(), None, from, BindingKind::ReExportAll);
+            } else if is_export_assignment(node) {
+                // TypeScript's `export = value`, the CommonJS module object.
+                let mut cursor = node.walk();
+                let value = node
+                    .named_children(&mut cursor)
+                    .find(|child| !child.is_extra());
+                if let Some(value) = value {
+                    for (local, imported, source, kind) in module_object(cx, value) {
+                        push(local, imported, &source, kind);
+                    }
+                }
             } else if is_default_export_statement(node) {
                 if let Some(value) = node.child_by_field_name("value") {
                     let exported = match value.kind() {
@@ -422,31 +509,173 @@ pub(super) fn js_bindings(cx: &Cx<'_>, node: Node<'_>, out: &mut Vec<IndexedBind
                 return;
             };
             if cx.text(left) == "module.exports" {
-                match right.kind() {
-                    "identifier" => push(
-                        "default".into(),
-                        Some(cx.text(right)),
-                        ".",
-                        BindingKind::ReExport,
-                    ),
-                    "object" => {
-                        for (local, imported) in object_literal(cx, right) {
-                            push(local, Some(imported), ".", BindingKind::ReExport);
-                        }
-                    }
-                    _ => {}
+                for (local, imported, source, kind) in module_object(cx, right) {
+                    push(local, imported, &source, kind);
                 }
+            } else if left.kind() == "subscript_expression"
+                && left
+                    .child_by_field_name("object")
+                    .is_some_and(|object| is_exports(cx, object))
+            {
+                // `exports[name] = …`: names only known at run time.
+                push("*".into(), None, ".", BindingKind::OpenExports);
+                push("default".into(), None, ".", BindingKind::OpenExports);
             } else if let Some(name) = commonjs_export_name(cx, left) {
-                let imported = if right.kind() == "identifier" {
-                    cx.text(right)
-                } else {
-                    name.clone()
-                };
-                push(name, Some(imported), ".", BindingKind::ReExport);
+                for (local, imported, source, kind) in exported_value(cx, name, right) {
+                    push(local, imported, &source, kind);
+                }
+                // An ES module importing it gets the exports object.
+                push("default".into(), None, ".", BindingKind::OpenExports);
             }
+        }
+        // `Object.assign(module.exports, …)`, `__exportStar(m, exports)` and
+        // the like add exports the file does not name.
+        "call_expression" => {
+            let Some(args) = node.child_by_field_name("arguments") else {
+                return;
+            };
+            let mut cursor = args.walk();
+            let args: Vec<Node<'_>> = args
+                .named_children(&mut cursor)
+                .filter(|arg| !arg.is_extra())
+                .collect();
+            if !args.iter().any(|arg| is_exports(cx, *arg)) {
+                return;
+            }
+            let callee = node
+                .child_by_field_name("function")
+                .map(|f| cx.text(f))
+                .unwrap_or_default();
+            let named = args
+                .get(1)
+                .filter(|arg| arg.kind() == "string")
+                .map(|arg| strip_quotes(cx.text(*arg)));
+            match named {
+                // Compiled modules mark themselves; that adds no export.
+                Some(name) if callee == "Object.defineProperty" && name == "__esModule" => {}
+                Some(name) if callee == "Object.defineProperty" => {
+                    push(name, None, ".", BindingKind::OpenExports)
+                }
+                _ => push("*".into(), None, ".", BindingKind::OpenExports),
+            }
+            push("default".into(), None, ".", BindingKind::OpenExports);
         }
         _ => {}
     }
+}
+
+/// A binding of a CommonJS module: local and imported name, source, kind.
+type ModuleBinding = (String, Option<String>, String, BindingKind);
+
+/// What exporting `value` as `name` (`exports.name = value`, or a property
+/// of `module.exports = {…}`) binds: a local name, another module's export,
+/// or a name that exists although nothing in the file defines it.
+fn exported_value(cx: &Cx<'_>, name: String, value: Node<'_>) -> Vec<ModuleBinding> {
+    let reexport = |imported: String, source: &str| {
+        vec![(
+            name.clone(),
+            Some(imported),
+            source.to_string(),
+            BindingKind::ReExport,
+        )]
+    };
+    if value.kind() == "identifier" {
+        return reexport(cx.text(value), ".");
+    }
+    // `exports.save = function save() {…}` is a symbol named `save`.
+    if FUNCTION_KINDS.contains(&value.kind()) {
+        return reexport(name.clone(), ".");
+    }
+    // `require("./x")` is x's module object; `require("./x").y` its export.
+    if let Some((_, source)) = require_call(cx, value) {
+        return reexport(REQUIRED_MODULE.to_string(), &source);
+    }
+    let required = value
+        .child_by_field_name("object")
+        .filter(|_| value.kind() == "member_expression")
+        .and_then(|object| require_call(cx, object));
+    if let (Some((_, source)), Some(property)) = (required, value.child_by_field_name("property")) {
+        return reexport(cx.text(property), &source);
+    }
+    vec![(name, None, ".".to_string(), BindingKind::OpenExports)]
+}
+
+/// The bindings for a whole module object (`module.exports = value` or
+/// `export = value`): what it names, and which names it leaves open.
+fn module_object(cx: &Cx<'_>, value: Node<'_>) -> Vec<ModuleBinding> {
+    let open = |name: &str| {
+        (
+            name.to_string(),
+            None,
+            ".".to_string(),
+            BindingKind::OpenExports,
+        )
+    };
+    match value.kind() {
+        // The value's properties are its named exports, and they are unknown.
+        "identifier" => vec![
+            (
+                "default".into(),
+                Some(cx.text(value)),
+                ".".to_string(),
+                BindingKind::ReExport,
+            ),
+            open("*"),
+        ],
+        "object" => {
+            let mut out = vec![open("default")];
+            let mut cursor = value.walk();
+            let entries: Vec<Node<'_>> = value
+                .named_children(&mut cursor)
+                .filter(|entry| !entry.is_extra())
+                .collect();
+            for entry in entries {
+                let key = entry
+                    .child_by_field_name("key")
+                    .or_else(|| entry.child_by_field_name("name"))
+                    .filter(|key| matches!(key.kind(), "property_identifier" | "string" | "number"))
+                    .map(|key| strip_quotes(cx.text(key)));
+                match (entry.kind(), key) {
+                    ("shorthand_property_identifier", _) => {
+                        let name = cx.text(entry);
+                        out.push((
+                            name.clone(),
+                            Some(name),
+                            ".".to_string(),
+                            BindingKind::ReExport,
+                        ));
+                    }
+                    ("pair", Some(key)) => match entry.child_by_field_name("value") {
+                        Some(v) if !FUNCTION_KINDS.contains(&v.kind()) => {
+                            out.extend(exported_value(cx, key, v))
+                        }
+                        _ => out.push(open(&key)),
+                    },
+                    // A method or accessor is a symbol of its own.
+                    ("method_definition", Some(key)) => {
+                        out.push((
+                            key.clone(),
+                            Some(key.clone()),
+                            ".".to_string(),
+                            BindingKind::ReExport,
+                        ));
+                        out.push(open(&key));
+                    }
+                    // Spreads and computed keys.
+                    _ => out.push(open("*")),
+                }
+            }
+            out
+        }
+        // A function or class is the default export (a symbol); what it
+        // carries as properties is not known.
+        _ => vec![open("*")],
+    }
+}
+
+/// `exports` or `module.exports`.
+fn is_exports(cx: &Cx<'_>, node: Node<'_>) -> bool {
+    matches!(cx.text(node).as_str(), "exports" | "module.exports")
 }
 
 pub(super) fn js_hints(cx: &Cx<'_>, node: Node<'_>, out: &mut Vec<IndexedTypeHint>) {
@@ -568,6 +797,109 @@ pub(super) fn js_hints(cx: &Cx<'_>, node: Node<'_>, out: &mut Vec<IndexedTypeHin
     }
 }
 
+/// Parameters, catch and loop variables, and variables declared inside a
+/// function, in the scope that declares them. Module-level declarations are
+/// symbols or imports instead.
+pub(super) fn js_locals(cx: &Cx<'_>, node: Node<'_>, out: &mut Vec<IndexedLocal>) {
+    const FUNCTIONS: &[&str] = &[
+        "arrow_function",
+        "function_expression",
+        "function",
+        "function_declaration",
+        "generator_function",
+        "generator_function_declaration",
+        "method_definition",
+    ];
+    let mut names = Vec::new();
+    let scope = match node.kind() {
+        "formal_parameters" if node.parent().is_some_and(|p| FUNCTIONS.contains(&p.kind())) => {
+            let mut cursor = node.walk();
+            let params: Vec<Node<'_>> = node.named_children(&mut cursor).collect();
+            for param in params {
+                pattern_names(cx, param, &mut names);
+            }
+            cx.current_scope()
+        }
+        // `x => x()`: one parameter and no parentheses.
+        "arrow_function" => {
+            let Some(param) = node.child_by_field_name("parameter") else {
+                return;
+            };
+            pattern_names(cx, param, &mut names);
+            cx.current_scope()
+        }
+        "variable_declarator" => {
+            let value = node.child_by_field_name("value");
+            let defines = value.is_some_and(|v| {
+                FUNCTION_KINDS.contains(&v.kind())
+                    || is_require_call(cx, v)
+                    || v.child_by_field_name("object")
+                        .is_some_and(|object| is_require_call(cx, object))
+            });
+            if is_module_level(node) || defines {
+                return;
+            }
+            if let Some(name) = node.child_by_field_name("name") {
+                pattern_names(cx, name, &mut names);
+            }
+            cx.scope_around(node)
+        }
+        "catch_clause" => {
+            let Some(param) = node.child_by_field_name("parameter") else {
+                return;
+            };
+            pattern_names(cx, param, &mut names);
+            cx.current_scope()
+        }
+        // `for (const x of xs)`; without a declaration it assigns an outer name.
+        "for_in_statement" if node.child_by_field_name("kind").is_some() => {
+            let Some(left) = node.child_by_field_name("left") else {
+                return;
+            };
+            pattern_names(cx, left, &mut names);
+            cx.current_scope()
+        }
+        _ => return,
+    };
+    out.extend(names.into_iter().map(|name| IndexedLocal {
+        scope: scope.map(ToOwned::to_owned),
+        name,
+    }));
+}
+
+/// The names a parameter or a destructuring pattern binds.
+fn pattern_names(cx: &Cx<'_>, node: Node<'_>, out: &mut Vec<String>) {
+    match node.kind() {
+        "identifier" | "shorthand_property_identifier_pattern" => out.push(cx.text(node)),
+        "required_parameter" | "optional_parameter" => {
+            if let Some(pattern) = node.child_by_field_name("pattern") {
+                pattern_names(cx, pattern, out);
+            }
+        }
+        "assignment_pattern" | "object_assignment_pattern" => {
+            if let Some(left) = node.child_by_field_name("left") {
+                pattern_names(cx, left, out);
+            }
+        }
+        "pair_pattern" => {
+            if let Some(value) = node.child_by_field_name("value") {
+                pattern_names(cx, value, out);
+            }
+        }
+        "rest_pattern" | "object_pattern" | "array_pattern" => {
+            let mut cursor = node.walk();
+            let parts: Vec<Node<'_>> = node
+                .named_children(&mut cursor)
+                .filter(|part| !part.is_extra())
+                .collect();
+            for part in parts {
+                pattern_names(cx, part, out);
+            }
+        }
+        _ => {}
+    }
+}
+
 fn value_type(cx: &Cx<'_>, value: Node<'_>) -> Option<String> {
     match value.kind() {
         "new_expression" => value.child_by_field_name("constructor").map(|c| cx.text(c)),
@@ -608,6 +940,12 @@ fn type_name(cx: &Cx<'_>, node: Node<'_>) -> Option<String> {
 }
 
 fn arity(cx: &Cx<'_>, function: Node<'_>) -> Option<(u16, Option<u16>)> {
+    // Plain JavaScript lets any call omit or add arguments (`arguments`,
+    // optional trailing parameters), so only checked TypeScript's counts
+    // are binding.
+    if cx.language == Language::JavaScript || cx.ts_nocheck() {
+        return Some((0, None));
+    }
     if function.child_by_field_name("parameter").is_some() {
         return Some((1, Some(1)));
     }
@@ -787,26 +1125,6 @@ fn object_pattern(cx: &Cx<'_>, pattern: Node<'_>) -> Vec<(String, String)> {
         .collect()
 }
 
-fn object_literal(cx: &Cx<'_>, object: Node<'_>) -> Vec<(String, String)> {
-    let mut cursor = object.walk();
-    let nodes: Vec<Node<'_>> = object.named_children(&mut cursor).collect();
-    nodes
-        .into_iter()
-        .filter_map(|n| match n.kind() {
-            "shorthand_property_identifier" => Some((cx.text(n), cx.text(n))),
-            "pair" => {
-                let value = n.child_by_field_name("value")?;
-                if value.kind() == "identifier" {
-                    Some((cx.text(n.child_by_field_name("key")?), cx.text(value)))
-                } else {
-                    None
-                }
-            }
-            _ => None,
-        })
-        .collect()
-}
-
 fn jsx_component_name(cx: &Cx<'_>, name_node: Node<'_>) -> Option<String> {
     match name_node.kind() {
         "identifier" => {
@@ -869,22 +1187,33 @@ fn is_default_export_statement(node: Node<'_>) -> bool {
     node.kind() == "export_statement" && has_token(node, "default")
 }
 
+/// TypeScript's `export = value`.
+fn is_export_assignment(node: Node<'_>) -> bool {
+    node.kind() == "export_statement" && has_token(node, "=")
+}
+
 fn is_default_export(node: Node<'_>) -> bool {
-    node.parent().is_some_and(is_default_export_statement)
+    node.parent()
+        .is_some_and(|parent| is_default_export_statement(parent) || is_export_assignment(parent))
 }
 
 fn last_segment(name: &str) -> String {
     name.rsplit('.').next().unwrap_or(name).to_string()
 }
 
-/// The first row of the TypeScript overload signatures (`function f(a: A);`)
-/// directly before an implementation, so the symbol spans every declaration.
-fn overload_start(cx: &Cx<'_>, function: Node<'_>, name: &str, signature_kind: &str) -> usize {
+/// The TypeScript overload signatures (`function f(a: A);`) directly before
+/// an implementation, nearest first (the last is where the symbol starts).
+fn overloads<'t>(
+    cx: &Cx<'_>,
+    function: Node<'t>,
+    name: &str,
+    signature_kind: &str,
+) -> Vec<Node<'t>> {
     let anchor = match function.parent() {
         Some(parent) if parent.kind() == "export_statement" => parent,
         _ => function,
     };
-    let mut start = anchor.start_position().row;
+    let mut found = Vec::new();
     let mut previous = anchor.prev_named_sibling();
     while let Some(sibling) = previous {
         if sibling.kind() == "comment" {
@@ -905,10 +1234,10 @@ fn overload_start(cx: &Cx<'_>, function: Node<'_>, name: &str, signature_kind: &
         if !is_overload {
             break;
         }
-        start = sibling.start_position().row;
+        found.push(sibling);
         previous = sibling.prev_named_sibling();
     }
-    start
+    found
 }
 
 /// The interface or type alias a property signature belongs to.
@@ -930,7 +1259,7 @@ fn type_owner(cx: &Cx<'_>, property: Node<'_>) -> Option<String> {
 }
 
 /// A declarator in a `const`/`let`/`var` statement directly in the program,
-/// optionally behind `export`.
+/// optionally behind `export` or `declare`.
 fn is_module_level(declarator: Node<'_>) -> bool {
     let Some(declaration) = declarator.parent() else {
         return false;
@@ -941,13 +1270,53 @@ fn is_module_level(declarator: Node<'_>) -> bool {
     ) {
         return false;
     }
-    match declaration.parent() {
-        Some(parent) if parent.kind() == "program" => true,
-        Some(parent) if parent.kind() == "export_statement" => parent
-            .parent()
-            .is_some_and(|grandparent| grandparent.kind() == "program"),
-        _ => false,
+    statement_wrapper(declaration)
+        .parent()
+        .is_some_and(|parent| parent.kind() == "program")
+}
+
+/// The outermost `export` / `declare` around a declaration, or the
+/// declaration itself.
+fn statement_wrapper(node: Node<'_>) -> Node<'_> {
+    let mut outer = node;
+    while let Some(parent) = outer
+        .parent()
+        .filter(|p| matches!(p.kind(), "export_statement" | "ambient_declaration"))
+    {
+        outer = parent;
     }
+    outer
+}
+
+/// Whether a bodiless signature is an overload: the same name's
+/// `implementation` follows it, after any further signatures.
+fn implemented_later(cx: &Cx<'_>, signature: Node<'_>, implementation: &str) -> bool {
+    let name = signature
+        .child_by_field_name("name")
+        .map(|n| cx.text(n))
+        .unwrap_or_default();
+    let mut next = statement_wrapper(signature).next_named_sibling();
+    while let Some(sibling) = next {
+        next = sibling.next_named_sibling();
+        if sibling.kind() == "comment" {
+            continue;
+        }
+        let mut inner = sibling;
+        while matches!(inner.kind(), "export_statement" | "ambient_declaration") {
+            match inner.named_child(0) {
+                Some(child) => inner = child,
+                None => return false,
+            }
+        }
+        let same_name = inner
+            .child_by_field_name("name")
+            .is_some_and(|n| cx.text(n) == name);
+        if inner.kind() == signature.kind() && same_name {
+            continue;
+        }
+        return inner.kind() == implementation && same_name;
+    }
+    false
 }
 
 fn has_export_ancestor(node: Node<'_>) -> bool {

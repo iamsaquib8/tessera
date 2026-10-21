@@ -84,7 +84,11 @@ fn apply_changes(ws: &Workspace, root: &Path, paths: &[PathBuf]) -> Result<()> {
     if !files.is_empty() {
         files.sort();
         files.dedup();
-        indexer::index_files(ws, &files)?;
+        let report = indexer::index_files(ws, &files)?;
+        // Too many dependents for the edit: the watcher runs the full pass now.
+        if report.resolve.is_some_and(|resolve| resolve.fallback) {
+            fresh::ensure(ws)?;
+        }
     }
     Ok(())
 }

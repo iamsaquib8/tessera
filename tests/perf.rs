@@ -185,23 +185,36 @@ fn single_file_edit_re_resolves_dependents_quickly() {
 
 #[test]
 #[ignore = "perf budget; run with --release -- --ignored --test-threads=1"]
-fn editing_a_hub_file_falls_back_to_a_full_resolve_within_budget() {
+fn editing_a_hub_file_stays_within_the_incremental_budget() {
+    use tessera_codegraph::fresh::{self, Freshness};
     use tessera_codegraph::indexer;
 
-    let temp = TempDir::new().unwrap();
-    let root = temp.path().join("repo");
-    synth_repo(&root, 5_000);
-    let db = temp.path().join("t.db");
-    let (_, full) = timed(|| Index::build(&root, &db, IndexOptions::default()).unwrap());
-    let ws = Index::open(&db).unwrap().workspace();
-    let util = std::fs::read_to_string(root.join("util.ts")).unwrap();
-    std::fs::write(root.join("util.ts"), format!("{util}// edit\n")).unwrap();
-    let (report, took) = timed(|| indexer::index_files(&ws, &["util.ts".to_string()]).unwrap());
-    assert!(report.resolve.expect("re-resolved").fallback);
+    let (_temp, index) = synth_index(5_000);
+    let ws = index.workspace();
+    drop(index);
+    let util = std::fs::read_to_string(ws.root.join("util.ts")).unwrap();
+    let edit = |content: String| {
+        std::fs::write(ws.root.join("util.ts"), content).unwrap();
+        let (report, took) = timed(|| indexer::index_files(&ws, &["util.ts".to_string()]).unwrap());
+        (report.resolve.expect("an edit re-resolves"), took)
+    };
+    // A body edit keeps util's exports, so its 5,000 importers keep their edges.
+    let (resolve, took) = edit(util.replace("x * 13", "x * 17"));
+    assert!(!resolve.fallback && resolve.files == 1, "{resolve:?}");
     assert!(
-        took <= full * 2,
-        "hub edit took {took:?}, full index {full:?}"
+        took <= Duration::from_millis(300),
+        "body edit took {took:?}"
     );
+    // A new parameter reaches every importer: the edit resolves util alone
+    // and leaves the importers to the next full pass.
+    let (resolve, took) =
+        edit(util.replace("sharedHelper(x: number)", "sharedHelper(x: number, y = 0)"));
+    assert!(resolve.fallback && resolve.files == 1, "{resolve:?}");
+    assert!(
+        took <= Duration::from_millis(300),
+        "signature edit took {took:?}"
+    );
+    assert_eq!(fresh::check(&ws).unwrap(), Freshness::Pending);
 }
 
 #[test]

@@ -6,11 +6,11 @@ use anyhow::Result;
 use rusqlite::{params, Connection, OptionalExtension};
 
 use super::modules::{ModuleResolver, ModuleTarget};
-use crate::types::Language;
+use crate::types::{Language, REQUIRED_MODULE};
 
 /// Kinds that own members: a bare call never reaches a method of these in JS,
 /// and `this` walks up to the nearest one.
-const CLASS_KINDS: &[&str] = &[
+pub(super) const CLASS_KINDS: &[&str] = &[
     "class",
     "interface",
     "enum",
@@ -19,9 +19,9 @@ const CLASS_KINDS: &[&str] = &[
     "trait",
     "annotation",
 ];
-const TYPE_REF_KINDS: &[&str] = &["extends", "implements", "type"];
+pub(super) const TYPE_REF_KINDS: &[&str] = &["extends", "implements", "type"];
 /// What a type reference can name: anything with members, or a type alias.
-const TYPE_KINDS: &[&str] = &[
+pub(super) const TYPE_KINDS: &[&str] = &[
     "class",
     "interface",
     "enum",
@@ -31,8 +31,50 @@ const TYPE_KINDS: &[&str] = &[
     "annotation",
     "type",
 ];
+/// Objects every JavaScript runtime provides; a call on one is never a call
+/// on a repository class unless the file imports or declares the name.
+const JS_GLOBALS: &[&str] = &[
+    "console",
+    "JSON",
+    "Math",
+    "Object",
+    "Array",
+    "Promise",
+    "Number",
+    "String",
+    "Boolean",
+    "Date",
+    "Reflect",
+    "Symbol",
+    "Map",
+    "Set",
+    "WeakMap",
+    "WeakSet",
+    "RegExp",
+    "BigInt",
+    "Atomics",
+    "window",
+    "document",
+    "process",
+    "globalThis",
+    "navigator",
+    "location",
+    "history",
+    "localStorage",
+    "sessionStorage",
+    "performance",
+    "crypto",
+    "Buffer",
+    "require",
+    "module",
+    "exports",
+    "Intl",
+    "Error",
+    "URL",
+    "URLSearchParams",
+];
 /// More name-matched candidates than this is noise, not ambiguity.
-const MAX_AMBIGUOUS: usize = 5;
+pub(super) const MAX_AMBIGUOUS: usize = 5;
 /// Bounds every walk over re-exports, inheritance and call chains.
 const MAX_DEPTH: usize = 12;
 /// Loaded files kept in memory; a full pass over a large repository would
@@ -78,6 +120,8 @@ pub(super) struct FileInfo {
     by_qname: HashMap<String, Rc<Sym>>,
     pub bindings: Vec<Binding>,
     hints: Vec<Hint>,
+    /// Name → the scopes declaring it as a parameter or local variable.
+    locals: HashMap<String, Vec<Option<String>>>,
 }
 
 #[derive(Debug)]
@@ -131,6 +175,14 @@ impl Resolution {
         }
     }
 
+    /// A parameter or local variable: a value with no symbol to point at.
+    fn value() -> Self {
+        Self {
+            resolver: Some("value"),
+            ..Self::unresolved()
+        }
+    }
+
     fn high(targets: Vec<i64>, resolver: &'static str) -> Self {
         Self {
             targets,
@@ -152,6 +204,9 @@ impl Resolution {
 #[derive(Debug, Clone)]
 enum Found {
     Symbols(Vec<i64>),
+    /// A whole repository module (`export * as ns`, a re-exported namespace
+    /// import), whose members are its exports.
+    Module(i64),
     External,
     Missing,
     /// A repository module or class (this file) was searched and lacks the name.
@@ -283,6 +338,17 @@ impl<'c> Resolver<'c> {
                 })
             })?
             .collect::<rusqlite::Result<_>>()?;
+        let mut locals: HashMap<String, Vec<Option<String>>> = HashMap::new();
+        let mut stmt = self
+            .conn
+            .prepare_cached("SELECT scope, name FROM locals WHERE file_id = ?1")?;
+        let rows = stmt.query_map(params![file_id], |row| {
+            Ok((row.get::<_, Option<String>>(0)?, row.get::<_, String>(1)?))
+        })?;
+        for row in rows {
+            let (scope, name) = row?;
+            locals.entry(name).or_default().push(scope);
+        }
         let file = Rc::new(FileInfo {
             path,
             language: Language::from_name(&language).unwrap_or(Language::JavaScript),
@@ -291,6 +357,7 @@ impl<'c> Resolver<'c> {
             by_qname,
             bindings,
             hints,
+            locals,
         });
         self.files.insert(file_id, Rc::clone(&file));
         Ok(file)
@@ -394,12 +461,26 @@ impl<'c> Resolver<'c> {
                 }
             }
             // Source "." is this file (`export default Panel`), not a path.
-            "re_export" | "re_export_all" if local && binding.source != "." => Ok(
+            "re_export" | "re_export_all" if binding.source != "." => {
                 match self.module(&file.path, &binding.source, file.language) {
-                    ModuleTarget::Unresolved => "missing_module",
-                    _ => "ok",
-                },
-            ),
+                    ModuleTarget::Unresolved if local => Ok("missing_module"),
+                    // `export { formatName } from "./format"` needs the name
+                    // there; `export * as ns` needs only the module.
+                    ModuleTarget::File(target) if binding.kind == "re_export" => {
+                        let export = binding.imported.as_deref().unwrap_or(&binding.local);
+                        if export == "*" || export == REQUIRED_MODULE {
+                            return Ok("ok");
+                        }
+                        Ok(
+                            match self.export_lookup(target, export, &mut HashSet::new(), 0)? {
+                                Found::Missing => "missing_export",
+                                _ => "ok",
+                            },
+                        )
+                    }
+                    _ => Ok("ok"),
+                }
+            }
             "java_single" => {
                 let package = binding
                     .source
@@ -407,7 +488,12 @@ impl<'c> Resolver<'c> {
                     .map_or("", |(package, _)| package);
                 Ok(match self.java_import(&binding.source, &binding.local)? {
                     Found::Absent(_) => "missing_export",
-                    Found::External if self.modules.java_package_exists(package) => {
+                    Found::External
+                        if self.modules.java_package_exists(package)
+                            && !self
+                                .modules
+                                .java_class_outside_index(package, &binding.local) =>
+                    {
                         "missing_export"
                     }
                     _ => "ok",
@@ -445,7 +531,8 @@ impl<'c> Resolver<'c> {
                             Found::Symbols(ids) => {
                                 self.finish(ids, arity, Resolution::high(Vec::new(), "import"))?
                             }
-                            Found::External => Resolution::external(),
+                            // A module object is not something to call.
+                            Found::Module(_) | Found::External => Resolution::external(),
                             Found::Absent(path) => Resolution::missing(path),
                             Found::Missing => Resolution::missing(self.file(module)?.path.clone()),
                         }
@@ -455,7 +542,8 @@ impl<'c> Resolver<'c> {
                         for class in &classes {
                             found.extend(self.members(*class, name, 0)?);
                         }
-                        if found.is_empty() && confidence == "high" {
+                        if found.is_empty() && confidence == "high" && !inherited_from_object(name)
+                        {
                             if let Some(path) = self.closed_class_file(&classes)? {
                                 if !self.declares_property(&classes, name, 0)? {
                                     return Ok(Resolution::missing(path));
@@ -503,10 +591,32 @@ impl<'c> Resolver<'c> {
         }
         let arity_mismatch = self.no_arity_fits(&found, arity)?;
         let targets = self.filter_arity(found, arity)?;
-        Ok(Resolution {
+        // Java overloads the argument count cannot tell apart (`find(String)`
+        // and `find(Long)`): the call reaches one of them, but not a known
+        // one. TypeScript overload signatures all declare the same member.
+        let overloaded = targets.len() > 1 && {
+            let mut qnames = HashSet::new();
+            for id in &targets {
+                let java_method = match self.symbol(*id)? {
+                    Some(sym) if matches!(sym.kind.as_str(), "method" | "constructor") => {
+                        (self.file(sym.file_id)?.language == Language::Java)
+                            .then(|| sym.qname.clone())
+                    }
+                    _ => None,
+                };
+                qnames.insert(java_method);
+            }
+            qnames.len() == 1 && !qnames.contains(&None)
+        };
+        let resolution = Resolution {
             targets,
             arity_mismatch,
             ..template
+        };
+        Ok(if overloaded {
+            resolution.capped("low")
+        } else {
+            resolution
         })
     }
 
@@ -606,14 +716,15 @@ impl<'c> Resolver<'c> {
                 Found::Symbols(ids) => {
                     self.finish(ids, arity, Resolution::high(Vec::new(), "import"))?
                 }
-                Found::External => Resolution::external(),
+                Found::Module(_) | Found::External => Resolution::external(),
                 Found::Absent(path) => Resolution::missing(path),
                 Found::Missing => Resolution::unresolved(),
             });
         }
-        let local = self.local(file, chain, name, false);
-        if !local.is_empty() {
-            return self.finish(local, arity, Resolution::high(Vec::new(), "local"));
+        match self.local(file, chain, name, false) {
+            Some(local) if local.is_empty() => return Ok(Resolution::value()),
+            Some(local) => return self.finish(local, arity, Resolution::high(Vec::new(), "local")),
+            None => {}
         }
         if name == "require" {
             return Ok(Resolution::external());
@@ -622,7 +733,7 @@ impl<'c> Resolver<'c> {
             Found::Symbols(ids) => {
                 return self.finish(ids, arity, Resolution::high(Vec::new(), "import"))
             }
-            Found::External => return Ok(Resolution::external()),
+            Found::Module(_) | Found::External => return Ok(Resolution::external()),
             Found::Absent(path) => return Ok(Resolution::missing(path)),
             Found::Missing if self.has_binding(file, name) => return Ok(Resolution::unresolved()),
             Found::Missing => {}
@@ -642,15 +753,16 @@ impl<'c> Resolver<'c> {
         if depth > MAX_DEPTH {
             return Ok(Resolution::unresolved());
         }
-        let local = self.local(file, chain, name, types_only);
-        if !local.is_empty() {
-            return self.finish(local, None, Resolution::high(Vec::new(), "local"));
+        match self.local(file, chain, name, types_only) {
+            Some(local) if local.is_empty() => return Ok(Resolution::value()),
+            Some(local) => return self.finish(local, None, Resolution::high(Vec::new(), "local")),
+            None => {}
         }
         match self.binding_symbols(file, name)? {
             Found::Symbols(ids) => {
                 return self.finish(ids, None, Resolution::high(Vec::new(), "import"))
             }
-            Found::External => return Ok(Resolution::external()),
+            Found::Module(_) | Found::External => return Ok(Resolution::external()),
             Found::Absent(path) => return Ok(Resolution::missing(path)),
             Found::Missing if self.has_binding(file, name) => return Ok(Resolution::unresolved()),
             Found::Missing => {}
@@ -667,29 +779,43 @@ impl<'c> Resolver<'c> {
     }
 
     /// Definitions in this file visible from `chain`, innermost scope first.
+    ///
+    /// `Some(empty)` when the innermost is a parameter or local variable,
+    /// which has no symbol; a type (`types_only`) is never one.
     fn local(
         &self,
         file: &FileInfo,
         chain: &[Option<String>],
         name: &str,
         types_only: bool,
-    ) -> Vec<i64> {
+    ) -> Option<Vec<i64>> {
+        let values = file.locals.get(name);
         for scope in chain {
             let found: Vec<i64> = file
                 .symbols
                 .iter()
                 .filter(|sym| sym.name == name && sym.container == *scope)
                 .filter(|sym| !types_only || TYPE_KINDS.contains(&sym.kind.as_str()))
-                .filter(|sym| !self.is_member(file, sym))
-                // `const x = require("./x")` is an import, not a definition.
-                .filter(|sym| sym.kind != "variable" || !self.has_binding(file, &sym.name))
+                // A method is reached through its object, never by name; one
+                // outside a class is in an object literal or a type literal.
+                .filter(|sym| sym.kind != "method" && !self.is_member(file, sym))
+                // A module-level `const x = require("./x")` is an import, not
+                // a definition.
+                .filter(|sym| {
+                    sym.kind != "variable"
+                        || sym.container.is_some()
+                        || !self.has_binding(file, &sym.name)
+                })
                 .map(|sym| sym.id)
                 .collect();
             if !found.is_empty() {
-                return found;
+                return Some(found);
+            }
+            if !types_only && values.is_some_and(|scopes| scopes.contains(scope)) {
+                return Some(Vec::new());
             }
         }
-        Vec::new()
+        None
     }
 
     fn has_binding(&self, file: &FileInfo, name: &str) -> bool {
@@ -742,6 +868,11 @@ impl<'c> Resolver<'c> {
                         ModuleTarget::Unresolved => Found::Missing,
                     }
                 }
+                "namespace" => match self.module(&file.path, &source, file.language) {
+                    ModuleTarget::File(target) => Found::Module(target),
+                    ModuleTarget::External(_) => Found::External,
+                    ModuleTarget::Unresolved => Found::Missing,
+                },
                 "java_single" => self.java_import(&source, name)?,
                 "java_wildcard" => match self.java_class_symbol(&source, name)? {
                     Some(id) => Found::Symbols(vec![id]),
@@ -774,6 +905,7 @@ impl<'c> Resolver<'c> {
             };
             match found {
                 Found::Symbols(ids) => return Ok(Found::Symbols(ids)),
+                Found::Module(id) => return Ok(Found::Module(id)),
                 // A wildcard only says where a name might come from.
                 Found::External if wildcard => {}
                 Found::External => external = true,
@@ -882,6 +1014,16 @@ impl<'c> Resolver<'c> {
                 }
             } else {
                 match self.module(&file.path, &source, file.language) {
+                    // `export * as ns from "./x"` exports the module itself.
+                    ModuleTarget::File(target) if wanted == "*" => Found::Module(target),
+                    // `exports.x = require("./x")`: x's default export, or
+                    // the module object when it has none.
+                    ModuleTarget::File(target) if wanted == REQUIRED_MODULE => {
+                        match self.export_lookup(target, "default", visited, depth + 1)? {
+                            Found::Symbols(ids) => Found::Symbols(ids),
+                            _ => Found::Module(target),
+                        }
+                    }
                     ModuleTarget::File(target) => {
                         self.export_lookup(target, &wanted, visited, depth + 1)?
                     }
@@ -891,11 +1033,18 @@ impl<'c> Resolver<'c> {
             };
             match found {
                 Found::Symbols(ids) => return Ok(Found::Symbols(ids)),
+                Found::Module(id) => return Ok(Found::Module(id)),
                 Found::External => external = true,
                 Found::Missing | Found::Absent(_) => {}
             }
         }
-        Ok(if external {
+        // A module whose exports the file does not fully show
+        // (`module.exports = makeApi()`) may well have the name.
+        let open = file
+            .bindings
+            .iter()
+            .any(|b| b.kind == "open_exports" && (b.local == "*" || b.local == name));
+        Ok(if external || open {
             Found::External
         } else {
             Found::Missing
@@ -925,6 +1074,14 @@ impl<'c> Resolver<'c> {
         if let Some((type_name, origin)) = self.hint(file, chain, receiver) {
             return self.typed(file, chain, &type_name, &origin, depth);
         }
+        // A parameter or local variable of unknown type, not the import or
+        // class of the same name.
+        if self
+            .local(file, chain, receiver, false)
+            .is_some_and(|local| local.is_empty())
+        {
+            return Ok(Receiver::Unknown);
+        }
         let module_binding = file
             .bindings
             .iter()
@@ -937,8 +1094,20 @@ impl<'c> Resolver<'c> {
                 ModuleTarget::Unresolved => Receiver::Unknown,
             });
         }
+        if self.has_binding(file, receiver) {
+            if let Found::Module(id) = self.binding_symbols(file, receiver)? {
+                return Ok(Receiver::Module(id));
+            }
+        }
         if receiver.contains('.') {
             return self.receiver_path(file, chain, receiver, depth);
+        }
+        if is_js(file.language)
+            && JS_GLOBALS.contains(&receiver)
+            && !self.has_binding(file, receiver)
+            && self.local(file, chain, receiver, false).is_none()
+        {
+            return Ok(Receiver::External);
         }
         if receiver.starts_with(|c: char| c.is_uppercase()) {
             let resolution = self.resolve_type(file, chain, receiver, false, depth + 1)?;
@@ -1003,15 +1172,9 @@ impl<'c> Resolver<'c> {
                     };
                     return Ok(
                         match self.typed(&owner, &owner_chain, &type_name, &origin, depth + 1)? {
-                            Receiver::Class(types, field_confidence, _) => Receiver::Class(
-                                types,
-                                if confidence == "high" && field_confidence == "high" {
-                                    "high"
-                                } else {
-                                    "medium"
-                                },
-                                "hint",
-                            ),
+                            Receiver::Class(types, field_confidence, _) => {
+                                Receiver::Class(types, weaker(confidence, field_confidence), "hint")
+                            }
                             other => other,
                         },
                     );
@@ -1036,6 +1199,7 @@ impl<'c> Resolver<'c> {
                             Receiver::Class(classes, "high", "import")
                         }
                     }
+                    Found::Module(id) => Receiver::Module(id),
                     Found::External => Receiver::External,
                     Found::Missing | Found::Absent(_) => Receiver::Unknown,
                 },
@@ -1125,7 +1289,13 @@ impl<'c> Resolver<'c> {
             if resolution.targets.is_empty() {
                 return Ok(Receiver::External);
             }
-            let confidence = if origin == "return" { "medium" } else { "high" };
+            // A type found only by a repo-wide name match may be a global
+            // (`parent: Node`) or one of several classes of that name.
+            let confidence = if origin == "return" {
+                weaker(resolution.confidence, "medium")
+            } else {
+                resolution.confidence
+            };
             (resolution.targets, confidence)
         };
         Ok(Receiver::Class(classes, confidence, "hint"))
@@ -1146,7 +1316,7 @@ impl<'c> Resolver<'c> {
         if file.language == Language::Java {
             return Ok(match self.java_import(type_name, "")? {
                 Found::Symbols(ids) => Resolution::high(ids, "import"),
-                Found::External | Found::Missing | Found::Absent(_) => Resolution::external(),
+                _ => Resolution::external(),
             });
         }
         match self.receiver(file, chain, head, depth + 1)? {
@@ -1290,9 +1460,11 @@ impl<'c> Resolver<'c> {
         let file = self.file(sym.file_id)?;
         // A type alias, a variable, or a TypeScript interface (index
         // signatures, declaration merging) can carry members it does not
-        // declare; only classes and Java's types list them all.
+        // declare, and an enum has members that are not symbols (`Kind.A`,
+        // `valueOf`); only classes, records and Java's interfaces list them
+        // all.
         let closable = match sym.kind.as_str() {
-            "class" | "enum" | "record" => true,
+            "class" | "record" => true,
             "interface" | "annotation" => file.language == Language::Java,
             _ => false,
         };
@@ -1477,6 +1649,51 @@ fn map_sym(row: &rusqlite::Row<'_>) -> rusqlite::Result<Sym> {
         default_export: row.get(7)?,
         arity: min.map(|min| (min, max)),
     })
+}
+
+/// Members every Java object and every JavaScript object has without
+/// declaring them (`toString`, `equals`, `hasOwnProperty`).
+fn inherited_from_object(name: &str) -> bool {
+    const OBJECT_MEMBERS: &[&str] = &[
+        "toString",
+        "equals",
+        "hashCode",
+        "getClass",
+        "notify",
+        "notifyAll",
+        "wait",
+        "clone",
+        "finalize",
+        "valueOf",
+        "toLocaleString",
+        "hasOwnProperty",
+        "isPrototypeOf",
+        "propertyIsEnumerable",
+        "constructor",
+    ];
+    OBJECT_MEMBERS.contains(&name)
+}
+
+/// The lower of two confidence levels.
+fn weaker(a: &'static str, b: &'static str) -> &'static str {
+    let rank = |c: &str| match c {
+        "high" => 3,
+        "medium" => 2,
+        "low" => 1,
+        _ => 0,
+    };
+    if rank(a) <= rank(b) {
+        a
+    } else {
+        b
+    }
+}
+
+fn is_js(language: Language) -> bool {
+    matches!(
+        language,
+        Language::JavaScript | Language::TypeScript | Language::Tsx
+    )
 }
 
 /// `public readonly name?: T = …;` and the like: a property declaration of

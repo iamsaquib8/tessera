@@ -110,6 +110,10 @@ fn hints(status: &StatusResult) -> Vec<String> {
             "Index was built by another tessera version or config; the next query rebuilds it."
                 .to_string(),
         ),
+        Freshness::Pending => hints.push(format!(
+            "An edit changed code that more than {} files use; they are re-resolved by the next query or `tessera index`, and results about them may be stale until then.",
+            resolve::MAX_INCREMENTAL_FILES
+        )),
         Freshness::Fresh => {}
     }
     if status.files == 0 && status.freshness != Freshness::Missing {
@@ -120,12 +124,6 @@ fn hints(status: &StatusResult) -> Vec<String> {
         hints.push(format!(
             "{count} file{} could not be read (first: {first}); check its permissions.",
             if count == 1 { "" } else { "s" }
-        ));
-    }
-    if status.resolution.as_ref().is_some_and(|r| r.fallback) {
-        hints.push(format!(
-            "The last change had more than {} dependent files, so every reference was re-resolved.",
-            resolve::MAX_INCREMENTAL_FILES
         ));
     }
     if let Some(first) = &status.parse_error_first {
@@ -196,6 +194,7 @@ impl AgentText for StatusResult {
             Freshness::Fresh => "fresh".to_string(),
             Freshness::Missing => "missing".to_string(),
             Freshness::Outdated => "outdated".to_string(),
+            Freshness::Pending => "re-resolve pending".to_string(),
             Freshness::Stale {
                 changed,
                 added,
