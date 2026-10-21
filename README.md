@@ -36,8 +36,11 @@ against it:
 - **Before an edit:** `blast` ranks every caller a change can affect and lists
   the tests to run. `context` returns the body, callers, and callees in one
   budgeted read instead of five file opens.
-- **After an edit:** `verify` checks that every call in the new code resolves
-  to something that exists, and names the closest real symbol when it doesn't.
+- **After an edit:** `verify` catches calls to names that do not exist, wrong
+  argument counts, broken imports, and call sites a rename left behind.
+  Hooks run it after every edit and hold the agent at "done" until the
+  breakage is fixed, in Claude Code, Codex, Gemini CLI, Copilot, Cursor and
+  more.
 - **Across services** *(coming in v0.13)*: routes, queues, and tables link
   repositories into one map, so a changed endpoint shows the frontend code
   that calls it.
@@ -55,15 +58,24 @@ npx tessera-codegraph blast <symbol>
 ```
 
 There is no setup step: the first query builds the index in `.tessera/`, and
-every later query refreshes only what changed. Then hand it to your agent:
+every later query refreshes only what changed. Then wire it into your agents:
 
 ```sh
-claude mcp add tessera -- npx -y tessera-codegraph mcp
+npx tessera-codegraph init
 ```
 
-With a global install (below), the server command is just `tessera mcp`.
+`init` finds the agents you use (Claude Code, Codex, Gemini CLI, Cursor,
+Copilot and 16 more), shows the diff of every config change, and asks before
+writing. It adds the MCP server and, where the agent supports them, the
+[edit-safety hooks](docs/hooks.md). In Claude Code you can install the plugin
+instead:
 
-Setup for Cursor, Codex, Gemini CLI, Antigravity, Copilot, OpenCode, Kiro and 13 more agents is in [docs/integrations.md](docs/integrations.md).
+```text
+/plugin marketplace add iamsaquib8/tessera
+/plugin install tessera@tessera
+```
+
+Manual setup for every agent is in [docs/integrations.md](docs/integrations.md).
 
 <details>
 <summary>Other ways to install</summary>
@@ -90,14 +102,16 @@ docker run --rm -v "$PWD:/work" ghcr.io/iamsaquib8/tessera status
 | --- | --- |
 | `tessera blast <symbol>` / `--diff <rev>` | What does this change affect? Callers ranked by impact, plus tests to run |
 | `tessera context <symbol>` | What do I need to read before editing this? |
-| `tessera verify --snippet <file> --language <lang>` | Does everything this code calls exist? Exits 1 if not |
+| `tessera verify --changed` / `--staged` / `--diff <rev>` | Did this change break a call site, an argument count, or an import? Exits 1 if so |
+| `tessera verify --snippet <file> --language <lang>` | Does everything this code calls exist? |
 | `tessera find <symbol>` / `--path <file>` | Where is it defined? What is in this file? |
 | `tessera refs <symbol \| file>` | Who calls it? Who imports this file? |
 | `tessera search <pattern>` / `--unused` | Which symbols match? Which functions are never called? |
 | `tessera path <from> <to>` | Does A reach B, and how? |
 | `tessera status` | Is the index fresh? Is anything misconfigured? |
+| `tessera init` | Wire Tessera into the agents this project uses |
 
-The same eight operations are MCP tools (`tessera mcp`). They are read-only,
+Everything but `init` is also an MCP tool (`tessera mcp`). The tools are read-only,
 paginated, and return compact text so they cost few tokens. Every command
 takes `--json`. See [the five-minute tour](docs/first-five-minutes.md) for
 real output.
@@ -113,9 +127,11 @@ local models all work. Support is per agent:
   - OpenCode, Kilo Code, Cline, Continue, Zed, Goose, Amp, Kiro, Junie,
     Augment, Warp, Crush, Devin Desktop.
   - Aider through its lint loop.
-- **Automatic checks before and after edits** *(v0.12)*: hooks for every agent
-  above that has a hook system, starting with a Claude Code plugin, plus a git
-  pre-commit backstop for the rest.
+- **Checks before and after every edit:** hooks for Claude Code (plugin or
+  `init`), Codex CLI, Gemini CLI, GitHub Copilot CLI, Cursor, Qwen Code,
+  Augment, and Antigravity; see [docs/hooks.md](docs/hooks.md).
+- **Every agent, and people:** `tessera init --git-hook` refuses a commit
+  that breaks a call site or an import.
 
 Config for each one is in [docs/integrations.md](docs/integrations.md). The
 sourced matrix of hook capabilities is in [docs/agents.md](docs/agents.md).
@@ -169,7 +185,7 @@ under 50 ms at p95 on 10,000 files. Indexing is incremental.
 | --- | --- |
 | v0.10 | Foundation: index any repo, zero setup, MCP for every agent |
 | v0.11 | Precision: import- and type-aware resolution, public accuracy benchmark (done) |
-| v0.12 | Edit-safety loop: hooks that check every edit, in every agent that supports hooks |
+| v0.12 | Edit-safety loop: hooks that check every edit, `tessera init`, Claude Code plugin, git backstop (done) |
 | v0.13 | Contract map: routes, queues, and tables across repositories |
 | v1.0 | Change-impact UI, GitHub Action, stable contracts |
 

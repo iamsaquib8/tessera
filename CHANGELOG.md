@@ -2,6 +2,56 @@
 
 All notable changes to Tessera are documented here.
 
+## 0.12.0 - Unreleased
+
+The edit-safety release. Tessera checks every edit an agent makes and holds
+it at "done" until the breakage is fixed.
+
+### Added
+
+- **`verify --changed` / `--staged` / `--diff <rev>`** check a change: calls
+  to names that do not exist where they point (V1), wrong argument counts
+  (V2), references the change left dangling (V3), broken imports (V4), and
+  the tests that reach the changed code (V6). Only high-confidence findings
+  in TypeScript, JavaScript and Java block (exit 1). `--format agent`,
+  `json`, and `sarif`.
+- **`tessera hook <agent> <event>`**, one entry point for agent hooks: a
+  note on cross-file callers before an edit, problems reported after it
+  (blocking only when they survive an edit that fixed nothing), and a gate
+  at the end of the turn (at most three blocks). Adapters for Claude Code,
+  Codex CLI, Qwen Code, Gemini CLI, GitHub Copilot CLI, Cursor, Augment and
+  Antigravity, each in its vendor's documented shape
+  ([docs/hooks.md](docs/hooks.md)).
+- **Claude Code plugin** in this repository:
+  `/plugin marketplace add iamsaquib8/tessera`, then
+  `/plugin install tessera@tessera`.
+- **`tessera init`** detects the agents a project uses (21 in the registry),
+  shows the diff of every config change, and asks. `--yes`, `--dry-run`,
+  `--agent`, `--global`, `--with-instructions`, `--git-hook`. Merging keeps
+  existing entries, key order and indentation; a rerun changes nothing.
+- **`init --git-hook`** installs a pre-commit hook that refuses a commit
+  breaking a call site or an import.
+- Calls on a freshly constructed object (`new Repo().find()`) resolve on the
+  class.
+- **Refactor eval** in tessera-bench: refactoring tasks scored against
+  ground-truth call sites, with and without Tessera.
+
+### Changed
+
+- `tessera init` replaces `--mcp-configs`, `--git-hooks` and `--force`.
+
+### Fixed
+
+- Missing-member findings only for classes (and Java interfaces), never for
+  TypeScript interfaces, type aliases or variables; properties holding
+  functions count as members.
+- Comments in parameter and argument lists no longer count as parameters
+  or arguments; an arrow assigned to a typed variable takes its arity from
+  the type; tagged templates have no argument count.
+- `export default <identifier>` no longer reports its own file as a missing
+  module; default exports of other expressions and destructured exports
+  are recognised.
+
 ## 0.11.0 - Unreleased
 
 The precision release. References in TypeScript, JavaScript, and Java are

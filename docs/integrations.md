@@ -3,8 +3,14 @@
 Tessera never calls a language model, so it works with any model:
 Claude, GPT, Gemini, Grok, DeepSeek, Qwen, or a local one. What matters is
 the **agent** you run. Every agent that speaks MCP gets the eight tools
-below; agents with hook systems also get automatic checks before and after
-edits (arriving in v0.12, see the [roadmap](../ROADMAP.md)).
+below; agents with hook systems also get [checks before and after every
+edit](hooks.md).
+
+The fastest setup is `tessera init` in the repository: it detects your
+agents, shows the diff of each config change, and asks before writing
+(`--yes` to skip the question, `--dry-run` to only look, `--agent <name>` to
+pick, `--global` for user-wide config). The sections below are the same
+configuration by hand.
 
 The sourced, per-agent matrix of config paths, hook events and trust steps
 lives in [agents.md](agents.md).
@@ -133,13 +139,17 @@ aider --lint-cmd "python: tessera --quiet verify --language python --snippet" \
 
 ## Every agent: a git backstop
 
-Whatever the agent, a broken edit should not reach a commit. Until
-`tessera init --git-hook` lands (v0.12), add this to `.git/hooks/pre-commit`:
+Whatever the agent, a broken edit should not reach a commit:
 
 ```sh
-#!/bin/sh
-tessera --quiet index >/dev/null
+tessera init --git-hook
 ```
 
-This keeps the index fresh for the next session. Commit-blocking checks come
-with `verify --staged` in v0.12.
+installs a pre-commit hook that runs `tessera verify --staged` and refuses a
+commit that breaks a call site, an argument count, or an import.
+`git commit --no-verify` skips it once. To add it to an existing hook
+yourself, append:
+
+```sh
+tessera verify --staged --format agent --quiet; [ $? -ne 1 ] || exit 1
+```

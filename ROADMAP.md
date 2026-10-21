@@ -13,7 +13,7 @@ demo. Nothing is claimed until it can be reproduced. The full design is in
 | --- | --- | --- |
 | v0.10 | Foundation | done, release pending |
 | v0.11 | Precision + public accuracy benchmark | done, release pending |
-| v0.12 | Edit-safety loop (hooks in every agent that supports them) | planned |
+| v0.12 | Edit-safety loop (hooks in every agent that supports them) | done, release pending |
 | v0.13 | Cross-repo contract map | planned |
 | v1.0 | Change-impact UI, GitHub Action, stable contracts | planned |
 | v1.x | Team & CI, architecture rules, precise mode, editors, runtime truth, data lineage, plugins, agent memory | planned |
@@ -73,9 +73,16 @@ including those below the bar, are in [docs/accuracy.md](docs/accuracy.md).
   - After an edit: re-index and block on a high-confidence break.
   - At stop: refuse "done" while breaks remain.
 - `tessera init` detects installed agents and shows a diff before writing any
-  config. 24 agents are covered; see [docs/agents.md](docs/agents.md). A
-  git pre-commit backstop covers every agent.
+  config. 21 agents are in the registry; see [docs/agents.md](docs/agents.md).
+  A git pre-commit backstop covers every agent.
 - A refactor eval: how many call sites agents miss, with and without Tessera.
+
+**Status:** built. Hooks ship for Claude Code (plugin or `init`), Codex CLI,
+Qwen Code, Gemini CLI, Copilot CLI, Cursor, Augment and Antigravity
+([docs/hooks.md](docs/hooks.md)). A blind find-and-replace over the corpus
+was used to hunt verify false positives: it first left 979 blocking
+findings, nearly all wrong; after the fixes it leaves 15, all real. The
+agent arms of the refactor eval are ready to run.
 
 ## v0.13: Contract map
 

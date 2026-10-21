@@ -43,15 +43,23 @@ tessera search 'load*'        # fuzzy or glob search; --unused for dead function
 tessera path <from> <to>      # does A reach B, and how
 ```
 
-**After writing code that calls project functions:**
+**After editing, before saying the task is done:**
+
+```sh
+tessera verify --changed      # calls to missing names, wrong argument counts,
+                              # broken imports, call sites a rename left behind
+```
+
+`verify` exits 1 and gives `file:line` for each problem, with the closest real
+symbol when a name does not exist. Fix them, run it again, then run the tests
+it lists.
+
+**Checking code before writing it to a file:**
 
 ```sh
 tessera verify --snippet <file> --language typescript
 # or: printf '%s' "$CODE" | tessera verify --snippet - --language python
 ```
-
-`verify` exits 1 and names the closest real symbol for anything that does not
-exist. Fix those before saying the task is done.
 
 ## Reading results
 

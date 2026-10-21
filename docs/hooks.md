@@ -1,0 +1,81 @@
+# Edit-safety hooks
+
+Agents edit code and say "done". The hooks make Tessera check each edit as it
+happens and hold the agent at the end of its turn until the breakage it
+caused is fixed. They never call a model, and everything stays on your
+machine.
+
+## Set up
+
+```sh
+tessera init            # detects your agents, shows the diff, asks
+```
+
+For Claude Code there is also a plugin, which needs no files in the project:
+
+```text
+/plugin marketplace add iamsaquib8/tessera
+/plugin install tessera@tessera
+```
+
+Use the plugin or `init` for Claude Code, not both. (If both are wired,
+Tessera answers each edit once.)
+
+## What happens
+
+| Moment | What Tessera does | When it stops the agent |
+| --- | --- | --- |
+| Session start | Records what was already changed, and refreshes the index in the background | Never |
+| Before an edit | If the edit touches a function with callers in other files, adds a short note: the callers, and the tests that reach it. Once per function per session | Never |
+| After an edit | Re-indexes the edited files and runs `verify` over every file edited so far: calls to names that do not exist, wrong argument counts, broken imports, call sites a rename left behind | Only when a problem is still there after an edit that fixed nothing; a rename done over several edits is never interrupted |
+| End of turn | Runs `verify` over everything changed since the session started | While high-confidence problems remain, at most three times per turn |
+
+Only high-confidence findings in TypeScript, JavaScript and Java block.
+Findings in other languages are not shown by the hooks; run
+`tessera verify --changed` to see them. Files that were already changed
+before the session started do not hold the agent unless it edits them.
+
+A problem in Tessera itself never stops the agent: if the index is missing
+or busy, or anything fails, the hook prints nothing (or the agent's no-op
+answer) and exits 0.
+
+## Agents
+
+| Agent | Before an edit | After an edit | End of turn | Wired by |
+| --- | --- | --- | --- | --- |
+| Claude Code (also with DeepSeek) | note | report, then block | block | plugin, or `.claude/settings.local.json` |
+| Codex CLI | note | report, then block | block | `.codex/hooks.json` (approve with `/hooks`) |
+| Qwen Code | – | report, then block | block | `.qwen/settings.json` |
+| Gemini CLI | – | report | retry | `.gemini/settings.json` |
+| GitHub Copilot CLI | – | report | block | `.github/hooks/tessera.json` |
+| Cursor | – | report | follow-up message | `.cursor/hooks.json` |
+| Augment (Auggie CLI) | – | report | block | `.augment/settings.local.json` |
+| Google Antigravity | – | – | continue with the problems | `.agents/hooks.json` |
+| Everything else | – | – | – | `tessera init --git-hook` |
+
+A dash means the agent's documented hook contract has no way to say it:
+Qwen's and Antigravity's pre-tool hooks would have to approve the edit,
+Copilot's can only allow or deny, and Antigravity's post-tool hook cannot
+return feedback. The sources are in [agents.md](agents.md).
+
+## The git backstop
+
+```sh
+tessera init --git-hook
+```
+
+installs a pre-commit hook that runs `tessera verify --staged`. A commit
+whose changes break a call site or an import is refused, whichever agent (or
+person) made it. `git commit --no-verify` skips it once. An existing
+pre-commit hook is never replaced; `init` prints the line to add instead.
+
+## Session files and turning it off
+
+Each session's state is in `.tessera/sessions/<id>.json`, next to the index
+(git-ignored): the files edited, the notes already shown, the problems still
+open, and counts of notes, reports and blocks. Files untouched for a week are
+removed.
+
+To turn the hooks off, remove Tessera's entries from the hook file in the
+table above, or uninstall the plugin. `tessera init` only ever adds entries,
+so your own hooks are untouched either way.

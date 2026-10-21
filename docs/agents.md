@@ -8,6 +8,10 @@ agent hook contracts change often.
 Tessera never calls an LLM, so model choice does not matter. Users of Grok,
 DeepSeek, Qwen, or local models get Tessera through whichever agent they run.
 
+What Tessera wires from this matrix today, per agent, is in
+[hooks.md](hooks.md) (hooks) and [integrations.md](integrations.md) (MCP);
+`tessera init` reads the same registry.
+
 ## Tiers
 
 | Tier | Meaning | Agents |
