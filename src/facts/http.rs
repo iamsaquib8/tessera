@@ -43,10 +43,9 @@ pub fn path(source: &str) -> Option<(String, &'static str)> {
     } else if let Some(inner) = quoted(source, '`') {
         let (text, holes) = template(inner);
         (text, if holes { "medium" } else { "high" })
-    } else if let Some(inner) = quoted(source, '"').or_else(|| quoted(source, '\'')) {
-        (inner.to_string(), "high")
     } else {
-        return None;
+        let inner = quoted(source, '"').or_else(|| quoted(source, '\''))?;
+        (inner.to_string(), "high")
     };
     normalise(&text).map(|path| (path, confidence))
 }
