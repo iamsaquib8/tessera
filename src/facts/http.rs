@@ -36,14 +36,15 @@ pub fn method(text: &str) -> String {
 /// be read from it.
 pub fn path(source: &str) -> Option<(String, &'static str)> {
     let source = source.trim();
-    let (text, confidence) = if let Some(inner) = quoted(source, '`') {
+    let parts = top_level_parts(source);
+    let (text, confidence) = if parts.len() > 1 {
+        let (text, holes) = concatenation(&parts)?;
+        (text, if holes { "low" } else { "high" })
+    } else if let Some(inner) = quoted(source, '`') {
         let (text, holes) = template(inner);
         (text, if holes { "medium" } else { "high" })
     } else if let Some(inner) = quoted(source, '"').or_else(|| quoted(source, '\'')) {
         (inner.to_string(), "high")
-    } else if source.contains('+') {
-        let (text, holes) = concatenation(source)?;
-        (text, if holes { "low" } else { "high" })
     } else {
         return None;
     };
@@ -75,12 +76,36 @@ fn template(inner: &str) -> (String, bool) {
     (out, holes)
 }
 
+/// The operands of a `+` outside quotes: `"/a/" + id` → `"/a/"`, `id`.
+fn top_level_parts(source: &str) -> Vec<&str> {
+    let mut parts = Vec::new();
+    let mut quote: Option<char> = None;
+    let mut escaped = false;
+    let mut start = 0;
+    for (at, c) in source.char_indices() {
+        match quote {
+            Some(_) if escaped => escaped = false,
+            Some(_) if c == '\\' => escaped = true,
+            Some(q) if c == q => quote = None,
+            Some(_) => {}
+            None if matches!(c, '"' | '\'' | '`') => quote = Some(c),
+            None if c == '+' => {
+                parts.push(source[start..at].trim());
+                start = at + 1;
+            }
+            None => {}
+        }
+    }
+    parts.push(source[start..].trim());
+    parts
+}
+
 /// `BASE + "/users/" + id` becomes `/users/{}`.
-fn concatenation(source: &str) -> Option<(String, bool)> {
+fn concatenation(parts: &[&str]) -> Option<(String, bool)> {
     let mut out = String::new();
     let mut holes = false;
     let mut literal = false;
-    for part in source.split('+').map(str::trim) {
+    for part in parts.iter().copied() {
         if let Some(inner) = quoted(part, '"').or_else(|| quoted(part, '\'')) {
             out.push_str(inner);
             literal = true;
@@ -224,6 +249,15 @@ mod tests {
             Some(("/users/{}".into(), "low"))
         );
         assert_eq!(path("url"), None);
+        assert_eq!(
+            path("\"/api/\" + id + \"/items\""),
+            Some(("/api/{}/items".into(), "low"))
+        );
+        assert_eq!(
+            path("\"http://owners/owners/\" + ownerId + \"/pets\""),
+            Some(("/owners/{}/pets".into(), "low"))
+        );
+        assert_eq!(path("'/a+b'"), Some(("/a+b".into(), "high")));
         assert_eq!(normalise("pages/[id]"), Some("/pages/{}".into()));
         assert_eq!(
             normalise("/owners/*/pets/{petId}"),
