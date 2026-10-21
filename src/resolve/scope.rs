@@ -194,6 +194,9 @@ impl Resolution {
 #[derive(Debug, Clone)]
 enum Found {
     Symbols(Vec<i64>),
+    /// A whole repository module (`export * as ns`, a re-exported namespace
+    /// import), whose members are its exports.
+    Module(i64),
     External,
     Missing,
     /// A repository module or class (this file) was searched and lacks the name.
@@ -487,7 +490,8 @@ impl<'c> Resolver<'c> {
                             Found::Symbols(ids) => {
                                 self.finish(ids, arity, Resolution::high(Vec::new(), "import"))?
                             }
-                            Found::External => Resolution::external(),
+                            // A module object is not something to call.
+                            Found::Module(_) | Found::External => Resolution::external(),
                             Found::Absent(path) => Resolution::missing(path),
                             Found::Missing => Resolution::missing(self.file(module)?.path.clone()),
                         }
@@ -665,7 +669,7 @@ impl<'c> Resolver<'c> {
                 Found::Symbols(ids) => {
                     self.finish(ids, arity, Resolution::high(Vec::new(), "import"))?
                 }
-                Found::External => Resolution::external(),
+                Found::Module(_) | Found::External => Resolution::external(),
                 Found::Absent(path) => Resolution::missing(path),
                 Found::Missing => Resolution::unresolved(),
             });
@@ -681,7 +685,7 @@ impl<'c> Resolver<'c> {
             Found::Symbols(ids) => {
                 return self.finish(ids, arity, Resolution::high(Vec::new(), "import"))
             }
-            Found::External => return Ok(Resolution::external()),
+            Found::Module(_) | Found::External => return Ok(Resolution::external()),
             Found::Absent(path) => return Ok(Resolution::missing(path)),
             Found::Missing if self.has_binding(file, name) => return Ok(Resolution::unresolved()),
             Found::Missing => {}
@@ -709,7 +713,7 @@ impl<'c> Resolver<'c> {
             Found::Symbols(ids) => {
                 return self.finish(ids, None, Resolution::high(Vec::new(), "import"))
             }
-            Found::External => return Ok(Resolution::external()),
+            Found::Module(_) | Found::External => return Ok(Resolution::external()),
             Found::Absent(path) => return Ok(Resolution::missing(path)),
             Found::Missing if self.has_binding(file, name) => return Ok(Resolution::unresolved()),
             Found::Missing => {}
@@ -801,6 +805,11 @@ impl<'c> Resolver<'c> {
                         ModuleTarget::Unresolved => Found::Missing,
                     }
                 }
+                "namespace" => match self.module(&file.path, &source, file.language) {
+                    ModuleTarget::File(target) => Found::Module(target),
+                    ModuleTarget::External(_) => Found::External,
+                    ModuleTarget::Unresolved => Found::Missing,
+                },
                 "java_single" => self.java_import(&source, name)?,
                 "java_wildcard" => match self.java_class_symbol(&source, name)? {
                     Some(id) => Found::Symbols(vec![id]),
@@ -833,6 +842,7 @@ impl<'c> Resolver<'c> {
             };
             match found {
                 Found::Symbols(ids) => return Ok(Found::Symbols(ids)),
+                Found::Module(id) => return Ok(Found::Module(id)),
                 // A wildcard only says where a name might come from.
                 Found::External if wildcard => {}
                 Found::External => external = true,
@@ -941,6 +951,8 @@ impl<'c> Resolver<'c> {
                 }
             } else {
                 match self.module(&file.path, &source, file.language) {
+                    // `export * as ns from "./x"` exports the module itself.
+                    ModuleTarget::File(target) if wanted == "*" => Found::Module(target),
                     ModuleTarget::File(target) => {
                         self.export_lookup(target, &wanted, visited, depth + 1)?
                     }
@@ -950,6 +962,7 @@ impl<'c> Resolver<'c> {
             };
             match found {
                 Found::Symbols(ids) => return Ok(Found::Symbols(ids)),
+                Found::Module(id) => return Ok(Found::Module(id)),
                 Found::External => external = true,
                 Found::Missing | Found::Absent(_) => {}
             }
@@ -995,6 +1008,11 @@ impl<'c> Resolver<'c> {
                 ModuleTarget::External(_) => Receiver::External,
                 ModuleTarget::Unresolved => Receiver::Unknown,
             });
+        }
+        if self.has_binding(file, receiver) {
+            if let Found::Module(id) = self.binding_symbols(file, receiver)? {
+                return Ok(Receiver::Module(id));
+            }
         }
         if receiver.contains('.') {
             return self.receiver_path(file, chain, receiver, depth);
@@ -1096,6 +1114,7 @@ impl<'c> Resolver<'c> {
                             Receiver::Class(classes, "high", "import")
                         }
                     }
+                    Found::Module(id) => Receiver::Module(id),
                     Found::External => Receiver::External,
                     Found::Missing | Found::Absent(_) => Receiver::Unknown,
                 },
@@ -1212,7 +1231,7 @@ impl<'c> Resolver<'c> {
         if file.language == Language::Java {
             return Ok(match self.java_import(type_name, "")? {
                 Found::Symbols(ids) => Resolution::high(ids, "import"),
-                Found::External | Found::Missing | Found::Absent(_) => Resolution::external(),
+                _ => Resolution::external(),
             });
         }
         match self.receiver(file, chain, head, depth + 1)? {

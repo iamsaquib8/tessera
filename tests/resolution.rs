@@ -31,6 +31,22 @@ fn edges(db: &Path) -> Vec<String> {
     out
 }
 
+/// `path local status` for every import binding that is not `ok`.
+fn broken_bindings(db: &Path) -> Vec<String> {
+    let conn = Connection::open(db).unwrap();
+    let mut stmt = conn
+        .prepare(
+            "SELECT f.path || ' ' || b.local || ' ' || b.status
+             FROM import_bindings b JOIN files f ON f.id = b.file_id
+             WHERE b.status != 'ok' ORDER BY f.path, b.line",
+        )
+        .unwrap();
+    stmt.query_map([], |row| row.get(0))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect()
+}
+
 fn assert_has(all: &[String], expected: &[&str]) {
     let missing: Vec<&&str> = expected
         .iter()
@@ -366,6 +382,32 @@ fn java_overloads_with_the_same_argument_count_are_ambiguous() {
             "Main.run -call-> Repo.java:Repo.findById [high/hint]",
             "Main.run -call-> Repo.java:Repo.findById [low/hint]",
             "Main.run -call-> Repo.java:Repo.findById [low/hint]",
+        ],
+        "{all:#?}"
+    );
+}
+
+#[test]
+fn a_namespace_re_export_is_a_module_named_by_its_alias() {
+    let (_temp, ws) = repo_with(&[
+        ("x.ts", "export function foo() { return 1; }\n"),
+        (
+            "barrel.ts",
+            "export * as ns from \"./x\";\nimport * as other from \"./x\";\nexport { other };\n",
+        ),
+        (
+            "main.ts",
+            "import { ns, other } from \"./barrel\";\nexport function run() {\n  ns.foo();\n  return other.foo();\n}\n",
+        ),
+    ]);
+    assert_eq!(broken_bindings(&ws.db_path), Vec::<String>::new());
+    let all = edges(&ws.db_path);
+    let run: Vec<&String> = all.iter().filter(|e| e.starts_with("run ")).collect();
+    assert_eq!(
+        run,
+        vec![
+            "run -call-> x.ts:foo [high/import]",
+            "run -call-> x.ts:foo [high/import]",
         ],
         "{all:#?}"
     );
