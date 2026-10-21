@@ -258,6 +258,47 @@ fn a_rename_fixed_one_call_site_at_a_time_is_never_interrupted() {
 }
 
 #[test]
+fn problems_already_there_when_the_session_began_never_block() {
+    let base = fs::read_to_string(fixture_dir("typescript").join("src/users/repo.ts")).unwrap();
+    let broken = base.replace("repo.findById(id)", "repo.findByIdd(id)");
+    let temp = repo_with(&[("src/users/repo.ts", &broken)]);
+    let root = temp.path();
+    start_indexed(root);
+    // Two edits to the file with the old problem, the first shifting its line.
+    write(root, "src/users/repo.ts", &format!("// one\n{broken}"));
+    let first = claude(
+        root,
+        "PostToolUse",
+        edit_payload(root, "src/users/repo.ts", "", "// one"),
+    );
+    assert!(first.get("decision").is_none(), "{first}");
+    replace_in(root, "src/users/repo.ts", "// one", "// one\n// two");
+    let second = claude(
+        root,
+        "PostToolUse",
+        edit_payload(root, "src/users/repo.ts", "// one", "// one\n// two"),
+    );
+    assert!(second.get("decision").is_none(), "{second}");
+    assert_eq!(
+        claude(root, "Stop", json!({ "stop_hook_active": false })),
+        Value::Null
+    );
+
+    // A problem the agent adds still blocks, and only it is named.
+    replace_in(
+        root,
+        "src/users/repo.ts",
+        "formatName(this.lookup(id))",
+        "formatName(this.lookup(id), 2)",
+    );
+    let stop = claude(root, "Stop", json!({ "stop_hook_active": false }));
+    assert_eq!(stop["decision"], "block", "{stop}");
+    let reason = stop["reason"].as_str().unwrap();
+    assert!(reason.contains("formatName"), "{reason}");
+    assert!(!reason.contains("findByIdd"), "{reason}");
+}
+
+#[test]
 fn stop_blocks_on_problems_at_most_three_times() {
     let temp = repo();
     let root = temp.path();

@@ -26,8 +26,12 @@ pub struct Session {
     pub edited: BTreeSet<String>,
     /// Symbols the pre-edit note already announced, as `path#qualified name`.
     pub announced: BTreeSet<String>,
-    /// Blocking findings after the last edit, as `id path message` with how
-    /// many call sites have each, so fixing one of several counts.
+    /// Problems the index already held when the session began (and those
+    /// the agent gave up on after the stop limit), by hashed key with how
+    /// many findings had each. They never block. `None` until taken.
+    pub baseline_problems: Option<BTreeMap<String, u32>>,
+    /// The agent's blocking problems after the last check, by key with how
+    /// many findings have each, so fixing one call site of several counts.
     pub problems: BTreeMap<String, u32>,
     /// Stop blocks since the turn began.
     pub stop_blocks: u32,

@@ -69,7 +69,8 @@ pub struct VerifyResult {
 }
 
 impl VerifyResult {
-    fn new(mut findings: Vec<Finding>, tests: Vec<String>) -> Self {
+    /// Sorts `findings`, blocking first, and drops duplicates.
+    pub fn new(mut findings: Vec<Finding>, tests: Vec<String>) -> Self {
         findings.sort_by(|a, b| {
             b.blocking
                 .cmp(&a.blocking)
@@ -182,11 +183,21 @@ pub fn verify_paths(
     changed: &HashSet<String>,
     changes: &Changes,
 ) -> Result<VerifyResult> {
-    let rev = match changes {
-        Changes::Since(rev) => rev.as_str(),
-        _ => "HEAD",
-    };
-    let mut findings = problem_findings(conn, root, changed, rev)?;
+    let findings = problems(conn, root, changed, changes)?
+        .into_iter()
+        .map(|p| p.finding)
+        .collect();
+    with_tests(conn, root, changed, changes, findings)
+}
+
+/// `findings` plus V6, the tests that reach the change.
+pub fn with_tests(
+    conn: &Connection,
+    root: &Path,
+    changed: &HashSet<String>,
+    changes: &Changes,
+    mut findings: Vec<Finding>,
+) -> Result<VerifyResult> {
     let tests = tests_to_run(conn, root, changed, changes)?;
     for test in &tests {
         findings.push(Finding {
@@ -209,24 +220,87 @@ pub fn verify_problems(
     root: &Path,
     changed: &HashSet<String>,
 ) -> Result<VerifyResult> {
-    Ok(VerifyResult::new(
-        problem_findings(conn, root, changed, "HEAD")?,
-        Vec::new(),
-    ))
+    let findings = problems(conn, root, changed, &Changes::WorkingTree)?
+        .into_iter()
+        .map(|p| p.finding)
+        .collect();
+    Ok(VerifyResult::new(findings, Vec::new()))
 }
 
-fn problem_findings(
+/// A finding with a key that names the problem without its line, and
+/// without whether the change touched the file it is in: the same broken
+/// call has one key as a V1 or a V3, before and after lines shift.
+#[derive(Debug, Clone)]
+pub struct Problem {
+    pub finding: Finding,
+    pub key: String,
+}
+
+/// V1–V5 over `changed`, keyed.
+pub fn problems(
     conn: &Connection,
     root: &Path,
     changed: &HashSet<String>,
-    rev: &str,
-) -> Result<Vec<Finding>> {
-    let mut findings = Vec::new();
-    missing_names(conn, changed, &mut findings)?;
-    arity_mismatches(conn, changed, &mut findings)?;
-    broken_imports(conn, changed, &mut findings)?;
-    contract_breaks(conn, root, changed, rev, &mut findings)?;
-    Ok(findings)
+    changes: &Changes,
+) -> Result<Vec<Problem>> {
+    let rev = match changes {
+        Changes::Since(rev) => rev.as_str(),
+        _ => "HEAD",
+    };
+    let mut out = Vec::new();
+    missing_names(conn, changed, &mut out)?;
+    arity_mismatches(conn, changed, &mut out)?;
+    broken_imports(conn, changed, &mut out)?;
+    let mut contracts = Vec::new();
+    contract_breaks(conn, root, changed, rev, &mut contracts)?;
+    out.extend(contracts.into_iter().map(contract_problem));
+    Ok(out)
+}
+
+fn contract_problem(finding: Finding) -> Problem {
+    let key = format!(
+        "contract {} {}",
+        finding.path.as_deref().unwrap_or("-"),
+        finding.message
+    );
+    Problem { finding, key }
+}
+
+/// The keys of every problem the index holds now, whichever files a change
+/// touches, leaving out rows that involve `skip`; V5 is checked over
+/// `contract_paths` against `HEAD`. Hooks take this when a session begins,
+/// so problems that were already there never block the agent.
+pub fn problem_keys(
+    conn: &Connection,
+    root: &Path,
+    skip: &HashSet<String>,
+    contract_paths: &HashSet<String>,
+) -> Result<Vec<String>> {
+    let clear = |paths: &[&str]| !paths.iter().any(|p| skip.contains(*p));
+    let skip_stems: HashSet<String> = skip.iter().map(|p| strip_extension(p)).collect();
+    let mut keys = Vec::new();
+    for row in missing_rows(conn)? {
+        if clear(&[&row.path, row.missing_in.as_deref().unwrap_or_default()]) {
+            keys.push(row.key());
+        }
+    }
+    for row in arity_rows(conn)? {
+        if clear(&[&row.path, &row.target_path]) {
+            keys.push(row.key());
+        }
+    }
+    for row in binding_rows(conn)? {
+        let lexical = lexical_target(&row.path, &row.source).is_some_and(|candidate| {
+            skip_stems.contains(&candidate) || skip_stems.contains(&format!("{candidate}/index"))
+        });
+        if !lexical && clear(&[&row.path, row.target.as_deref().unwrap_or_default()]) {
+            keys.push(row.key());
+        }
+    }
+    let mut contracts = Vec::new();
+    contract_breaks(conn, root, contract_paths, "HEAD", &mut contracts)?;
+    keys.extend(contracts.into_iter().map(|f| contract_problem(f).key));
+    Ok(keys)
 }
 
 /// Provider fact kinds: what a server, a handler or a producer offers.
@@ -458,52 +532,129 @@ fn finding(id: &str, path: String, line: usize, message: String) -> Finding {
     }
 }
 
-/// V1 (in changed files) and V3 (elsewhere, into a changed file): a name
-/// resolved into a repository module or class that does not have it.
-fn missing_names(
-    conn: &Connection,
-    changed: &HashSet<String>,
-    findings: &mut Vec<Finding>,
-) -> Result<()> {
+struct MissingRow {
+    path: String,
+    line: usize,
+    name: String,
+    missing_in: Option<String>,
+}
+
+impl MissingRow {
+    fn key(&self) -> String {
+        format!(
+            "missing {} {} {}",
+            self.path,
+            self.name,
+            self.missing_in.as_deref().unwrap_or_default()
+        )
+    }
+}
+
+fn missing_rows(conn: &Connection) -> Result<Vec<MissingRow>> {
     let mut stmt = conn.prepare(
         "SELECT f.path, r.line, r.symbol_name, e.missing_in
          FROM edges e JOIN refs r ON r.id = e.ref_id JOIN files f ON f.id = r.file_id
          WHERE e.resolver = 'missing'",
     )?;
-    let rows: Vec<(String, usize, String, Option<String>)> = stmt
+    let rows = stmt
         .query_map([], |row| {
-            Ok((
-                row.get(0)?,
-                row.get::<_, i64>(1)? as usize,
-                row.get(2)?,
-                row.get(3)?,
-            ))
+            Ok(MissingRow {
+                path: row.get(0)?,
+                line: row.get::<_, i64>(1)? as usize,
+                name: row.get(2)?,
+                missing_in: row.get(3)?,
+            })
         })?
         .collect::<rusqlite::Result<_>>()?;
-    for (path, line, name, missing_in) in rows {
+    Ok(rows)
+}
+
+/// V1 (in changed files) and V3 (elsewhere, into a changed file): a name
+/// resolved into a repository module or class that does not have it.
+fn missing_names(
+    conn: &Connection,
+    changed: &HashSet<String>,
+    problems: &mut Vec<Problem>,
+) -> Result<()> {
+    for row in missing_rows(conn)? {
+        let key = row.key();
+        let MissingRow {
+            path,
+            line,
+            name,
+            missing_in,
+        } = row;
         let missing_in = missing_in.unwrap_or_default();
-        if changed.contains(&path) {
+        let finding = if changed.contains(&path) {
             let hint = legacy::validate_conn(conn, &name)?
                 .candidates
                 .first()
                 .map(|s| format!("; did you mean {}?", s.qualified_name))
                 .unwrap_or_default();
-            findings.push(finding(
+            finding(
                 "V1",
                 path,
                 line,
                 format!("`{name}` is not defined in {missing_in}{hint}"),
-            ));
+            )
         } else if changed.contains(&missing_in) {
-            findings.push(finding(
+            finding(
                 "V3",
                 path,
                 line,
                 format!("`{name}` no longer exists in {missing_in}, which this change edited"),
-            ));
-        }
+            )
+        } else {
+            continue;
+        };
+        problems.push(Problem { finding, key });
     }
     Ok(())
+}
+
+struct ArityRow {
+    path: String,
+    line: usize,
+    args: Option<i64>,
+    target: String,
+    min: Option<i64>,
+    max: Option<i64>,
+    target_path: String,
+}
+
+impl ArityRow {
+    fn key(&self) -> String {
+        format!(
+            "arity {} {} {} {}",
+            self.path,
+            self.target,
+            self.target_path,
+            self.args.unwrap_or_default()
+        )
+    }
+}
+
+fn arity_rows(conn: &Connection) -> Result<Vec<ArityRow>> {
+    let mut stmt = conn.prepare(
+        "SELECT f.path, r.line, r.arg_count, ts.qualified_name, ts.arity_min, ts.arity_max, tf.path
+         FROM edges e JOIN refs r ON r.id = e.ref_id JOIN files f ON f.id = r.file_id
+         JOIN symbols ts ON ts.id = e.to_symbol_id JOIN files tf ON tf.id = ts.file_id
+         WHERE e.arity_mismatch = 1 AND e.confidence = 'high'",
+    )?;
+    let rows = stmt
+        .query_map([], |row| {
+            Ok(ArityRow {
+                path: row.get(0)?,
+                line: row.get::<_, i64>(1)? as usize,
+                args: row.get(2)?,
+                target: row.get(3)?,
+                min: row.get(4)?,
+                max: row.get(5)?,
+                target_path: row.get(6)?,
+            })
+        })?
+        .collect::<rusqlite::Result<_>>()?;
+    Ok(rows)
 }
 
 /// V2: a resolved call passes an argument count its target cannot take, where
@@ -511,57 +662,76 @@ fn missing_names(
 fn arity_mismatches(
     conn: &Connection,
     changed: &HashSet<String>,
-    findings: &mut Vec<Finding>,
+    problems: &mut Vec<Problem>,
 ) -> Result<()> {
-    type Row = (
-        String,
-        usize,
-        Option<i64>,
-        String,
-        Option<i64>,
-        Option<i64>,
-        String,
-    );
-    let mut stmt = conn.prepare(
-        "SELECT f.path, r.line, r.arg_count, ts.qualified_name, ts.arity_min, ts.arity_max, tf.path
-         FROM edges e JOIN refs r ON r.id = e.ref_id JOIN files f ON f.id = r.file_id
-         JOIN symbols ts ON ts.id = e.to_symbol_id JOIN files tf ON tf.id = ts.file_id
-         WHERE e.arity_mismatch = 1 AND e.confidence = 'high'",
-    )?;
-    let rows: Vec<Row> = stmt
-        .query_map([], |row| {
-            Ok((
-                row.get(0)?,
-                row.get::<_, i64>(1)? as usize,
-                row.get(2)?,
-                row.get(3)?,
-                row.get(4)?,
-                row.get(5)?,
-                row.get(6)?,
-            ))
-        })?
-        .collect::<rusqlite::Result<_>>()?;
-    for (path, line, args, target, min, max, target_path) in rows {
-        if !changed.contains(&path) && !changed.contains(&target_path) {
+    for row in arity_rows(conn)? {
+        if !changed.contains(&row.path) && !changed.contains(&row.target_path) {
             continue;
         }
-        let expected = match (min, max) {
+        let key = row.key();
+        let expected = match (row.min, row.max) {
             (Some(min), Some(max)) if min == max => min.to_string(),
             (Some(min), Some(max)) => format!("{min} to {max}"),
             (Some(min), None) => format!("at least {min}"),
             _ => "a different number of".to_string(),
         };
-        findings.push(finding(
+        let finding = finding(
             "V2",
-            path,
-            line,
+            row.path,
+            row.line,
             format!(
-                "`{target}` takes {expected} arguments; this call passes {}",
-                args.unwrap_or_default()
+                "`{}` takes {expected} arguments; this call passes {}",
+                row.target,
+                row.args.unwrap_or_default()
             ),
-        ));
+        );
+        problems.push(Problem { finding, key });
     }
     Ok(())
+}
+
+struct BindingRow {
+    path: String,
+    line: usize,
+    local: String,
+    imported: Option<String>,
+    source: String,
+    status: String,
+    target: Option<String>,
+}
+
+impl BindingRow {
+    fn key(&self) -> String {
+        format!(
+            "import {} {} {} {}",
+            self.path,
+            self.imported.as_deref().unwrap_or(&self.local),
+            self.source,
+            self.status
+        )
+    }
+}
+
+fn binding_rows(conn: &Connection) -> Result<Vec<BindingRow>> {
+    let mut stmt = conn.prepare(
+        "SELECT f.path, b.line, b.local, b.imported, b.source, b.status, b.target_path
+         FROM import_bindings b JOIN files f ON f.id = b.file_id
+         WHERE b.status != 'ok'",
+    )?;
+    let rows = stmt
+        .query_map([], |row| {
+            Ok(BindingRow {
+                path: row.get(0)?,
+                line: row.get::<_, i64>(1)? as usize,
+                local: row.get(2)?,
+                imported: row.get(3)?,
+                source: row.get(4)?,
+                status: row.get(5)?,
+                target: row.get(6)?,
+            })
+        })?
+        .collect::<rusqlite::Result<_>>()?;
+    Ok(rows)
 }
 
 /// V4: an import whose local module is gone or does not export the name, in a
@@ -569,54 +739,32 @@ fn arity_mismatches(
 fn broken_imports(
     conn: &Connection,
     changed: &HashSet<String>,
-    findings: &mut Vec<Finding>,
+    problems: &mut Vec<Problem>,
 ) -> Result<()> {
-    type Row = (
-        String,
-        usize,
-        String,
-        Option<String>,
-        String,
-        String,
-        Option<String>,
-    );
     let changed_stems: HashSet<String> = changed.iter().map(|p| strip_extension(p)).collect();
-    let mut stmt = conn.prepare(
-        "SELECT f.path, b.line, b.local, b.imported, b.source, b.status, b.target_path
-         FROM import_bindings b JOIN files f ON f.id = b.file_id
-         WHERE b.status != 'ok'",
-    )?;
-    let rows: Vec<Row> = stmt
-        .query_map([], |row| {
-            Ok((
-                row.get(0)?,
-                row.get::<_, i64>(1)? as usize,
-                row.get(2)?,
-                row.get(3)?,
-                row.get(4)?,
-                row.get(5)?,
-                row.get(6)?,
-            ))
-        })?
-        .collect::<rusqlite::Result<_>>()?;
-    for (path, line, local, imported, source, status, target) in rows {
-        let points_at_change = target.as_ref().is_some_and(|t| changed.contains(t))
-            || lexical_target(&path, &source).is_some_and(|candidate| {
+    for row in binding_rows(conn)? {
+        let points_at_change = row.target.as_ref().is_some_and(|t| changed.contains(t))
+            || lexical_target(&row.path, &row.source).is_some_and(|candidate| {
                 changed_stems.contains(&candidate)
                     || changed_stems.contains(&format!("{candidate}/index"))
             });
-        if !changed.contains(&path) && !points_at_change {
+        if !changed.contains(&row.path) && !points_at_change {
             continue;
         }
-        let message = if status == "missing_module" {
-            format!("`{source}` does not resolve to a file")
+        let key = row.key();
+        let message = if row.status == "missing_module" {
+            format!("`{}` does not resolve to a file", row.source)
         } else {
             format!(
-                "`{}` is not exported by {source}",
-                imported.unwrap_or(local)
+                "`{}` is not exported by {}",
+                row.imported.as_deref().unwrap_or(&row.local),
+                row.source
             )
         };
-        findings.push(finding("V4", path, line, message));
+        problems.push(Problem {
+            finding: finding("V4", row.path, row.line, message),
+            key,
+        });
     }
     Ok(())
 }

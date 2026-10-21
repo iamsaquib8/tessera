@@ -6,7 +6,7 @@
 pub mod payload;
 pub mod session;
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -22,7 +22,7 @@ use crate::db;
 use crate::fresh::{self, Freshness};
 use crate::indexer::{self, IndexLock};
 use crate::output::Confidence;
-use crate::query::{self, graph, Changes, VerifyResult};
+use crate::query::{self, graph, Changes, Finding, Problem, VerifyResult};
 use crate::types::SymbolRecord;
 use crate::walk;
 use crate::workspace::Workspace;
@@ -43,6 +43,9 @@ const NOTE_SITES: usize = 3;
 const NOTE_TESTS: usize = 2;
 const TEST_DEPTH: usize = 4;
 const TEST_SCAN_CAP: usize = 2_000;
+/// The baseline checks contracts (V5) in at most this many files that were
+/// already changed when the session began.
+const BASELINE_CONTRACT_FILES: usize = 200;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Event {
@@ -146,6 +149,13 @@ pub fn run(agent: &str, event: &str, input: &str, options: &HookOptions) -> Resu
     let (store, mut session, new) = Store::open(&ws.db_path, &payload.session)?;
     if new {
         hook.start(&mut session);
+        if kind == Event::PostEdit {
+            // First seen after an edit: that edit is the agent's, not the
+            // state the session began in.
+            for path in payload.paths_in(&ws.root) {
+                session.dirty.remove(&path);
+            }
+        }
     }
     let reply = match kind {
         Event::SessionStart => {
@@ -327,6 +337,7 @@ impl Hook<'_> {
             return Ok(None);
         }
         indexer::index_files(self.ws, &paths)?;
+        self.take_baseline(session, &paths);
         let conn = db::open_ro(&self.ws.db_path)?;
         let old_texts: &[String] = if paths.len() == 1 {
             &payload.old_texts
@@ -363,7 +374,7 @@ impl Hook<'_> {
         Ok(Some(Reply::Context(text)))
     }
 
-    /// After an edit: V1–V4 over every file edited this session. A problem
+    /// After an edit: V1–V5 over every file edited this session. A problem
     /// is reported first; it blocks only when it survives an edit that fixed
     /// nothing, so a change made in several steps is never interrupted.
     fn post_edit(&self, payload: &Payload, session: &mut Session) -> Result<Option<Reply>> {
@@ -378,11 +389,13 @@ impl Hook<'_> {
         if !self.ready(EDIT_WAIT) {
             return Ok(None);
         }
+        self.take_baseline(session, &paths);
         indexer::index_files(self.ws, &paths)?;
         let conn = db::open_ro(&self.ws.db_path)?;
         let scope: HashSet<String> = session.edited.iter().cloned().collect();
-        let result = query::verify_problems(&conn, &self.ws.root, &scope)?;
-        let now = open_problems(&result);
+        let found = query::problems(&conn, &self.ws.root, &scope, &Changes::WorkingTree)?;
+        let (findings, now) = judge(found, session);
+        let result = VerifyResult::new(findings, Vec::new());
         let (persisting, fixed) = compare(&session.problems, &now);
         session.problems = now;
         if result.ok {
@@ -391,7 +404,7 @@ impl Hook<'_> {
         let brief = result.agent_brief();
         Ok(Some(if persisting > 0 && fixed == 0 {
             session.counts.post_blocks += 1;
-            session.blocked.extend(session.problems.keys().cloned());
+            session.blocked.extend(blocked(&result));
             Reply::Block(format!(
                 "{brief}\nThese were already there after your previous edit. Fix them before you go on."
             ))
@@ -437,17 +450,20 @@ impl Hook<'_> {
         if scope.is_empty() || !self.ready(STOP_WAIT) {
             return Ok(None);
         }
+        self.take_baseline(session, &scope);
         indexer::index_files(self.ws, &scope)?;
         let conn = db::open_ro(&self.ws.db_path)?;
         let scope: HashSet<String> = scope.into_iter().collect();
-        let result = query::verify_paths(&conn, &self.ws.root, &scope, &changes)?;
-        session.problems = open_problems(&result);
-        if result.ok {
+        let found = query::problems(&conn, &self.ws.root, &scope, &changes)?;
+        let (findings, now) = judge(found, session);
+        session.problems = now;
+        if !findings.iter().any(|f| f.blocking) {
             return Ok(None);
         }
+        let result = query::with_tests(&conn, &self.ws.root, &scope, &changes, findings)?;
         session.stop_blocks += 1;
         session.counts.stop_blocks += 1;
-        session.blocked.extend(session.problems.keys().cloned());
+        session.blocked.extend(blocked(&result));
         let mut reason = result.agent_brief();
         if !result.tests.is_empty() {
             let tests: Vec<&str> = result.tests.iter().take(5).map(String::as_str).collect();
@@ -459,22 +475,98 @@ impl Hook<'_> {
         reason.push_str("\nFix these before you finish.");
         Ok(Some(Reply::Block(reason)))
     }
+
+    /// Takes, once per session, the problems the index holds before it
+    /// learns of the agent's edits: they were there before the agent, so
+    /// they never block it. Files whose indexed content is already the
+    /// agent's are left out, so their problems still count as the agent's.
+    fn take_baseline(&self, session: &mut Session, touched: &[String]) {
+        if session.baseline_problems.is_some() {
+            return;
+        }
+        let Ok(conn) = db::open_ro(&self.ws.db_path) else {
+            return;
+        };
+        let root = &self.ws.root;
+        let since_commit = session
+            .baseline
+            .clone()
+            .and_then(|rev| query::changed_paths(root, &Changes::Since(rev)).ok());
+        let mut candidates: BTreeSet<String> = session.edited.clone();
+        candidates.extend(touched.iter().cloned());
+        candidates.extend(since_commit.iter().flatten().cloned());
+        let skip: HashSet<String> = candidates
+            .into_iter()
+            .filter(|path| {
+                let changed = match session.dirty.get(path) {
+                    Some(hash) => *hash != content_hash(&root.join(path)),
+                    None => since_commit.as_ref().is_none_or(|c| c.contains(path)),
+                };
+                let indexed = db::file_sha(&conn, path).ok().flatten().map(|(_, sha)| sha);
+                let current = fs::read(root.join(path)).ok().map(|b| text_sha(&b));
+                changed && indexed == current
+            })
+            .collect();
+        let contract_paths: HashSet<String> = session
+            .dirty
+            .iter()
+            .filter(|(path, hash)| {
+                !skip.contains(*path) && **hash == content_hash(&root.join(path))
+            })
+            .map(|(path, _)| path.clone())
+            .take(BASELINE_CONTRACT_FILES)
+            .collect();
+        if let Ok(keys) = query::problem_keys(&conn, root, &skip, &contract_paths) {
+            let mut counts = BTreeMap::new();
+            for key in keys {
+                *counts.entry(short_hash(&key)).or_insert(0) += 1;
+            }
+            session.baseline_problems = Some(counts);
+        }
+    }
 }
 
-/// Blocking findings as `id path message`, counted: several call sites of
-/// one missing name share a key.
-fn open_problems(result: &VerifyResult) -> BTreeMap<String, u32> {
-    let mut out = BTreeMap::new();
-    for f in result.findings.iter().filter(|f| f.blocking) {
-        let key = format!(
-            "{} {} {}",
-            f.id,
-            f.path.as_deref().unwrap_or("-"),
-            f.message
-        );
-        *out.entry(key).or_insert(0) += 1;
+/// The agent's problems: findings whose key has more findings now than when
+/// the session began. The others stay in the result as advisories. Returns
+/// the findings and the agent's keys, counted.
+fn judge(found: Vec<Problem>, session: &Session) -> (Vec<Finding>, BTreeMap<String, u32>) {
+    let mut counts: BTreeMap<String, u32> = BTreeMap::new();
+    for problem in found.iter().filter(|p| p.finding.blocking) {
+        *counts.entry(problem.key.clone()).or_insert(0) += 1;
     }
-    out
+    let before = |key: &str| {
+        session
+            .baseline_problems
+            .as_ref()
+            .and_then(|b| b.get(&short_hash(key)).copied())
+            .unwrap_or(0)
+    };
+    counts.retain(|key, count| *count > before(key));
+    let findings = found
+        .into_iter()
+        .map(|mut p| {
+            p.finding.blocking &= counts.contains_key(&p.key);
+            p.finding
+        })
+        .collect();
+    (findings, counts)
+}
+
+/// Blocking findings as `id path message`, for the session's record.
+fn blocked(result: &VerifyResult) -> Vec<String> {
+    result
+        .findings
+        .iter()
+        .filter(|f| f.blocking)
+        .map(|f| {
+            format!(
+                "{} {} {}",
+                f.id,
+                f.path.as_deref().unwrap_or("-"),
+                f.message
+            )
+        })
+        .collect()
 }
 
 /// How many problems survived from `before` to `now`, and how many went
@@ -488,6 +580,19 @@ fn compare(before: &BTreeMap<String, u32>, now: &BTreeMap<String, u32>) -> (u32,
         fixed += was.saturating_sub(is);
     }
     (persisting, fixed)
+}
+
+/// A problem key as stored in the session: short, since the baseline holds
+/// one per problem in the repository.
+fn short_hash(key: &str) -> String {
+    session::hash(key.as_bytes())[..16].to_string()
+}
+
+/// The content hash the indexer stores: of the text as decoded, without a
+/// byte-order mark.
+fn text_sha(bytes: &[u8]) -> String {
+    let text = String::from_utf8_lossy(bytes);
+    session::hash(text.strip_prefix('\u{feff}').unwrap_or(&text).as_bytes())
 }
 
 /// Line ranges (1-based, inclusive) of every place `old_texts` occurs;

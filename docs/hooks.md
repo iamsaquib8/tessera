@@ -32,8 +32,16 @@ Tessera answers each edit once.)
 
 Only high-confidence findings in TypeScript, JavaScript and Java block.
 Findings in other languages are not shown by the hooks; run
-`tessera verify --changed` to see them. Files that were already changed
-before the session started do not hold the agent unless it edits them.
+`tessera verify --changed` to see them.
+
+Only problems the agent introduced block. Before the index learns of the
+agent's first edit, Tessera notes every problem it already holds; a finding
+that was there then (the same check, file and message, wherever its line
+moved) never stops the agent, even in a file it edits. When the agent adds
+another call site of the same problem, the problem counts as its own again.
+Files that were already changed before the session started are not checked
+at the end of a turn unless the agent changes them again. `tessera verify
+--changed` and `--diff` (for CI) still report everything.
 
 A problem in Tessera itself never stops the agent: if the index is missing
 or busy, or anything fails, the hook prints nothing (or the agent's no-op
