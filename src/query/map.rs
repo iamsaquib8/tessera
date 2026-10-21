@@ -108,6 +108,72 @@ struct Fact {
     evidence: String,
 }
 
+/// Where facts come from: each repository's index, with the prefix that
+/// makes its paths unique in a workspace.
+pub struct Sources {
+    repos: Vec<(String, Connection)>,
+    /// The directory paths and services are relative to.
+    root: PathBuf,
+}
+
+impl Sources {
+    /// This repository, or every repository of its workspace.
+    pub fn open(conn: &Connection, root: &Path) -> Result<Self> {
+        let Some((dir, repos)) = crate::workspace::workspace_repos(root) else {
+            return Ok(Self {
+                repos: vec![(String::new(), reopen(conn)?)],
+                root: root.to_path_buf(),
+            });
+        };
+        let here = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+        let mut out = Vec::new();
+        for repo in repos {
+            let prefix = repo
+                .strip_prefix(&dir)
+                .map(|p| p.to_string_lossy().replace('\\', "/"))
+                .unwrap_or_else(|_| repo.to_string_lossy().into_owned());
+            let prefix = if prefix.is_empty() {
+                String::new()
+            } else {
+                format!("{prefix}/")
+            };
+            let conn = if repo == here {
+                reopen(conn)?
+            } else {
+                let ws = crate::workspace::Workspace::resolve(Some(&repo), None, &repo);
+                crate::fresh::ensure(&ws)?;
+                crate::db::open_ro(&ws.db_path)?
+            };
+            out.push((prefix, conn));
+        }
+        Ok(Self {
+            repos: out,
+            root: dir,
+        })
+    }
+
+    fn load(&self, key_prefix: &str) -> Result<Vec<Fact>> {
+        let mut out = Vec::new();
+        for (path_prefix, conn) in &self.repos {
+            let mut facts = load(conn, key_prefix)?;
+            if !path_prefix.is_empty() {
+                for fact in &mut facts {
+                    fact.path = format!("{path_prefix}{}", fact.path);
+                }
+            }
+            out.extend(facts);
+        }
+        Ok(out)
+    }
+}
+
+/// A second handle on the same database, so `Sources` owns all of its
+/// connections.
+fn reopen(conn: &Connection) -> Result<Connection> {
+    let path = conn.path().unwrap_or_default().to_string();
+    Ok(crate::db::open_ro(Path::new(&path))?)
+}
+
 fn load(conn: &Connection, prefix: &str) -> Result<Vec<Fact>> {
     let mut stmt = conn.prepare(
         "SELECT f.kind, f.key, f.name, fl.path, f.line, s.qualified_name, f.confidence, f.rule,
@@ -232,15 +298,16 @@ pub fn run(conn: &Connection, root: &Path, args: &MapArgs) -> Result<MapResult> 
             );
         }
     }
-    let mut services = Services::new(root);
+    let sources = Sources::open(conn, root)?;
+    let mut services = Services::new(&sources.root);
     if args.kind.as_deref() == Some("service") {
-        let contracts = all(conn, &mut services, None)?;
+        let contracts = all(&sources, &mut services, None)?;
         return Ok(MapResult {
             contracts: Vec::new(),
             services: service_views(&contracts, args.query.as_deref()),
         });
     }
-    let mut contracts = all(conn, &mut services, args.kind.as_deref())?;
+    let mut contracts = all(&sources, &mut services, args.kind.as_deref())?;
     if let Some(query) = &args.query {
         let query = query.to_lowercase();
         contracts.retain(|c| {
@@ -267,7 +334,11 @@ pub fn links(conn: &Connection) -> Result<HashMap<i64, Vec<i64>>> {
     if !has_facts {
         return Ok(out);
     }
-    for contract in all(conn, &mut Services::none(), None)? {
+    let sources = Sources {
+        repos: vec![(String::new(), reopen(conn)?)],
+        root: PathBuf::new(),
+    };
+    for contract in all(&sources, &mut Services::none(), None)? {
         let (from, to) = match contract.kind.as_str() {
             "table" => continue,
             "topic" => (&contract.providers, &contract.consumers),
@@ -344,17 +415,17 @@ fn service_views(contracts: &[Contract], query: Option<&str>) -> Vec<ServiceView
         .collect()
 }
 
-fn all(conn: &Connection, services: &mut Services, only: Option<&str>) -> Result<Vec<Contract>> {
+fn all(sources: &Sources, services: &mut Services, only: Option<&str>) -> Result<Vec<Contract>> {
     let wants = |kind: &str| only.is_none_or(|k| k == kind);
     let mut contracts = Vec::new();
     if wants("route") {
-        contracts.extend(route_contracts(&load(conn, "http ")?, services));
+        contracts.extend(route_contracts(&sources.load("http ")?, services));
     }
     if wants("rpc") {
-        contracts.extend(rpc_contracts(&load(conn, "grpc ")?, services));
+        contracts.extend(rpc_contracts(&sources.load("grpc ")?, services));
     }
     if wants("topic") {
-        let facts = load(conn, "topic ")?;
+        let facts = sources.load("topic ")?;
         contracts.extend(keyed(
             "topic",
             &facts,
@@ -365,7 +436,7 @@ fn all(conn: &Connection, services: &mut Services, only: Option<&str>) -> Result
         ));
     }
     if wants("table") {
-        let mut facts = load(conn, "table ")?;
+        let mut facts = sources.load("table ")?;
         // JPQL and HQL name the entity class (`FROM PetType`), not its table.
         let tables: BTreeSet<String> = facts
             .iter()

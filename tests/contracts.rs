@@ -292,3 +292,33 @@ fn map_service_shows_what_a_service_calls_and_serves() {
         .collect();
     assert_eq!(serves, vec!["CheckoutService/PlaceOrder"], "{result}");
 }
+
+#[test]
+fn a_workspace_links_contracts_across_repositories() {
+    let temp = TempDir::new().unwrap();
+    let http = fixture_dir("contracts-http");
+    for repo in ["api", "web"] {
+        let dir = temp.path().join(repo);
+        copy_dir(&http.join(repo), &dir);
+        assert!(std::process::Command::new("git")
+            .args(["init", "-q"])
+            .current_dir(&dir)
+            .status()
+            .unwrap()
+            .success());
+    }
+    std::fs::write(
+        temp.path().join("tessera.workspace.toml"),
+        "# Repositories mapped together\n[[repo]]\npath = \"api\"\n\n[[repo]]\npath = \"web\"\n",
+    )
+    .unwrap();
+    let got = summary(&map(&temp.path().join("web"), &["route"]));
+    assert!(
+        got.contains("GET /api/users/{}: api/src/app.js -> web/src/client.ts"),
+        "{got:#?}"
+    );
+    assert!(
+        got.contains("POST /api/users: api/src/app.js -> web/src/client.ts"),
+        "{got:#?}"
+    );
+}
