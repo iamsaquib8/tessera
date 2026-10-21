@@ -496,11 +496,19 @@ fn fact(
     Some((fact, specific))
 }
 
-/// `getUser` in `app.get("/u", auth, getUser)`: a route's named handler.
+/// `getUser` in `app.get("/u", auth, getUser)` or in
+/// `app.get("/u", users.getUser)`: a route's named handler.
 fn last_identifier_argument(node: Node<'_>) -> Option<Node<'_>> {
     let args = node.child_by_field_name("arguments")?;
     let last = args.named_child(u32::try_from(args.named_child_count().checked_sub(1)?).ok()?)?;
-    (last.kind() == "identifier" && args.named_child_count() > 1).then_some(last)
+    if args.named_child_count() < 2 {
+        return None;
+    }
+    match last.kind() {
+        "identifier" => Some(last),
+        "member_expression" => last.child_by_field_name("property"),
+        _ => None,
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]

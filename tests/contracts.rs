@@ -373,3 +373,33 @@ fn the_report_in_a_workspace_names_the_contracts_a_change_touches() {
     let report = String::from_utf8_lossy(&output.stdout);
     assert!(report.contains("`route GET /api/users/{}`"), "{report}");
 }
+
+#[test]
+fn a_route_is_served_by_its_handler_not_the_next_function() {
+    let temp = TempDir::new().unwrap();
+    std::fs::write(
+        temp.path().join("controller.js"),
+        "exports.a = function a(req, res) { res.send('a'); };\nexports.b = function b(req, res) { res.send('b'); };\n",
+    )
+    .unwrap();
+    std::fs::write(
+        temp.path().join("app.js"),
+        "const app = require('express')();\nconst controller = require('./controller');\n\
+         app.get('/a', controller.a);\napp.post('/b', controller.b);\n\n\
+         function formatDate(d) {\n  return d;\n}\n",
+    )
+    .unwrap();
+    let value = map(temp.path(), &["route"]);
+    let handlers: Vec<String> = value["contracts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .flat_map(|c| c["providers"].as_array().unwrap().iter())
+        .map(|s| s["symbol"].as_str().unwrap_or("-").to_string())
+        .collect();
+    assert_eq!(handlers.len(), 2, "{value}");
+    assert!(
+        !handlers.iter().any(|h| h.contains("formatDate")),
+        "{handlers:?}"
+    );
+}

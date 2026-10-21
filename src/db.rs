@@ -606,33 +606,28 @@ pub fn insert_facts(
         };
         // A decorator above a method (`@Get(":id")`) belongs to the method
         // that starts just below it, not to the class around both.
-        let decorated = |outer: Option<usize>| {
+        let decorated = |outer: usize| {
             symbols
                 .iter()
                 .enumerate()
                 .filter(|(_, s)| s.start_line > fact.line && s.start_line <= fact.line + 4)
-                .filter(|(_, s)| match outer {
-                    Some(outer) => {
-                        s.container.as_deref() == Some(symbols[outer].qualified_name.as_str())
-                    }
-                    None => true,
+                .filter(|(_, s)| {
+                    s.container.as_deref() == Some(symbols[outer].qualified_name.as_str())
                 })
                 .min_by_key(|(_, s)| s.start_line)
                 .map(|(index, _)| index)
         };
         let symbol_id = named
             .or_else(|| {
-                let outer = around();
-                let is_container = outer.is_none_or(|o| {
-                    matches!(
-                        symbols[o].kind.as_str(),
-                        "class" | "interface" | "module" | "struct"
-                    )
-                });
-                if fact.kind == crate::facts::kind::ROUTE && is_container {
-                    decorated(outer).or(outer)
+                let outer = around()?;
+                let in_class = matches!(
+                    symbols[outer].kind.as_str(),
+                    "class" | "interface" | "module" | "struct"
+                );
+                if fact.kind == crate::facts::kind::ROUTE && in_class {
+                    decorated(outer).or(Some(outer))
                 } else {
-                    outer
+                    Some(outer)
                 }
             })
             .map(|index| symbol_ids[index]);
