@@ -27,9 +27,9 @@ expression: graph_dump(& db)
     "app/models.py:9:16 call format_name/1 <- User.display",
     "app/service.py:14:12 call load/1 <- cached_load",
     "app/service.py:8:12 call User/1 <- load",
-    "app/service.py:8:17 call util.load/1 <- load",
-    "app/service.py:9:12 call user.display/0 <- load",
-    "app/util.py:2:12 call name.strip/0 <- format_name",
+    "app/service.py:8:22 call util.load/1 <- load",
+    "app/service.py:9:17 call user.display/0 <- load",
+    "app/util.py:2:17 call name.strip/0 <- format_name",
     "tests/test_service.py:5:12 call load/1 <- test_load"
   ],
   "symbols": [

@@ -209,7 +209,7 @@ impl<'a> Cx<'a> {
         node: Node<'_>,
     ) -> Option<IndexedReference> {
         let name = self.called_name(callee)?;
-        let mut reference = self.reference(name, kind, node);
+        let mut reference = self.reference(name, kind, name_node(callee));
         let receiver = receiver_node(callee).or_else(|| {
             ["object", "receiver", "scope"]
                 .iter()
@@ -300,6 +300,25 @@ impl<'a> Cx<'a> {
     }
 }
 
+/// Where a callee's name is written: the property of `a.b`, the field of
+/// `a->b`, the last segment of `A::b`, or the callee itself. References are
+/// located there so a call on a continuation line points at that line.
+fn name_node(callee: Node<'_>) -> Node<'_> {
+    let fields: &[&str] = match callee.kind() {
+        "member_expression" => &["property"],
+        "attribute" => &["attribute"],
+        "field_expression" => &["field"],
+        "selector_expression" => &["field"],
+        "member_access_expression" => &["name"],
+        "scoped_identifier" | "qualified_identifier" => &["name"],
+        _ => &[],
+    };
+    fields
+        .iter()
+        .find_map(|field| callee.child_by_field_name(field))
+        .unwrap_or(callee)
+}
+
 fn receiver_node(callee: Node<'_>) -> Option<Node<'_>> {
     let field = match callee.kind() {
         "member_expression" | "attribute" => "object",
@@ -375,6 +394,25 @@ mod tests {
             .spawn(move || parse_file(Language::JavaScript, &source))
             .unwrap();
         handle.join().expect("parser thread panicked").unwrap();
+    }
+
+    #[test]
+    fn member_call_is_located_at_the_called_name() {
+        let parsed = parse_file(
+            Language::TypeScript,
+            "export function f() {\n  return repo\n    .find(1)\n    .then(g);\n}\n",
+        )
+        .unwrap();
+        let at = |name: &str| {
+            parsed
+                .references
+                .iter()
+                .find(|r| r.symbol_name == name)
+                .map(|r| (r.line, r.column))
+                .unwrap()
+        };
+        assert_eq!(at("find"), (3, 6));
+        assert_eq!(at("then"), (4, 6));
     }
 
     #[test]

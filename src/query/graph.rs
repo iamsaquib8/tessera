@@ -6,6 +6,8 @@ use std::collections::{HashMap, VecDeque};
 use anyhow::Result;
 use rusqlite::{params, Connection};
 
+use serde::Serialize;
+
 use crate::db;
 use crate::output::Confidence;
 use crate::types::{ReferenceRecord, SymbolRecord};
@@ -57,38 +59,59 @@ fn symbol(conn: &Connection, id: i64) -> Result<Option<SymbolRecord>> {
     .next())
 }
 
+/// Where a resolved reference's target is defined.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct DefinitionSite {
+    pub path: String,
+    pub start_line: usize,
+    pub end_line: usize,
+}
+
 /// References that resolve to one of `ids`, plus references to `name` that
 /// nothing resolved (they may mean it). External references are left out.
 pub fn incoming_refs(
     conn: &Connection,
     ids: &[i64],
     name: &str,
-) -> Result<Vec<(ReferenceRecord, Confidence)>> {
-    let mut best: HashMap<i64, (ReferenceRecord, Confidence)> = HashMap::new();
-    let mut keep = |reference: ReferenceRecord, confidence: Confidence| {
-        let entry = best
-            .entry(reference.id)
-            .or_insert_with(|| (reference, confidence));
-        if confidence < entry.1 {
-            entry.1 = confidence;
-        }
-    };
+) -> Result<Vec<(ReferenceRecord, Confidence, Option<DefinitionSite>)>> {
+    type Hit = (ReferenceRecord, Confidence, Option<DefinitionSite>);
+    let mut best: HashMap<i64, Hit> = HashMap::new();
+    let mut keep =
+        |reference: ReferenceRecord, confidence: Confidence, definition: Option<DefinitionSite>| {
+            let entry = best
+                .entry(reference.id)
+                .or_insert_with(|| (reference, confidence, definition.clone()));
+            if confidence < entry.1 {
+                entry.1 = confidence;
+                entry.2 = definition;
+            }
+        };
     let columns = "r.id, r.symbol_name, r.from_symbol_id, s.qualified_name, f.path,
         r.line, r.column, r.context, r.kind";
     let mut resolved = conn.prepare_cached(&format!(
-        "SELECT {columns}, e.confidence FROM edges e
+        "SELECT {columns}, e.confidence, tf.path, ts.start_line, ts.end_line FROM edges e
          JOIN refs r ON r.id = e.ref_id
          JOIN files f ON f.id = r.file_id
          LEFT JOIN symbols s ON s.id = r.from_symbol_id
+         JOIN symbols ts ON ts.id = e.to_symbol_id
+         JOIN files tf ON tf.id = ts.file_id
          WHERE e.to_symbol_id = ?1"
     ))?;
     for id in ids {
         let rows = resolved.query_map(params![id], |row| {
-            Ok((db::map_reference(row)?, row.get::<_, String>(9)?))
+            Ok((
+                db::map_reference(row)?,
+                row.get::<_, String>(9)?,
+                DefinitionSite {
+                    path: row.get(10)?,
+                    start_line: row.get::<_, i64>(11)? as usize,
+                    end_line: row.get::<_, i64>(12)? as usize,
+                },
+            ))
         })?;
         for row in rows {
-            let (reference, value) = row?;
-            keep(reference, confidence(&value));
+            let (reference, value, definition) = row?;
+            keep(reference, confidence(&value), Some(definition));
         }
     }
     let mut unresolved = conn.prepare_cached(&format!(
@@ -101,9 +124,9 @@ pub fn incoming_refs(
                         AND e.to_symbol_id IS NULL AND e.resolver IS NULL))"
     ))?;
     for row in unresolved.query_map(params![name], db::map_reference)? {
-        keep(row?, Confidence::Name);
+        keep(row?, Confidence::Name, None);
     }
-    let mut refs: Vec<(ReferenceRecord, Confidence)> = best.into_values().collect();
+    let mut refs: Vec<Hit> = best.into_values().collect();
     refs.sort_by(|a, b| {
         a.1.cmp(&b.1)
             .then_with(|| a.0.path.cmp(&b.0.path))

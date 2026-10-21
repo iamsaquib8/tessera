@@ -21,12 +21,12 @@ expression: graph_dump(& db)
   ],
   "modules": [],
   "refs": [
-    "src/Users/UserService.cs:11:20 call Strings.Trim/1 <- UserService.Load",
-    "src/Users/UserService.cs:11:33 call _repo.FindById/1 <- UserService.Load",
-    "src/Users/UserService.cs:7:49 new UserRepository/0 <- UserService",
-    "src/Util/Strings.cs:5:48 call s.Trim/0 <- Strings.Trim",
-    "tests/UserServiceTests.cs:9:9 call other.Load/1 <- UserServiceTests.Loads",
-    "tests/UserServiceTests.cs:9:9 new UserService/0 <- UserServiceTests.Loads"
+    "src/Users/UserService.cs:11:28 call Strings.Trim/1 <- UserService.Load",
+    "src/Users/UserService.cs:11:39 call _repo.FindById/1 <- UserService.Load",
+    "src/Users/UserService.cs:7:53 new UserRepository/0 <- UserService",
+    "src/Util/Strings.cs:5:50 call s.Trim/0 <- Strings.Trim",
+    "tests/UserServiceTests.cs:9:13 new UserService/0 <- UserServiceTests.Loads",
+    "tests/UserServiceTests.cs:9:27 call other.Load/1 <- UserServiceTests.Loads"
   ],
   "symbols": [
     "src/Users/UserRepository.cs:3-6 class UserRepository [exported] | public class UserRepository",

@@ -37,7 +37,7 @@ expression: graph_dump(& db)
     "src/App.test.tsx:4:3 call render/1 <- it(\"renders\")",
     "src/App.tsx:5:16 call useUser/1 <- App",
     "src/App.tsx:6:10 jsx UserCard <- App",
-    "src/components/UserCard.tsx:12:25 call React.memo/1 <- <none>",
+    "src/components/UserCard.tsx:12:31 call React.memo/1 <- <none>",
     "src/components/UserCard.tsx:6:36 type Props <- UserCard",
     "src/components/UserCard.tsx:8:5 jsx Avatar <- UserCard",
     "src/hooks/useUser.ts:4:18 call useState/1 <- useUser"

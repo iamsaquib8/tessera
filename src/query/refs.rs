@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use super::blast::{confidence_mark, confidence_note};
 use super::common::{bare_name, is_test_path, limit_or_default};
 use super::find::page_footer;
-use super::graph;
+use super::graph::{self, DefinitionSite};
 use crate::extract::truncate_chars;
 use crate::output::{paginate, AgentText, Confidence, Page};
 use crate::types::ReferenceRecord;
@@ -33,6 +33,9 @@ pub struct RefHit {
     #[serde(flatten)]
     pub reference: ReferenceRecord,
     pub confidence: Confidence,
+    /// The definition this reference resolved to; `None` for unresolved
+    /// same-name references.
+    pub definition: Option<DefinitionSite>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -67,9 +70,10 @@ pub fn run(conn: &Connection, args: &RefsArgs) -> Result<RefsResult> {
     let ids: Vec<i64> = definitions.iter().map(|d| d.id).collect();
     let mut references: Vec<RefHit> = graph::incoming_refs(conn, &ids, &name)?
         .into_iter()
-        .map(|(reference, confidence)| RefHit {
+        .map(|(reference, confidence, definition)| RefHit {
             reference,
             confidence,
+            definition,
         })
         .collect();
     if args.tests_only {

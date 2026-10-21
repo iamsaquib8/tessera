@@ -8,6 +8,7 @@ use super::common::known_global;
 use super::legacy;
 use crate::extract::parse_file;
 use crate::output::{AgentText, Confidence};
+use crate::types::Receiver;
 use crate::types::{Language, SymbolSuggestion};
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -59,18 +60,20 @@ pub fn run(conn: &Connection, args: &VerifyArgs) -> Result<VerifyResult> {
             bail!("--language is required with --snippet");
         };
         let parsed = parse_file(language, snippet)?;
-        let lines: Vec<&str> = snippet.lines().collect();
         for reference in parsed.references {
             let name = &reference.symbol_name;
-            let line_text = lines.get(reference.line - 1).copied().unwrap_or_default();
-            let receiver = receiver_of(line_text, reference.column, name);
-            let checkable = match receiver {
-                None => !known_global(language, name),
-                Some(receiver) => {
-                    !known_global(language, receiver)
+            let checkable = match reference.receiver {
+                Receiver::None => !known_global(language, name),
+                Receiver::Name => {
+                    let receiver = reference.receiver_name.as_deref().unwrap_or_default();
+                    // Only a static call on a class the index knows is checkable;
+                    // a variable's type is unknown in a snippet.
+                    !receiver.contains('.')
+                        && !known_global(language, receiver)
                         && receiver.chars().next().is_some_and(char::is_uppercase)
                         && legacy::validate_conn(conn, receiver)?.exists
                 }
+                Receiver::This | Receiver::Super | Receiver::Other => false,
             };
             if !checkable {
                 continue;
@@ -105,23 +108,6 @@ fn unresolved(name: &str, line: Option<usize>, suggestions: Vec<SymbolSuggestion
     }
 }
 
-// The call node starts at the receiver, so the text between it and the callee
-// name tells member calls (`x.f()`, `X::f()`, `x->f()`) from bare calls.
-// `column` is tree-sitter's 1-based byte column.
-fn receiver_of<'a>(line: &'a str, column: usize, name: &str) -> Option<&'a str> {
-    let rest = line.get(column.saturating_sub(1)..)?;
-    let end = rest.find(name)?;
-    let prefix = rest[..end].trim_end_matches(['.', ':', '-', '>', '?', '!']);
-    if prefix.len() == rest[..end].len() {
-        return None;
-    }
-    let receiver = prefix
-        .rsplit(|c: char| !(c.is_alphanumeric() || c == '_' || c == '$'))
-        .next()
-        .filter(|r| !r.is_empty())?;
-    Some(receiver)
-}
-
 impl fmt::Display for VerifyResult {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(&self.agent_text())
@@ -142,22 +128,5 @@ impl AgentText for VerifyResult {
             out.push_str(&format!("  [{}] {}{at}\n", finding.id, finding.message));
         }
         out
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn receiver_detection() {
-        assert_eq!(receiver_of("JSON.parse(x);", 1, "parse"), Some("JSON"));
-        assert_eq!(
-            receiver_of("  repo.findById(1)", 3, "findById"),
-            Some("repo")
-        );
-        assert_eq!(receiver_of("Foo::bar()", 1, "bar"), Some("Foo"));
-        assert_eq!(receiver_of("findByIdd(1)", 1, "findByIdd"), None);
-        assert_eq!(receiver_of("a(); findByIdd(1)", 6, "findByIdd"), None);
     }
 }

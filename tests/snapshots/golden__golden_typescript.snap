@@ -39,19 +39,19 @@ expression: graph_dump(& db)
   "refs": [
     "src/api/handler.ts:4:30 type Request <- handler",
     "src/api/handler.ts:4:42 call loadUser/1 <- handler",
-    "src/users/repo.ts:11:12 call this.cache.get/1 <- UserRepo.lookup",
-    "src/users/repo.ts:16:16 new UserRepo/0 <- loadUser",
-    "src/users/repo.ts:17:10 call repo.findById/1 <- loadUser",
-    "src/users/repo.ts:4:19 new Map/0 <- UserRepo",
+    "src/users/repo.ts:11:23 call this.cache.get/1 <- UserRepo.lookup",
+    "src/users/repo.ts:16:20 new UserRepo/0 <- loadUser",
+    "src/users/repo.ts:17:15 call repo.findById/1 <- loadUser",
+    "src/users/repo.ts:4:23 new Map/0 <- UserRepo",
     "src/users/repo.ts:7:12 call formatName/1 <- UserRepo.findById",
-    "src/users/repo.ts:7:23 call this.lookup/1 <- UserRepo.findById",
-    "src/util/format.ts:2:10 call name.trim/0 <- formatName",
+    "src/users/repo.ts:7:28 call this.lookup/1 <- UserRepo.findById",
+    "src/util/format.ts:2:15 call name.trim/0 <- formatName",
     "src/util/format.ts:6:10 call formatName/1 <- loadUser",
     "test/repo.test.ts:3:1 call describe/2 <- <none>",
     "test/repo.test.ts:4:3 call it/2 <- describe(\"loadUser\")",
     "test/repo.test.ts:5:12 call loadUser/1 <- describe(\"loadUser\").it(\"returns the user\")",
-    "test/repo.test.ts:5:5 call expect/1 <- describe(\"loadUser\").it(\"returns the user\")",
-    "test/repo.test.ts:5:5 call other.toBe/1 <- describe(\"loadUser\").it(\"returns the user\")"
+    "test/repo.test.ts:5:27 call other.toBe/1 <- describe(\"loadUser\").it(\"returns the user\")",
+    "test/repo.test.ts:5:5 call expect/1 <- describe(\"loadUser\").it(\"returns the user\")"
   ],
   "symbols": [
     "src/api/handler.ts:4-4 function handler [exported] (1..1) | handler = (req: Request) => loadUser(req.id)",

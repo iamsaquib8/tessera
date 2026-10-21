@@ -20,12 +20,12 @@ expression: graph_dump(& db)
   ],
   "modules": [],
   "refs": [
-    "src/Users/UserService.php:13:23 new UserRepository <- UserService.__construct",
-    "src/Users/UserService.php:18:16 call Strings.trim/1 <- UserService.load",
-    "src/Users/UserService.php:18:30 call other.findById/1 <- UserService.load",
+    "src/Users/UserService.php:13:27 new UserRepository <- UserService.__construct",
+    "src/Users/UserService.php:18:25 call Strings.trim/1 <- UserService.load",
+    "src/Users/UserService.php:18:43 call other.findById/1 <- UserService.load",
     "src/Util/Strings.php:9:16 call trim/1 <- Strings.trim",
-    "tests/UserServiceTest.php:9:10 new UserService <- UserServiceTest.testLoad",
-    "tests/UserServiceTest.php:9:9 call other.load/1 <- UserServiceTest.testLoad"
+    "tests/UserServiceTest.php:9:14 new UserService <- UserServiceTest.testLoad",
+    "tests/UserServiceTest.php:9:30 call other.load/1 <- UserServiceTest.testLoad"
   ],
   "symbols": [
     "src/Users/UserRepository.php:5-11 class UserRepository [exported] | class UserRepository",

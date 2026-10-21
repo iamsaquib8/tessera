@@ -20,11 +20,11 @@ expression: graph_dump(& db)
   ],
   "modules": [],
   "refs": [
-    "api/handler.go:6:9 call store.Load/1 <- Handle",
+    "api/handler.go:6:15 call store.Load/1 <- Handle",
+    "store/store.go:16:15 call other.Get/1 <- Load",
     "store/store.go:16:9 call New/0 <- Load",
-    "store/store.go:16:9 call other.Get/1 <- Load",
     "store/store_test.go:6:5 call Load/1 <- TestLoad",
-    "store/store_test.go:7:3 call t.Fatal/1 <- TestLoad"
+    "store/store_test.go:7:5 call t.Fatal/1 <- TestLoad"
   ],
   "symbols": [
     "api/handler.go:5-7 function Handle [exported] | func Handle(id string) string {",

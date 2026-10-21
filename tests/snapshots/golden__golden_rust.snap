@@ -23,15 +23,15 @@ expression: graph_dump(& db)
   ],
   "modules": [],
   "refs": [
-    "src/api.rs:4:5 call store.load/1 <- handle",
-    "src/api.rs:8:13 call Store.new/0 <- load",
-    "src/api.rs:9:5 call other.is_some/0 <- load",
-    "src/api.rs:9:5 call s.get/1 <- load",
-    "src/store.rs:11:9 call other.get/1 <- Store.get",
-    "src/store.rs:16:5 call Store.new/0 <- load",
-    "src/store.rs:16:5 call other.get/1 <- load",
-    "src/store.rs:16:5 call other.is_some/0 <- load",
-    "src/store.rs:7:23 call Vec.new/0 <- Store.new"
+    "src/api.rs:4:12 call store.load/1 <- handle",
+    "src/api.rs:8:20 call Store.new/0 <- load",
+    "src/api.rs:9:14 call other.is_some/0 <- load",
+    "src/api.rs:9:7 call s.get/1 <- load",
+    "src/store.rs:11:20 call other.get/1 <- Store.get",
+    "src/store.rs:16:12 call Store.new/0 <- load",
+    "src/store.rs:16:18 call other.get/1 <- load",
+    "src/store.rs:16:25 call other.is_some/0 <- load",
+    "src/store.rs:7:28 call Vec.new/0 <- Store.new"
   ],
   "symbols": [
     "src/api.rs:13-20 module tests | mod tests {",

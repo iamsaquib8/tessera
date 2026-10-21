@@ -19,17 +19,17 @@ expression: graph_dump(& db)
   ],
   "modules": [],
   "refs": [
-    "app/controllers/api/v1/test_cases_controller.rb:3:5 call UserLoader.new <- TestCasesController.index",
+    "app/controllers/api/v1/test_cases_controller.rb:3:16 call UserLoader.new <- TestCasesController.index",
     "app/models/user.rb:2:3 call has_many/1 <- User",
-    "app/models/user.rb:5:5 call NameFormatter.format/1 <- User.display_name",
-    "app/services/name_formatter.rb:3:5 call name.strip <- NameFormatter.format",
-    "app/services/user_loader.rb:5:12 call User.new/1 <- UserLoader.load",
-    "app/services/user_loader.rb:6:5 call user.display_name <- UserLoader.load",
-    "spec/services/user_loader_spec.rb:3:1 call RSpec.describe/1 <- <none>",
+    "app/models/user.rb:5:19 call NameFormatter.format/1 <- User.display_name",
+    "app/services/name_formatter.rb:3:10 call name.strip <- NameFormatter.format",
+    "app/services/user_loader.rb:5:17 call User.new/1 <- UserLoader.load",
+    "app/services/user_loader.rb:6:10 call user.display_name <- UserLoader.load",
+    "spec/services/user_loader_spec.rb:3:7 call RSpec.describe/1 <- <none>",
     "spec/services/user_loader_spec.rb:4:3 call it/1 <- <none>",
-    "spec/services/user_loader_spec.rb:5:12 call UserLoader.new <- <none>",
-    "spec/services/user_loader_spec.rb:5:5 call expect/1 <- <none>",
-    "spec/services/user_loader_spec.rb:5:5 call other.to/1 <- <none>"
+    "spec/services/user_loader_spec.rb:5:23 call UserLoader.new <- <none>",
+    "spec/services/user_loader_spec.rb:5:36 call other.to/1 <- <none>",
+    "spec/services/user_loader_spec.rb:5:5 call expect/1 <- <none>"
   ],
   "symbols": [
     "app/controllers/api/v1/test_cases_controller.rb:1-5 class TestCasesController [exported] | class TestCasesController",
