@@ -611,3 +611,51 @@ fn qwen_gets_no_pre_edit_note_but_post_edit_context() {
         "{post}"
     );
 }
+
+#[test]
+fn the_session_file_counts_what_the_hooks_did() {
+    let temp = repo();
+    let root = temp.path();
+    claude(root, "SessionStart", json!({}));
+    claude(
+        root,
+        "PreToolUse",
+        edit_payload(
+            root,
+            "src/util/format.ts",
+            "return name.trim();",
+            "return name;",
+        ),
+    );
+    let content = fs::read_to_string(root.join("src/users/repo.ts")).unwrap();
+    write(
+        root,
+        "src/users/repo.ts",
+        &content.replace("repo.findById(id)", "repo.findByIdd(id)"),
+    );
+    claude(
+        root,
+        "PostToolUse",
+        edit_payload(
+            root,
+            "src/users/repo.ts",
+            "repo.findById(id)",
+            "repo.findByIdd(id)",
+        ),
+    );
+    claude(root, "Stop", json!({ "stop_hook_active": false }));
+    let session: Value =
+        serde_json::from_str(&fs::read_to_string(root.join(".tessera/sessions/s1.json")).unwrap())
+            .unwrap();
+    assert_eq!(session["counts"]["notes"], 1, "{session}");
+    assert_eq!(session["counts"]["reports"], 1, "{session}");
+    assert_eq!(session["counts"]["post_blocks"], 0, "{session}");
+    assert_eq!(session["counts"]["stop_blocks"], 1, "{session}");
+    let blocked = session["blocked"].as_array().unwrap();
+    assert!(
+        blocked
+            .iter()
+            .any(|f| f.as_str().unwrap().contains("findByIdd")),
+        "{session}"
+    );
+}

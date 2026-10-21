@@ -352,6 +352,7 @@ impl Hook<'_> {
         if notes.is_empty() {
             return Ok(None);
         }
+        session.counts.notes += 1;
         let mut text = "Tessera: this edit touches code used from other files.".to_string();
         for (key, (_, line)) in notes {
             session.announced.insert(key);
@@ -390,10 +391,13 @@ impl Hook<'_> {
         }
         let brief = result.agent_brief();
         Ok(Some(if persisting > 0 && fixed == 0 {
+            session.counts.post_blocks += 1;
+            session.blocked.extend(session.open.iter().cloned());
             Reply::Block(format!(
                 "{brief}\nThese were already there after your previous edit. Fix them before you go on."
             ))
         } else {
+            session.counts.reports += 1;
             Reply::Context(format!(
                 "{brief}\nIf the change is not finished yet, carry on; Tessera checks again when you stop."
             ))
@@ -443,6 +447,8 @@ impl Hook<'_> {
             return Ok(None);
         }
         session.stop_blocks += 1;
+        session.counts.stop_blocks += 1;
+        session.blocked.extend(session.open.iter().cloned());
         let mut reason = result.agent_brief();
         if !result.tests.is_empty() {
             let tests: Vec<&str> = result.tests.iter().take(5).map(String::as_str).collect();

@@ -32,6 +32,21 @@ pub struct Session {
     pub stop_blocks: u32,
     /// Hash of the last edit event, to answer a duplicate only once.
     pub last_edit: Option<String>,
+    /// What the hooks did this session, for evaluation and support.
+    pub counts: Counts,
+    /// Every finding a hook has blocked on, as `id path message`.
+    pub blocked: BTreeSet<String>,
+}
+
+#[derive(Debug, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Counts {
+    /// Pre-edit notes shown.
+    pub notes: u32,
+    /// Post-edit reports that did not block.
+    pub reports: u32,
+    pub post_blocks: u32,
+    pub stop_blocks: u32,
 }
 
 /// The locked session file; the lock is released when this is dropped.
