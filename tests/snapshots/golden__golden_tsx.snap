@@ -37,7 +37,7 @@ expression: graph_dump(& db)
     "src/App.test.tsx:4:3 call render/1 <- it(\"renders\")",
     "src/App.tsx:5:16 call useUser/1 <- App",
     "src/App.tsx:6:10 jsx UserCard <- App",
-    "src/components/UserCard.tsx:12:31 call React.memo/1 <- <none>",
+    "src/components/UserCard.tsx:12:31 call React.memo/1 <- MemoCard",
     "src/components/UserCard.tsx:6:36 type Props <- UserCard",
     "src/components/UserCard.tsx:8:5 jsx Avatar <- UserCard",
     "src/hooks/useUser.ts:4:18 call useState/1 <- useUser"
@@ -47,6 +47,7 @@ expression: graph_dump(& db)
     "src/App.tsx:4-7 function App [exported] [default] (0..0) | function App() {",
     "src/components/Avatar.tsx:1-3 function Avatar [exported] (1..1) | function Avatar({ name }: { name: string }) {",
     "src/components/Greeting.tsx:1-3 function Greeting [exported] (0..0) | function Greeting() { //x éééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééé",
+    "src/components/UserCard.tsx:12-12 variable MemoCard [exported] | MemoCard = React.memo(UserCard)",
     "src/components/UserCard.tsx:4-4 type Props | type Props = { name: string };",
     "src/components/UserCard.tsx:6-10 function UserCard [exported] (1..1) | UserCard = ({ name }: Props) => (",
     "src/hooks/useUser.ts:3-6 function useUser [exported] (1..1) | function useUser(id: string) {"

@@ -86,17 +86,35 @@ pub(super) fn js_symbol(cx: &Cx<'_>, node: Node<'_>) -> Option<IndexedSymbol> {
             Some(node),
         ),
         "variable_declarator" => {
+            let name = node.child_by_field_name("name")?;
             let value = node.child_by_field_name("value")?;
             let function = if FUNCTION_KINDS.contains(&value.kind()) {
-                value
+                Some(value)
             } else {
-                wrapped_component(cx, value)?
+                wrapped_component(cx, value)
             };
-            (
-                cx.text(node.child_by_field_name("name")?),
-                "function",
-                Some(function),
-            )
+            match function {
+                Some(function) => (cx.text(name), "function", Some(function)),
+                // A module-level constant is a symbol too, so calls in its
+                // initializer (`export const x = register({ perform() {…} })`)
+                // have an enclosing symbol.
+                None if name.kind() == "identifier" && is_module_level(node) => {
+                    (cx.text(name), "variable", None)
+                }
+                None => return None,
+            }
+        }
+        // `onClick = () => {…}` and `static create = (…) => …` in a class body
+        // behave as methods.
+        "public_field_definition" | "field_definition" => {
+            let value = node.child_by_field_name("value")?;
+            if !FUNCTION_KINDS.contains(&value.kind()) {
+                return None;
+            }
+            let name = node
+                .child_by_field_name("name")
+                .or_else(|| node.child_by_field_name("property"))?;
+            (cx.text(name), "method", Some(value))
         }
         "assignment_expression" => {
             let right = node.child_by_field_name("right")?;
@@ -700,6 +718,27 @@ fn is_default_export(node: Node<'_>) -> bool {
 
 fn last_segment(name: &str) -> String {
     name.rsplit('.').next().unwrap_or(name).to_string()
+}
+
+/// A declarator in a `const`/`let`/`var` statement directly in the program,
+/// optionally behind `export`.
+fn is_module_level(declarator: Node<'_>) -> bool {
+    let Some(declaration) = declarator.parent() else {
+        return false;
+    };
+    if !matches!(
+        declaration.kind(),
+        "lexical_declaration" | "variable_declaration"
+    ) {
+        return false;
+    }
+    match declaration.parent() {
+        Some(parent) if parent.kind() == "program" => true,
+        Some(parent) if parent.kind() == "export_statement" => parent
+            .parent()
+            .is_some_and(|grandparent| grandparent.kind() == "program"),
+        _ => false,
+    }
 }
 
 fn has_export_ancestor(node: Node<'_>) -> bool {

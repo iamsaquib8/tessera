@@ -83,7 +83,8 @@ pub(super) struct FileInfo {
 pub(super) struct Ref {
     pub id: i64,
     pub name: String,
-    pub from: i64,
+    /// `None` for module-level code.
+    pub from: Option<i64>,
     pub kind: String,
     receiver: String,
     receiver_name: Option<String>,
@@ -271,7 +272,7 @@ impl<'c> Resolver<'c> {
     pub fn refs(&self, file_id: i64) -> Result<Vec<Ref>> {
         let mut stmt = self.conn.prepare_cached(
             "SELECT id, symbol_name, from_symbol_id, kind, receiver, receiver_name, arg_count
-             FROM refs WHERE file_id = ?1 AND from_symbol_id IS NOT NULL ORDER BY id",
+             FROM refs WHERE file_id = ?1 ORDER BY id",
         )?;
         let refs = stmt
             .query_map(params![file_id], |row| {
@@ -379,13 +380,13 @@ impl<'c> Resolver<'c> {
                     }
                     Receiver::External => Resolution::external(),
                     Receiver::Unknown => self
-                        .by_name(name, arity, true, None, Some(reference.from))?
+                        .by_name(name, arity, true, None, reference.from)?
                         .capped("medium"),
                 }
             }
             // A call on some other object is rarely a call on the caller itself.
             "other" => self
-                .by_name(name, arity, true, None, Some(reference.from))?
+                .by_name(name, arity, true, None, reference.from)?
                 .capped("medium"),
             _ if reference.kind == "new"
                 || reference.kind == "jsx"
@@ -438,9 +439,12 @@ impl<'c> Resolver<'c> {
     }
 
     /// Innermost first: the referencing symbol, its containers, then the file.
-    fn scope_chain(&mut self, file: &FileInfo, from: i64) -> Result<Vec<Option<String>>> {
+    fn scope_chain(&mut self, file: &FileInfo, from: Option<i64>) -> Result<Vec<Option<String>>> {
         let mut chain = Vec::new();
-        let mut current = self.symbol(from)?;
+        let mut current = match from {
+            Some(from) => self.symbol(from)?,
+            None => None,
+        };
         while let Some(sym) = current {
             if chain.len() > MAX_DEPTH {
                 break;
@@ -498,6 +502,9 @@ impl<'c> Resolver<'c> {
         let local = self.local(file, chain, name, false);
         if !local.is_empty() {
             return self.finish(local, arity, Resolution::high(Vec::new(), "local"));
+        }
+        if name == "require" {
+            return Ok(Resolution::external());
         }
         match self.binding_symbols(file, name)? {
             Found::Symbols(ids) => {
@@ -560,6 +567,8 @@ impl<'c> Resolver<'c> {
                 .filter(|sym| sym.name == name && sym.container == *scope)
                 .filter(|sym| !types_only || TYPE_KINDS.contains(&sym.kind.as_str()))
                 .filter(|sym| !self.is_member(file, sym))
+                // `const x = require("./x")` is an import, not a definition.
+                .filter(|sym| sym.kind != "variable" || !self.has_binding(file, &sym.name))
                 .map(|sym| sym.id)
                 .collect();
             if !found.is_empty() {
@@ -594,8 +603,8 @@ impl<'c> Resolver<'c> {
         let mut external = false;
         for (kind, imported, source) in bindings {
             let found = match kind.as_str() {
-                "named" | "require_member" | "default" => {
-                    let export = if kind == "default" {
+                "named" | "require_member" | "default" | "require" => {
+                    let export = if kind == "default" || kind == "require" {
                         "default".to_string()
                     } else {
                         imported.unwrap_or_else(|| name.to_string())

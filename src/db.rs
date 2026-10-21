@@ -229,7 +229,7 @@ fn create_schema(conn: &Connection) -> Result<()> {
 
         CREATE TABLE edges (
             id INTEGER PRIMARY KEY,
-            from_symbol_id INTEGER NOT NULL REFERENCES symbols(id) ON DELETE CASCADE,
+            from_symbol_id INTEGER REFERENCES symbols(id) ON DELETE CASCADE,
             to_symbol_name TEXT NOT NULL,
             to_symbol_id INTEGER REFERENCES symbols(id) ON DELETE SET NULL,
             kind TEXT NOT NULL,

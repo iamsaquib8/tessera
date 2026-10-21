@@ -118,10 +118,8 @@ pub fn incoming_refs(
         "SELECT {columns} FROM refs r
          JOIN files f ON f.id = r.file_id
          LEFT JOIN symbols s ON s.id = r.from_symbol_id
-         WHERE r.symbol_name = ?1 AND (
-             r.from_symbol_id IS NULL
-             OR EXISTS (SELECT 1 FROM edges e WHERE e.ref_id = r.id
-                        AND e.to_symbol_id IS NULL AND e.resolver IS NULL))"
+         WHERE r.symbol_name = ?1 AND EXISTS (SELECT 1 FROM edges e WHERE e.ref_id = r.id
+             AND e.to_symbol_id IS NULL AND e.resolver IS NULL)"
     ))?;
     for row in unresolved.query_map(params![name], db::map_reference)? {
         keep(row?, Confidence::Name, None);
@@ -145,7 +143,8 @@ pub fn callers(
 ) -> Result<Vec<(SymbolRecord, Confidence)>> {
     neighbours(
         conn,
-        "SELECT from_symbol_id, confidence FROM edges WHERE to_symbol_id = ?1",
+        "SELECT from_symbol_id, confidence FROM edges
+         WHERE to_symbol_id = ?1 AND from_symbol_id IS NOT NULL",
         id,
         limit,
     )
@@ -272,7 +271,8 @@ pub fn blast(conn: &Connection, seeds: &[i64], depth: usize) -> Result<(Vec<Impa
     let mut walk: Vec<(i64, i64, f64)> = Vec::new();
     let mut capped = false;
     let mut incoming = conn.prepare_cached(
-        "SELECT from_symbol_id, confidence, weight FROM edges WHERE to_symbol_id = ?1",
+        "SELECT from_symbol_id, confidence, weight FROM edges
+         WHERE to_symbol_id = ?1 AND from_symbol_id IS NOT NULL",
     )?;
     'walk: while let Some((node, node_depth, node_confidence, seed)) = queue.pop_front() {
         if node_depth >= depth {
@@ -407,10 +407,9 @@ pub fn is_referenced(conn: &Connection, symbol: &SymbolRecord) -> Result<bool> {
     }
     let unresolved: bool = conn
         .prepare_cached(
-            "SELECT EXISTS(SELECT 1 FROM refs r WHERE r.symbol_name = ?1 AND (
-                 r.from_symbol_id IS NULL
-                 OR EXISTS (SELECT 1 FROM edges e WHERE e.ref_id = r.id
-                            AND e.to_symbol_id IS NULL AND e.resolver IS NULL)))",
+            "SELECT EXISTS(SELECT 1 FROM refs r WHERE r.symbol_name = ?1
+                 AND EXISTS (SELECT 1 FROM edges e WHERE e.ref_id = r.id
+                             AND e.to_symbol_id IS NULL AND e.resolver IS NULL))",
         )?
         .query_row(params![symbol.name], |row| row.get(0))?;
     Ok(unresolved)

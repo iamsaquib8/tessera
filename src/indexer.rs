@@ -377,14 +377,29 @@ fn prepare_all(
         return Ok(());
     }
     let next = AtomicUsize::new(0);
+    // Each prepared file holds a permit until it is stored, so one slow file
+    // cannot let the others pile up parsed results in memory.
+    let window = workers * 16;
+    let (permit_sender, permits) = mpsc::sync_channel::<()>(window);
+    for _ in 0..window {
+        permit_sender.send(())?;
+    }
+    let permits = std::sync::Mutex::new(permits);
     std::thread::scope(|scope| -> Result<()> {
-        let (sender, receiver) = mpsc::sync_channel::<(usize, Prepared)>(workers * 8);
+        // Owned here so an early error drops it and unblocks waiting workers.
+        let permit_sender = permit_sender;
+        let (sender, receiver) = mpsc::sync_channel::<(usize, Prepared)>(window);
         for _ in 0..workers {
             let sender = sender.clone();
             let next = &next;
+            let permits = &permits;
             std::thread::Builder::new()
                 .stack_size(WORKER_STACK_BYTES)
                 .spawn_scoped(scope, move || loop {
+                    let permit = permits.lock().map(|p| p.recv());
+                    if !matches!(permit, Ok(Ok(()))) {
+                        return;
+                    }
                     let slot = next.fetch_add(1, Ordering::Relaxed);
                     let Some((index, known_sha)) = pending.get(slot) else {
                         return;
@@ -403,8 +418,10 @@ fn prepare_all(
             while let Some(prepared) = waiting.remove(&expected) {
                 store(pending[expected].0, prepared)?;
                 expected += 1;
+                let _ = permit_sender.send(());
             }
         }
+        drop(permit_sender);
         Ok(())
     })
 }

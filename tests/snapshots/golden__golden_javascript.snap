@@ -18,8 +18,8 @@ expression: graph_dump(& db)
   "edges": [
     "app.js app.get(\"/send\") -call-> lib/worker.js:BaseWorker.run [medium/name]",
     "app.js app.get(\"/send\") -call-> send [name]",
-    "app.js app.get(\"/send\") -new-> EmailWorker [name]",
-    "lib/email_worker.js EmailWorker -extends-> BaseWorker [name]",
+    "app.js app.get(\"/send\") -new-> lib/email_worker.js:EmailWorker [high/import]",
+    "lib/email_worker.js EmailWorker -extends-> lib/worker.js:BaseWorker [high/import]",
     "lib/email_worker.js EmailWorker.perform -call-> lib/util.js:slugify [high/import]",
     "lib/util.js slugify -call-> toLowerCase [name]",
     "lib/worker.js BaseWorker.run -call-> lib/worker.js:BaseWorker.perform [high/this]",
@@ -29,7 +29,7 @@ expression: graph_dump(& db)
     "specs/util.spec.js describe(\"slugify\").it(\"lowercases\") -call-> toBe [name]"
   ],
   "hints": [
-    "app.js app: call:express (return)"
+    "app.js app::app: call:express (return)"
   ],
   "imports": [
     "app.js:1 require express",
@@ -40,14 +40,14 @@ expression: graph_dump(& db)
   ],
   "modules": [],
   "refs": [
-    "app.js:1:17 call require/1 <- <none>",
-    "app.js:2:21 call require/1 <- <none>",
-    "app.js:4:13 call express/0 <- <none>",
+    "app.js:1:17 call require/1 <- express",
+    "app.js:2:21 call require/1 <- EmailWorker",
+    "app.js:4:13 call express/0 <- app",
     "app.js:6:5 call app.get/2 <- <none>",
     "app.js:7:21 call other.run/0 <- app.get(\"/send\")",
     "app.js:7:7 new EmailWorker/0 <- app.get(\"/send\")",
     "app.js:8:7 call res.send/1 <- app.get(\"/send\")",
-    "lib/email_worker.js:1:20 call require/1 <- <none>",
+    "lib/email_worker.js:1:20 call require/1 <- BaseWorker",
     "lib/email_worker.js:2:21 call require/1 <- <none>",
     "lib/email_worker.js:4:27 extends BaseWorker <- EmailWorker",
     "lib/email_worker.js:6:12 call slugify/1 <- EmailWorker.perform",
@@ -61,8 +61,12 @@ expression: graph_dump(& db)
     "specs/util.spec.js:5:5 call expect/1 <- describe(\"slugify\").it(\"lowercases\")"
   ],
   "symbols": [
+    "app.js:1-1 variable express | express = require(\"express\")",
     "app.js:11-13 function slugify (1..1) | function slugify(x) {",
+    "app.js:2-2 variable EmailWorker | EmailWorker = require(\"./lib/email_worker\")",
+    "app.js:4-4 variable app | app = express()",
     "app.js:6-9 callback app.get(\"/send\") (2..2) | (req, res) => {",
+    "lib/email_worker.js:1-1 variable BaseWorker | BaseWorker = require(\"./worker\")",
     "lib/email_worker.js:4-8 class EmailWorker | class EmailWorker extends BaseWorker {",
     "lib/email_worker.js:5-7 method EmailWorker.perform (0..0) | perform() {",
     "lib/i18n.js:1-3 function greet (0..0) | function greet() { //x éééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééé",

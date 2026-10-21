@@ -188,7 +188,7 @@ fn dependents(conn: &Connection, changed: &[i64]) -> Result<Vec<i64>> {
     }
 
     files.extend(ids(
-        "SELECT DISTINCT s.file_id FROM edges e JOIN symbols s ON s.id = e.from_symbol_id
+        "SELECT DISTINCT r.file_id FROM edges e JOIN refs r ON r.id = e.ref_id
          WHERE e.to_symbol_id IS NULL AND e.confidence != 'name'",
         &[],
     )?);
@@ -197,7 +197,7 @@ fn dependents(conn: &Connection, changed: &[i64]) -> Result<Vec<i64>> {
             break;
         }
         files.extend(ids(
-            "SELECT DISTINCT s.file_id FROM edges e JOIN symbols s ON s.id = e.from_symbol_id
+            "SELECT DISTINCT r.file_id FROM edges e JOIN refs r ON r.id = e.ref_id
              WHERE e.to_symbol_name = ?1 AND e.confidence IN ('medium', 'low', 'name')
                AND (e.resolver IS NULL OR e.resolver = 'name')",
             &[name],

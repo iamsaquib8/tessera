@@ -21,3 +21,19 @@ export class UserRepo extends Repo<User> {
 export default function createRepo(): UserRepo {
   return new UserRepo();
 }
+
+export class RepoCache {
+  static shared = new RepoCache();
+
+  static build = (size: number) => new RepoCache();
+
+  clear = () => {
+    this.reset();
+  };
+
+  reset() {}
+}
+
+export function warm() {
+  RepoCache.build(1).clear();
+}

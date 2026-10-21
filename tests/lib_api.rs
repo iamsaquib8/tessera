@@ -301,7 +301,11 @@ fn refs_follow_resolved_edges_and_report_confidence() {
     assert!(!result.agent_text().contains("name-level matching"));
     let definition = result.references[0].definition.as_ref().unwrap();
     assert_eq!(
-        (definition.path.as_str(), definition.start_line, definition.end_line),
+        (
+            definition.path.as_str(),
+            definition.start_line,
+            definition.end_line
+        ),
         ("src/data/repo.ts", 10, 12)
     );
 
