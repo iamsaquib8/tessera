@@ -1,0 +1,40 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 350" width="960" height="350" role="img" aria-label="Before an edit Tessera ranks the blast radius; after it, verify checks every call; both read a local index.">
+<rect width="960" height="350" rx="14" fill="#161C27"/>
+<g font-family="system-ui, -apple-system, Segoe UI, Helvetica, Arial, sans-serif">
+<rect x="20" y="28" width="280" height="170" rx="10" fill="#1F2736" stroke="#2B4BDB" stroke-width="1.5"/>
+<rect x="40" y="50" width="12" height="12" rx="2.5" fill="#2B4BDB" transform="rotate(6 46 56)"/>
+<text x="64" y="61" font-size="17" font-weight="700" fill="#EEF0F2">Before the edit</text>
+<text x="40" y="100" font-size="14" font-family="JetBrains Mono, SFMono-Regular, Menlo, Consolas, monospace" fill="#EEF0F2">tessera blast &lt;symbol&gt;</text>
+<text x="40" y="124" font-size="14" font-family="JetBrains Mono, SFMono-Regular, Menlo, Consolas, monospace" fill="#EEF0F2">tessera context &lt;symbol&gt;</text>
+<text x="40" y="160" font-size="14" fill="#9AA6B8">Who is affected, ranked,</text>
+<text x="40" y="180" font-size="14" fill="#9AA6B8">and which tests to run</text>
+<path d="M306 113.0 h24" stroke="#9AA6B8" stroke-width="1.5"/>
+<path d="M328 108.0 l7 5 l-7 5" fill="none" stroke="#9AA6B8" stroke-width="1.5"/>
+<rect x="340" y="28" width="280" height="170" rx="10" fill="#1F2736" stroke="#36425A" stroke-width="1.5"/>
+<text x="360" y="61" font-size="17" font-weight="700" fill="#EEF0F2">Your agent edits</text>
+<text x="360" y="100" font-size="15" fill="#EEF0F2">writes code</text>
+<text x="360" y="124" font-size="15" fill="#EEF0F2">calls project APIs</text>
+<text x="360" y="160" font-size="14" fill="#9AA6B8">Any agent, any model</text>
+<text x="360" y="180" font-size="14" fill="#9AA6B8">Claude, GPT, Gemini, Grok…</text>
+<path d="M626 113.0 h24" stroke="#9AA6B8" stroke-width="1.5"/>
+<path d="M648 108.0 l7 5 l-7 5" fill="none" stroke="#9AA6B8" stroke-width="1.5"/>
+<rect x="660" y="28" width="280" height="170" rx="10" fill="#1F2736" stroke="#2E9E8F" stroke-width="1.5"/>
+<rect x="680" y="50" width="12" height="12" rx="2.5" fill="#2E9E8F" transform="rotate(6 686 56)"/>
+<text x="704" y="61" font-size="17" font-weight="700" fill="#EEF0F2">After the edit</text>
+<text x="680" y="100" font-size="14" font-family="JetBrains Mono, SFMono-Regular, Menlo, Consolas, monospace" fill="#EEF0F2">tessera verify --snippet …</text>
+<text x="680" y="124" font-size="15" fill="#EEF0F2">exit 1 on a broken call</text>
+<text x="680" y="160" font-size="14" fill="#9AA6B8">Invented APIs are caught</text>
+<text x="680" y="180" font-size="14" fill="#9AA6B8">with the closest real name</text>
+<rect x="20" y="232" width="920" height="96" rx="10" fill="#1F2736" stroke="#36425A" stroke-width="1.5"/>
+<rect x="42" y="260" width="11" height="11" rx="2" fill="#2B4BDB" opacity="0.55"/>
+<rect x="57" y="260" width="11" height="11" rx="2" fill="#2B4BDB" opacity="0.62"/>
+<rect x="72" y="260" width="11" height="11" rx="2" fill="#2B4BDB" opacity="0.69"/>
+<rect x="87" y="260" width="11" height="11" rx="2" fill="#2B4BDB" opacity="0.76"/>
+<rect x="102" y="260" width="11" height="11" rx="2" fill="#2E9E8F" opacity="0.83"/>
+<rect x="117" y="260" width="11" height="11" rx="2" fill="#2B4BDB" opacity="0.90"/>
+<text x="148" y="265" font-size="16" font-weight="700" fill="#EEF0F2">Local index</text>
+<text x="148" y="288" font-size="14" fill="#9AA6B8">tree-sitter → SQLite in .tessera/, built on first use and refreshed on every change.</text>
+<text x="148" y="308" font-size="14" fill="#9AA6B8">Same code, same answer. Nothing leaves your machine.</text>
+<path d="M160.0 200 V230" stroke="#36425A" stroke-width="1.5" stroke-dasharray="4 4"/>
+<path d="M800.0 200 V230" stroke="#36425A" stroke-width="1.5" stroke-dasharray="4 4"/>
+</g></svg>

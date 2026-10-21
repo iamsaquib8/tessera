@@ -1,19 +1,19 @@
-use std::collections::HashSet;
-use std::fs;
+use std::collections::{BTreeMap, HashMap};
+use std::fs::{self, File, OpenOptions, TryLockError};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::mpsc;
 use std::time::Instant;
 
-use anyhow::{anyhow, Context, Result};
-use rusqlite::Connection;
+use anyhow::{Context, Result};
+use rusqlite::{Connection, Transaction, TransactionBehavior};
 use sha2::{Digest, Sha256};
-use tree_sitter::{Node, Parser};
-use walkdir::{DirEntry, WalkDir};
 
-use crate::bloom::BloomFilter;
 use crate::config::TesseraConfig;
 use crate::db;
-use crate::snapshot;
-use crate::types::{IndexedImport, IndexedReference, IndexedSymbol, Language};
+use crate::resolve::{self, ResolveReport, ResolveScope};
+use crate::walk::{self, FileStatus, SkipReason, SourceFile, WalkOptions};
+use crate::workspace::Workspace;
 
 #[derive(Debug, Clone)]
 pub struct IndexReport {
@@ -22,9 +22,11 @@ pub struct IndexReport {
     pub files_removed: usize,
     pub symbols_indexed: usize,
     pub references_indexed: usize,
+    pub files_skipped: usize,
     pub elapsed_ms: u128,
     pub mode: IndexMode,
     pub warnings: Vec<IndexWarning>,
+    pub resolve: Option<ResolveReport>,
 }
 
 #[derive(Debug, Clone)]
@@ -39,18 +41,56 @@ pub enum IndexMode {
     Incremental,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Default)]
 pub struct IndexOptions {
     pub full: bool,
-    pub build_snapshot: bool,
+    /// `None` keeps the excludes persisted by an earlier run; `Some` replaces them.
+    pub excludes: Option<Vec<String>>,
 }
 
-impl Default for IndexOptions {
-    fn default() -> Self {
-        Self {
-            full: false,
-            build_snapshot: true,
+/// Exclusive advisory lock that serialises writers of one index across processes.
+pub struct IndexLock {
+    _file: File,
+}
+
+impl IndexLock {
+    pub fn path(db_path: &Path) -> PathBuf {
+        let name = db_path.file_name().unwrap_or_default().to_string_lossy();
+        db_path.with_file_name(format!("{name}.lock"))
+    }
+
+    /// Waits until no other writer holds the lock.
+    pub fn acquire(db_path: &Path) -> Result<Self> {
+        let file = Self::open(db_path)?;
+        file.lock()
+            .with_context(|| format!("failed to lock {}", Self::path(db_path).display()))?;
+        Ok(Self { _file: file })
+    }
+
+    /// Returns `None` when another writer holds the lock.
+    pub fn try_acquire(db_path: &Path) -> Result<Option<Self>> {
+        let file = Self::open(db_path)?;
+        match file.try_lock() {
+            Ok(()) => Ok(Some(Self { _file: file })),
+            Err(TryLockError::WouldBlock) => Ok(None),
+            Err(TryLockError::Error(error)) => Err(error)
+                .with_context(|| format!("failed to lock {}", Self::path(db_path).display())),
         }
+    }
+
+    fn open(db_path: &Path) -> Result<File> {
+        if let Some(parent) = db_path.parent() {
+            if !parent.as_os_str().is_empty() {
+                fs::create_dir_all(parent)?;
+            }
+        }
+        let path = Self::path(db_path);
+        OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(&path)
+            .with_context(|| format!("failed to open {}", path.display()))
     }
 }
 
@@ -58,1135 +98,471 @@ pub fn index_path(root: &Path, db_path: &Path) -> Result<IndexReport> {
     index_path_with(root, db_path, IndexOptions::default())
 }
 
+const EXCLUDES_META_KEY: &str = "excludes";
+/// Parsing runs on this many threads at most; storing stays on one.
+const MAX_WORKERS: usize = 8;
+/// Fewer files than this are parsed on the calling thread.
+const PARALLEL_THRESHOLD: usize = 32;
+/// tree-sitter recursion on deeply nested input needs more than the default.
+const WORKER_STACK_BYTES: usize = 8 << 20;
+const FINGERPRINT_META_KEY: &str = "fingerprint";
+
 pub fn index_path_with(root: &Path, db_path: &Path, options: IndexOptions) -> Result<IndexReport> {
+    let lock = IndexLock::acquire(db_path)?;
+    index_path_locked(&lock, root, db_path, options)
+}
+
+/// Indexes with `lock` already held by the caller.
+pub fn index_path_locked(
+    _lock: &IndexLock,
+    root: &Path,
+    db_path: &Path,
+    options: IndexOptions,
+) -> Result<IndexReport> {
     let started = Instant::now();
     let root = root
         .canonicalize()
         .with_context(|| format!("failed to canonicalize {}", root.display()))?;
-    let conn = db::open(db_path)?;
+    let conn = db::open_rw(db_path)?;
+    ignore_index_dir(db_path)?;
     let config = TesseraConfig::load(&root);
-    if options.full {
-        db::reset(&conn)?;
-    }
-    db::set_meta(&conn, "root", &root.to_string_lossy())?;
+    let excludes = match options.excludes {
+        Some(excludes) => excludes,
+        None => persisted_excludes(&conn)?,
+    };
+    let fingerprint = fingerprint(&root, &excludes);
+    let outdated = db::get_meta(&conn, FINGERPRINT_META_KEY)?.as_deref() != Some(&fingerprint);
+    let full = options.full || outdated || db::count_files(&conn)? == 0;
 
-    let mode = if options.full {
+    let mut report = IndexReport::new(if full {
         IndexMode::Full
     } else {
         IndexMode::Incremental
-    };
-
-    let mut report = IndexReport {
-        files_indexed: 0,
-        files_reused: 0,
-        files_removed: 0,
-        symbols_indexed: 0,
-        references_indexed: 0,
-        elapsed_ms: 0,
-        mode,
-        warnings: Vec::new(),
-    };
-
+    });
     let mut visited_ids: Vec<i64> = Vec::new();
+    let tx = Transaction::new_unchecked(&conn, TransactionBehavior::Immediate)?;
+    if full {
+        db::reset(&tx)?;
+    }
+    db::set_meta(&tx, "root", &root.to_string_lossy())?;
+    db::set_meta(&tx, EXCLUDES_META_KEY, &serde_json::to_string(&excludes)?)?;
+    db::set_meta(&tx, FINGERPRINT_META_KEY, &fingerprint)?;
 
-    let tx = conn.unchecked_transaction()?;
+    let discovery = walk::discover(&root, &config, &walk_options(&config, &excludes))?;
+    report.warnings.extend(discovery.warnings);
+    let mut skipped: Vec<(String, u64, i64, &str)> = discovery
+        .skipped
+        .iter()
+        .map(|s| (s.rel_path.clone(), s.size, s.mtime_ns, s.reason.as_str()))
+        .collect();
 
-    for entry_result in WalkDir::new(&root)
-        .into_iter()
-        .filter_entry(|entry| should_enter(entry, &config))
-    {
-        let entry = match entry_result {
-            Ok(entry) => entry,
-            Err(error) => {
-                report.warnings.push(IndexWarning {
-                    path: error
-                        .path()
-                        .map(|p| p.display().to_string())
-                        .unwrap_or_else(|| "<walkdir>".to_string()),
-                    message: error.to_string(),
-                });
-                continue;
+    let mut changed_ids: Vec<i64> = Vec::new();
+    let outcomes = index_discovered(&tx, &discovery.files, full, &mut report)?;
+    for (file, outcome) in discovery.files.iter().zip(outcomes) {
+        match outcome {
+            FileOutcome::Indexed(id) => {
+                visited_ids.push(id);
+                changed_ids.push(id);
             }
-        };
-        if !entry.file_type().is_file() {
-            continue;
+            FileOutcome::Reused(id) => visited_ids.push(id),
+            FileOutcome::Skipped(reason) => skipped.push((
+                file.rel_path.clone(),
+                file.size,
+                file.mtime_ns,
+                reason.as_str(),
+            )),
         }
-
-        let path = entry.path();
-        let rel_path = path
-            .strip_prefix(&root)
-            .unwrap_or(path)
-            .to_string_lossy()
-            .replace('\\', "/");
-
-        if !config.includes_path(&rel_path) || config.excludes_path(&rel_path) {
-            continue;
-        }
-
-        let Some(language) = language_for_path(path) else {
-            continue;
-        };
-        let content = match fs::read_to_string(path) {
-            Ok(c) => c,
-            Err(error) => {
-                report.warnings.push(IndexWarning {
-                    path: rel_path,
-                    message: format!("failed to read file: {error}"),
-                });
-                continue;
-            }
-        };
-        let sha = format!("{:x}", Sha256::digest(content.as_bytes()));
-
-        // Incremental: short-circuit when sha is unchanged.
-        if !options.full {
-            if let Some((existing_id, existing_sha)) = db::file_sha(&tx, &rel_path)? {
-                if existing_sha == sha {
-                    visited_ids.push(existing_id);
-                    report.files_reused += 1;
-                    continue;
-                }
-                db::delete_file_cascade(&tx, existing_id)?;
-            }
-        }
-
-        let parsed = match parse_file(language, &content) {
-            Ok(parsed) => parsed,
-            Err(error) => {
-                report.warnings.push(IndexWarning {
-                    path: rel_path,
-                    message: format!("failed to parse {language}: {error}"),
-                });
-                continue;
-            }
-        };
-
-        let file_id = db::insert_file(&tx, &rel_path, language, &sha, content.lines().count())?;
-        let symbol_ids = db::insert_symbols(&tx, file_id, &parsed.symbols)?;
-        let ref_count = db::insert_references(&tx, file_id, &parsed.references)?;
-        let _ = db::insert_imports(&tx, file_id, &parsed.imports)?;
-
-        visited_ids.push(file_id);
-        report.files_indexed += 1;
-        report.symbols_indexed += symbol_ids.len();
-        report.references_indexed += ref_count;
     }
 
-    // Reconcile deletes only in incremental mode (full mode already reset).
-    if !options.full {
+    if !full {
         report.files_removed = db::delete_files_not_in(&tx, &visited_ids)?;
     }
-
-    tx.commit()?;
-
-    rebuild_bloom(&conn)?;
-
-    if options.build_snapshot {
-        let snapshot_path = snapshot_path(db_path);
-        let _ = snapshot::build(&conn, &snapshot_path);
+    report.files_skipped = skipped.len();
+    db::replace_skipped(&tx, &skipped)?;
+    if full {
+        db::fts_rebuild(&tx)?;
     }
+    let scope = if full {
+        Some(ResolveScope::All)
+    } else if !changed_ids.is_empty() || report.files_removed > 0 {
+        Some(ResolveScope::Changed(changed_ids))
+    } else {
+        None
+    };
+    if let Some(scope) = scope {
+        report.resolve = Some(resolve::resolve(&tx, &root, scope)?);
+    }
+    tx.commit()?;
 
     report.elapsed_ms = started.elapsed().as_millis();
     Ok(report)
 }
 
-fn snapshot_path(db_path: &Path) -> PathBuf {
-    db_path
-        .parent()
-        .unwrap_or_else(|| Path::new("."))
-        .join("snapshot.bin")
+/// Changes whenever the binary, `.tessera/config.toml`, or the excludes change,
+/// so an index built under different rules is rebuilt rather than trusted.
+pub fn fingerprint(root: &Path, excludes: &[String]) -> String {
+    let config = fs::read(root.join(".tessera/config.toml")).unwrap_or_default();
+    let mut hasher = Sha256::new();
+    hasher.update(env!("CARGO_PKG_VERSION"));
+    hasher.update([0]);
+    hasher.update(&config);
+    hasher.update([0]);
+    hasher.update(excludes.join("\n"));
+    format!("{:x}", hasher.finalize())
 }
 
-fn rebuild_bloom(conn: &Connection) -> Result<()> {
-    let mut stmt = conn.prepare("SELECT name, qualified_name FROM symbols")?;
-    let mut names: Vec<String> = Vec::new();
-    let rows = stmt.query_map([], |row| {
-        let name: String = row.get(0)?;
-        let qualified: String = row.get(1)?;
-        Ok((name, qualified))
-    })?;
-    for row in rows {
-        let (name, qualified) = row?;
-        names.push(name);
-        names.push(qualified);
-    }
-    let expected = names.len().max(64);
-    let mut bloom = BloomFilter::for_expected(expected, 0.01);
-    for name in &names {
-        bloom.insert(name);
-    }
-    let bytes = bloom.to_bytes();
-    db::set_meta_blob(conn, "bloom_symbols", &bytes)?;
-    Ok(())
+pub fn stored_fingerprint(conn: &Connection) -> Result<Option<String>> {
+    db::get_meta(conn, FINGERPRINT_META_KEY)
 }
 
-fn should_enter(entry: &DirEntry, config: &TesseraConfig) -> bool {
-    let name = entry.file_name().to_string_lossy();
-    if config.ignores_name(&name) {
-        return false;
-    }
-    !matches!(
-        name.as_ref(),
-        ".git"
-            | ".hg"
-            | ".svn"
-            | "node_modules"
-            | "target"
-            | "dist"
-            | "build"
-            | "out"
-            | "coverage"
-            | "vendor"
-            | "vendors"
-            | "third_party"
-            | ".cache"
-            | ".gradle"
-            | ".idea"
-            | ".pytest_cache"
-            | ".mypy_cache"
-            | ".ruff_cache"
-            | ".tox"
-            | ".cargo"
-            | "Pods"
-            | "DerivedData"
-            | ".next"
-            | ".venv"
-            | "venv"
-            | "__pycache__"
-            | ".tessera"
-    )
-}
-
-fn language_for_path(path: &Path) -> Option<Language> {
-    path.extension()
-        .and_then(|ext| ext.to_str())
-        .and_then(Language::from_extension)
-}
-
-#[derive(Debug)]
-pub struct ParsedFile {
-    pub symbols: Vec<IndexedSymbol>,
-    pub references: Vec<IndexedReference>,
-    pub imports: Vec<IndexedImport>,
-}
-
-pub fn parse_file(language: Language, content: &str) -> Result<ParsedFile> {
-    let mut parser = Parser::new();
-    match language {
-        Language::JavaScript => parser.set_language(tree_sitter_javascript::language())?,
-        // TSX grammar is a superset of TS — using it for both means a plain
-        // `.ts` file still parses cleanly *and* JSX-bearing `.tsx` files yield
-        // jsx_element nodes for React-component reference extraction.
-        Language::TypeScript | Language::Tsx => {
-            parser.set_language(tree_sitter_typescript::language_tsx())?
+pub fn index_files(ws: &Workspace, rel_paths: &[String]) -> Result<IndexReport> {
+    let _lock = IndexLock::acquire(&ws.db_path)?;
+    let started = Instant::now();
+    let root = ws
+        .root
+        .canonicalize()
+        .with_context(|| format!("failed to canonicalize {}", ws.root.display()))?;
+    let conn = db::open_rw(&ws.db_path)?;
+    let config = TesseraConfig::load(&root);
+    let options = walk_options(&config, &persisted_excludes(&conn)?);
+    let mut report = IndexReport::new(IndexMode::Incremental);
+    let tx = Transaction::new_unchecked(&conn, TransactionBehavior::Immediate)?;
+    let mut changed_ids: Vec<i64> = Vec::new();
+    for rel_path in rel_paths {
+        let rel_path = rel_path.trim_start_matches("./").replace('\\', "/");
+        let status = walk::describe(&root, &rel_path, &config, &options)?;
+        let FileStatus::Source(file) = status else {
+            if let Some((id, _)) = db::file_sha(&tx, &rel_path)? {
+                db::delete_file_cascade(&tx, id)?;
+                report.files_removed += 1;
+            }
+            match status {
+                FileStatus::Skipped(s) => {
+                    db::upsert_skipped(&tx, &s.rel_path, s.size, s.mtime_ns, s.reason.as_str())?;
+                    report.files_skipped += 1;
+                }
+                _ => db::delete_skipped(&tx, &rel_path)?,
+            }
+            continue;
+        };
+        db::delete_skipped(&tx, &rel_path)?;
+        let known_sha = db::file_sha(&tx, &rel_path)?.map(|(_, sha)| sha);
+        let prepared = prepare(&file, known_sha.as_deref());
+        match store(&tx, &file, prepared, false, &mut report)? {
+            FileOutcome::Skipped(reason) => {
+                if let Some((id, _)) = db::file_sha(&tx, &rel_path)? {
+                    db::delete_file_cascade(&tx, id)?;
+                }
+                db::upsert_skipped(&tx, &rel_path, file.size, file.mtime_ns, reason.as_str())?;
+                report.files_skipped += 1;
+            }
+            FileOutcome::Indexed(id) => changed_ids.push(id),
+            FileOutcome::Reused(_) => {}
         }
-        Language::Python => parser.set_language(tree_sitter_python::language())?,
-        Language::Go => parser.set_language(tree_sitter_go::language())?,
-        Language::Rust => parser.set_language(tree_sitter_rust::language())?,
-        Language::Java => parser.set_language(tree_sitter_java::language())?,
-        Language::C => parser.set_language(tree_sitter_c::language())?,
-        // The C++ grammar is a superset of C, so `.h`/C files routed here parse
-        // cleanly too.
-        Language::Cpp => parser.set_language(tree_sitter_cpp::language())?,
-        Language::CSharp => parser.set_language(tree_sitter_c_sharp::language())?,
-        Language::Ruby => parser.set_language(tree_sitter_ruby::language())?,
-        Language::Php => parser.set_language(tree_sitter_php::language())?,
     }
-    let tree = parser
-        .parse(content, None)
-        .ok_or_else(|| anyhow!("tree-sitter returned no parse tree"))?;
-    let mut visitor = Visitor::new(language, content);
-    visitor.walk(tree.root_node(), None);
-    Ok(ParsedFile {
-        symbols: visitor.symbols,
-        references: visitor.references,
-        imports: visitor.imports,
+    if !changed_ids.is_empty() || report.files_removed > 0 {
+        report.resolve = Some(resolve::resolve(
+            &tx,
+            &root,
+            ResolveScope::Changed(changed_ids),
+        )?);
+    }
+    tx.commit()?;
+    report.elapsed_ms = started.elapsed().as_millis();
+    Ok(report)
+}
+
+pub fn persisted_excludes(conn: &Connection) -> Result<Vec<String>> {
+    Ok(db::get_meta(conn, EXCLUDES_META_KEY)?
+        .and_then(|value| serde_json::from_str(&value).ok())
+        .unwrap_or_default())
+}
+
+pub fn walk_options(config: &TesseraConfig, excludes: &[String]) -> WalkOptions {
+    WalkOptions {
+        max_file_bytes: config
+            .max_file_bytes
+            .unwrap_or(WalkOptions::default().max_file_bytes),
+        excludes: excludes.to_vec(),
+        sniff_content: false,
+    }
+}
+
+impl IndexReport {
+    fn new(mode: IndexMode) -> Self {
+        Self {
+            files_indexed: 0,
+            files_reused: 0,
+            files_removed: 0,
+            symbols_indexed: 0,
+            references_indexed: 0,
+            files_skipped: 0,
+            elapsed_ms: 0,
+            mode,
+            warnings: Vec::new(),
+            resolve: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FileOutcome {
+    Indexed(i64),
+    Reused(i64),
+    Skipped(SkipReason),
+}
+
+/// What a worker learns about a file without touching the database.
+enum Prepared {
+    Unreadable(String),
+    Minified,
+    /// The content hash matches the indexed copy; only the stat changed.
+    SameContent,
+    Parsed {
+        sha: String,
+        loc: usize,
+        lossy: bool,
+        parsed: std::result::Result<ParsedFile, String>,
+    },
+}
+
+/// Reads, decodes and parses `file`. Pure, so it runs on worker threads.
+fn prepare(file: &SourceFile, known_sha: Option<&str>) -> Prepared {
+    let bytes = match fs::read(&file.abs_path) {
+        Ok(bytes) => bytes,
+        Err(error) => return Prepared::Unreadable(error.to_string()),
+    };
+    let (content, lossy) = match String::from_utf8(bytes) {
+        Ok(content) => (content, false),
+        Err(error) => (String::from_utf8_lossy(error.as_bytes()).into_owned(), true),
+    };
+    let content = content
+        .strip_prefix('\u{feff}')
+        .map(ToOwned::to_owned)
+        .unwrap_or(content);
+    let name = file
+        .abs_path
+        .file_name()
+        .unwrap_or_default()
+        .to_string_lossy();
+    if walk::is_minified(&name, content.as_bytes()) {
+        return Prepared::Minified;
+    }
+    let sha = format!("{:x}", Sha256::digest(content.as_bytes()));
+    if known_sha == Some(sha.as_str()) {
+        return Prepared::SameContent;
+    }
+    Prepared::Parsed {
+        loc: content.lines().count(),
+        parsed: parse_file_at(file.language, &file.rel_path, &content)
+            .map_err(|error| error.to_string()),
+        sha,
+        lossy,
+    }
+}
+
+/// Prepares `pending` files on worker threads and hands each result to
+/// `store` in the order given, so ids and output stay deterministic.
+fn prepare_all(
+    files: &[SourceFile],
+    pending: &[(usize, Option<String>)],
+    mut store: impl FnMut(usize, Prepared) -> Result<()>,
+) -> Result<()> {
+    let workers = std::thread::available_parallelism()
+        .map_or(1, |n| n.get())
+        .min(MAX_WORKERS);
+    if pending.len() < PARALLEL_THRESHOLD || workers < 2 {
+        for (index, known_sha) in pending {
+            store(*index, prepare(&files[*index], known_sha.as_deref()))?;
+        }
+        return Ok(());
+    }
+    let next = AtomicUsize::new(0);
+    // Each prepared file holds a permit until it is stored, so one slow file
+    // cannot let the others pile up parsed results in memory.
+    let window = workers * 16;
+    let (permit_sender, permits) = mpsc::sync_channel::<()>(window);
+    for _ in 0..window {
+        permit_sender.send(())?;
+    }
+    let permits = std::sync::Mutex::new(permits);
+    std::thread::scope(|scope| -> Result<()> {
+        // Owned here so an early error drops it and unblocks waiting workers.
+        let permit_sender = permit_sender;
+        let (sender, receiver) = mpsc::sync_channel::<(usize, Prepared)>(window);
+        for _ in 0..workers {
+            let sender = sender.clone();
+            let next = &next;
+            let permits = &permits;
+            std::thread::Builder::new()
+                .stack_size(WORKER_STACK_BYTES)
+                .spawn_scoped(scope, move || loop {
+                    let permit = permits.lock().map(|p| p.recv());
+                    if !matches!(permit, Ok(Ok(()))) {
+                        return;
+                    }
+                    let slot = next.fetch_add(1, Ordering::Relaxed);
+                    let Some((index, known_sha)) = pending.get(slot) else {
+                        return;
+                    };
+                    let prepared = prepare(&files[*index], known_sha.as_deref());
+                    if sender.send((slot, prepared)).is_err() {
+                        return;
+                    }
+                })?;
+        }
+        drop(sender);
+        let mut waiting: BTreeMap<usize, Prepared> = BTreeMap::new();
+        let mut expected = 0;
+        for (slot, prepared) in receiver.iter() {
+            waiting.insert(slot, prepared);
+            while let Some(prepared) = waiting.remove(&expected) {
+                store(pending[expected].0, prepared)?;
+                expected += 1;
+                let _ = permit_sender.send(());
+            }
+        }
+        drop(permit_sender);
+        Ok(())
     })
 }
 
-fn is_js_family(lang: Language) -> bool {
-    matches!(
-        lang,
-        Language::JavaScript | Language::TypeScript | Language::Tsx
-    )
-}
-
-struct Visitor<'a> {
-    language: Language,
-    content: &'a str,
-    lines: Vec<&'a str>,
-    scope: Vec<ScopeFrame>,
-    symbols: Vec<IndexedSymbol>,
-    references: Vec<IndexedReference>,
-    imports: Vec<IndexedImport>,
-    skip_refs: HashSet<&'static str>,
-}
-
-#[derive(Debug, Clone)]
-struct ScopeFrame {
-    name: String,
-    end_byte: usize,
-}
-
-impl<'a> Visitor<'a> {
-    fn new(language: Language, content: &'a str) -> Self {
-        let skip_refs: HashSet<&'static str> = match language {
-            Language::JavaScript | Language::TypeScript | Language::Tsx => {
-                ["super"].into_iter().collect()
-            }
-            Language::Python => HashSet::new(),
-            Language::Go => HashSet::new(),
-            Language::Rust => [
-                "println",
-                "eprintln",
-                "format",
-                "vec",
-                "assert",
-                "assert_eq",
-            ]
-            .into_iter()
-            .collect(),
-            Language::Java => ["super", "this"].into_iter().collect(),
-            // C / C++: the noisiest "calls" are libc / control macros that
-            // would never resolve to an indexed symbol.
-            Language::C | Language::Cpp => [
-                "sizeof",
-                "printf",
-                "fprintf",
-                "sprintf",
-                "malloc",
-                "free",
-                "memcpy",
-                "memset",
-                "strlen",
-                "strcmp",
-                "assert",
-                "static_cast",
-                "reinterpret_cast",
-                "dynamic_cast",
-                "const_cast",
-            ]
-            .into_iter()
-            .collect(),
-            Language::CSharp => ["base", "this", "nameof", "typeof"].into_iter().collect(),
-            Language::Ruby => [
-                "require",
-                "require_relative",
-                "load",
-                "puts",
-                "print",
-                "p",
-                "raise",
-            ]
-            .into_iter()
-            .collect(),
-            Language::Php => [
-                "require",
-                "require_once",
-                "include",
-                "include_once",
-                "echo",
-                "isset",
-            ]
-            .into_iter()
-            .collect(),
-        };
-        Self {
-            language,
-            content,
-            lines: content.lines().collect(),
-            scope: Vec::new(),
-            symbols: Vec::new(),
-            references: Vec::new(),
-            imports: Vec::new(),
-            skip_refs,
-        }
-    }
-
-    fn walk(&mut self, node: Node<'a>, pending_export: Option<bool>) {
-        while self
-            .scope
-            .last()
-            .map(|scope| node.start_byte() >= scope.end_byte)
-            .unwrap_or(false)
-        {
-            self.scope.pop();
-        }
-
-        if is_js_family(self.language) && node.kind() == "export_statement" {
-            let mut cursor = node.walk();
-            for child in node.children(&mut cursor) {
-                self.walk(child, Some(true));
-            }
-            return;
-        }
-
-        if let Some(symbol) = self.symbol_from_node(node, pending_export.unwrap_or(false)) {
-            let qname = symbol.qualified_name.clone();
-            let end_byte = node.end_byte();
-            self.symbols.push(symbol);
-            self.scope.push(ScopeFrame {
-                name: qname,
-                end_byte,
-            });
-        }
-
-        if let Some(reference) = self.reference_from_node(node) {
-            self.references.push(reference);
-        }
-
-        if let Some(import) = self.import_from_node(node) {
-            self.imports.push(import);
-        }
-
-        let mut cursor = node.walk();
-        for child in node.children(&mut cursor) {
-            self.walk(child, None);
-        }
-    }
-
-    fn symbol_from_node(&self, node: Node<'a>, exported: bool) -> Option<IndexedSymbol> {
-        match self.language {
-            Language::Python => self.python_symbol_from_node(node),
-            Language::JavaScript | Language::TypeScript | Language::Tsx => {
-                self.js_ts_symbol_from_node(node, exported)
-            }
-            Language::Go => self.go_symbol_from_node(node),
-            Language::Rust => self.rust_symbol_from_node(node),
-            Language::Java => self.java_symbol_from_node(node),
-            Language::C => self.c_family_symbol_from_node(node, false),
-            Language::Cpp => self.c_family_symbol_from_node(node, true),
-            Language::CSharp => self.csharp_symbol_from_node(node),
-            Language::Ruby => self.ruby_symbol_from_node(node),
-            Language::Php => self.php_symbol_from_node(node),
-        }
-    }
-
-    fn python_symbol_from_node(&self, node: Node<'a>) -> Option<IndexedSymbol> {
-        let kind = match node.kind() {
-            "function_definition" => "function",
-            "class_definition" => "class",
-            _ => return None,
-        };
-        let name_node = node.child_by_field_name("name")?;
-        let name = self.node_text(name_node);
-        let signature = self.signature_until_body(node);
-        Some(self.make_symbol(name, kind, node, signature, true))
-    }
-
-    fn js_ts_symbol_from_node(&self, node: Node<'a>, exported: bool) -> Option<IndexedSymbol> {
-        let (name, kind) = match node.kind() {
-            "function_declaration" | "generator_function_declaration" => (
-                self.node_text(node.child_by_field_name("name")?),
-                "function",
-            ),
-            "class_declaration" => (self.node_text(node.child_by_field_name("name")?), "class"),
-            "method_definition" | "method_signature" => {
-                (self.node_text(node.child_by_field_name("name")?), "method")
-            }
-            "variable_declarator" => {
-                let value = node.child_by_field_name("value")?;
-                if !matches!(
-                    value.kind(),
-                    "arrow_function" | "function" | "function_expression"
-                ) {
-                    return None;
-                }
-                (
-                    self.node_text(node.child_by_field_name("name")?),
-                    "function",
-                )
-            }
-            _ => return None,
-        };
-        let signature = self.signature_until_body(node);
-        Some(self.make_symbol(
-            name,
-            kind,
-            node,
-            signature,
-            exported || self.has_export_ancestor(node),
-        ))
-    }
-
-    fn go_symbol_from_node(&self, node: Node<'a>) -> Option<IndexedSymbol> {
-        match node.kind() {
-            "function_declaration" => {
-                let name_node = node.child_by_field_name("name")?;
-                let name = self.node_text(name_node);
-                let signature = self.signature_until_body(node);
-                let exported = is_go_exported(&name);
-                Some(self.make_symbol(name, "function", node, signature, exported))
-            }
-            "method_declaration" => {
-                let name_node = node.child_by_field_name("name")?;
-                let raw_name = self.node_text(name_node);
-                let receiver_type = node
-                    .child_by_field_name("receiver")
-                    .and_then(|recv| self.go_receiver_type(recv));
-                let qualified = receiver_type
-                    .as_ref()
-                    .map(|t| format!("{}.{}", t, raw_name))
-                    .unwrap_or_else(|| raw_name.clone());
-                let signature = self.signature_until_body(node);
-                let exported = is_go_exported(&raw_name);
-                Some(IndexedSymbol {
-                    name: raw_name,
-                    qualified_name: qualified,
-                    kind: "method".to_string(),
-                    start_line: node.start_position().row + 1,
-                    end_line: node.end_position().row + 1,
-                    signature,
-                    exported,
-                })
-            }
-            "type_spec" => {
-                let name_node = node.child_by_field_name("name")?;
-                let name = self.node_text(name_node);
-                let type_node = node.child_by_field_name("type")?;
-                let kind = match type_node.kind() {
-                    "struct_type" => "struct",
-                    "interface_type" => "interface",
-                    _ => "type",
-                };
-                let signature = self.signature_until_body(node);
-                let exported = is_go_exported(&name);
-                Some(self.make_symbol(name, kind, node, signature, exported))
-            }
-            _ => None,
-        }
-    }
-
-    fn go_receiver_type(&self, recv: Node<'a>) -> Option<String> {
-        // receiver is parameter_list; walk for the first identifier inside a type
-        let mut cursor = recv.walk();
-        for child in recv.children(&mut cursor) {
-            if child.kind() == "parameter_declaration" {
-                if let Some(type_node) = child.child_by_field_name("type") {
-                    return Some(self.unwrap_go_type(type_node));
-                }
-            }
-        }
-        None
-    }
-
-    fn unwrap_go_type(&self, node: Node<'a>) -> String {
-        match node.kind() {
-            "pointer_type" => {
-                if let Some(inner) = node.named_child(0) {
-                    self.unwrap_go_type(inner)
-                } else {
-                    self.node_text(node)
-                }
-            }
-            "type_identifier" | "identifier" | "qualified_type" => self.node_text(node),
-            _ => self.node_text(node),
-        }
-    }
-
-    fn java_symbol_from_node(&self, node: Node<'a>) -> Option<IndexedSymbol> {
-        let (name, kind) = match node.kind() {
-            "class_declaration" => (self.node_text(node.child_by_field_name("name")?), "class"),
-            "interface_declaration" => (
-                self.node_text(node.child_by_field_name("name")?),
-                "interface",
-            ),
-            "enum_declaration" => (self.node_text(node.child_by_field_name("name")?), "enum"),
-            "record_declaration" => (self.node_text(node.child_by_field_name("name")?), "record"),
-            "annotation_type_declaration" => (
-                self.node_text(node.child_by_field_name("name")?),
-                "annotation",
-            ),
-            "method_declaration" => (self.node_text(node.child_by_field_name("name")?), "method"),
-            "constructor_declaration" => (
-                self.node_text(node.child_by_field_name("name")?),
-                "constructor",
-            ),
-            _ => return None,
-        };
-        let signature = self.signature_until_body(node);
-        let exported = java_is_public(node);
-        Some(self.make_symbol(name, kind, node, signature, exported))
-    }
-
-    fn rust_symbol_from_node(&self, node: Node<'a>) -> Option<IndexedSymbol> {
-        let (name, kind) = match node.kind() {
-            "function_item" => (
-                self.node_text(node.child_by_field_name("name")?),
-                "function",
-            ),
-            "struct_item" => (self.node_text(node.child_by_field_name("name")?), "struct"),
-            "enum_item" => (self.node_text(node.child_by_field_name("name")?), "enum"),
-            "trait_item" => (self.node_text(node.child_by_field_name("name")?), "trait"),
-            "mod_item" => (self.node_text(node.child_by_field_name("name")?), "module"),
-            "impl_item" => {
-                let type_node = node.child_by_field_name("type")?;
-                let name = self.node_text(type_node);
-                let signature = self.signature_until_body(node);
-                return Some(self.make_symbol(name, "impl", node, signature, false));
-            }
-            _ => return None,
-        };
-        let signature = self.signature_until_body(node);
-        let exported = rust_is_pub(node);
-        Some(self.make_symbol(name, kind, node, signature, exported))
-    }
-
-    /// C and C++ share one extractor; `cpp` enables the C++-only kinds
-    /// (`class_specifier`, `namespace_definition`). The C++ grammar is a
-    /// superset of C, so this also covers `.h` headers.
-    fn c_family_symbol_from_node(&self, node: Node<'a>, cpp: bool) -> Option<IndexedSymbol> {
-        match node.kind() {
-            "function_definition" => {
-                let decl = node.child_by_field_name("declarator")?;
-                let name = self.c_declarator_name(decl)?;
-                if name.is_empty() {
-                    return None;
-                }
-                let signature = self.signature_until_body(node);
-                let exported = !self.c_has_static(node);
-                Some(self.make_symbol(name, "function", node, signature, exported))
-            }
-            "struct_specifier" if node.child_by_field_name("body").is_some() => {
-                let name = self.node_text(node.child_by_field_name("name")?);
-                let signature = self.signature_until_body(node);
-                Some(self.make_symbol(name, "struct", node, signature, true))
-            }
-            "enum_specifier" if node.child_by_field_name("body").is_some() => {
-                let name = self.node_text(node.child_by_field_name("name")?);
-                let signature = self.signature_until_body(node);
-                Some(self.make_symbol(name, "enum", node, signature, true))
-            }
-            "union_specifier" if node.child_by_field_name("body").is_some() => {
-                let name = self.node_text(node.child_by_field_name("name")?);
-                let signature = self.signature_until_body(node);
-                Some(self.make_symbol(name, "union", node, signature, true))
-            }
-            "class_specifier" if cpp && node.child_by_field_name("body").is_some() => {
-                let name = self.node_text(node.child_by_field_name("name")?);
-                let signature = self.signature_until_body(node);
-                Some(self.make_symbol(name, "class", node, signature, true))
-            }
-            "namespace_definition" if cpp => {
-                let name = self.node_text(node.child_by_field_name("name")?);
-                let signature = self.signature_until_body(node);
-                Some(self.make_symbol(name, "namespace", node, signature, true))
-            }
-            _ => None,
-        }
-    }
-
-    /// Unwrap a C/C++ declarator (pointer/reference/array/function wrappers)
-    /// down to the innermost identifier or qualified name.
-    fn c_declarator_name(&self, node: Node<'a>) -> Option<String> {
-        match node.kind() {
-            "identifier" | "field_identifier" | "type_identifier" | "destructor_name"
-            | "operator_name" => Some(self.node_text(node)),
-            "qualified_identifier" => node
-                .child_by_field_name("name")
-                .map(|n| self.node_text(n))
-                .or_else(|| Some(last_identifier(self.node_text(node)))),
-            "function_declarator"
-            | "pointer_declarator"
-            | "reference_declarator"
-            | "parenthesized_declarator"
-            | "array_declarator"
-            | "init_declarator" => {
-                let inner = node.child_by_field_name("declarator")?;
-                self.c_declarator_name(inner)
-            }
-            _ => {
-                let mut cursor = node.walk();
-                for child in node.children(&mut cursor) {
-                    if let Some(name) = self.c_declarator_name(child) {
-                        return Some(name);
-                    }
-                }
-                None
-            }
-        }
-    }
-
-    fn c_has_static(&self, node: Node<'a>) -> bool {
-        let mut cursor = node.walk();
-        for child in node.children(&mut cursor) {
-            if child.kind() == "storage_class_specifier" && self.node_text(child) == "static" {
-                return true;
-            }
-        }
-        false
-    }
-
-    fn csharp_symbol_from_node(&self, node: Node<'a>) -> Option<IndexedSymbol> {
-        let (name, kind) = match node.kind() {
-            "class_declaration" => (self.node_text(node.child_by_field_name("name")?), "class"),
-            "interface_declaration" => (
-                self.node_text(node.child_by_field_name("name")?),
-                "interface",
-            ),
-            "struct_declaration" => (self.node_text(node.child_by_field_name("name")?), "struct"),
-            "enum_declaration" => (self.node_text(node.child_by_field_name("name")?), "enum"),
-            "record_declaration" => (self.node_text(node.child_by_field_name("name")?), "record"),
-            "method_declaration" => (self.node_text(node.child_by_field_name("name")?), "method"),
-            "constructor_declaration" => (
-                self.node_text(node.child_by_field_name("name")?),
-                "constructor",
-            ),
-            _ => return None,
-        };
-        let signature = self.signature_until_body(node);
-        let exported = self.csharp_is_public(node);
-        Some(self.make_symbol(name, kind, node, signature, exported))
-    }
-
-    fn csharp_is_public(&self, node: Node<'a>) -> bool {
-        let mut cursor = node.walk();
-        for child in node.children(&mut cursor) {
-            if child.kind() == "modifier" && self.node_text(child) == "public" {
-                return true;
-            }
-        }
-        false
-    }
-
-    fn ruby_symbol_from_node(&self, node: Node<'a>) -> Option<IndexedSymbol> {
-        let (name, kind) = match node.kind() {
-            "method" | "singleton_method" => {
-                (self.node_text(node.child_by_field_name("name")?), "method")
-            }
-            "class" => (self.node_text(node.child_by_field_name("name")?), "class"),
-            "module" => (self.node_text(node.child_by_field_name("name")?), "module"),
-            _ => return None,
-        };
-        // Ruby methods are public by default.
-        let signature = self.signature_until_body(node);
-        Some(self.make_symbol(name, kind, node, signature, true))
-    }
-
-    fn php_symbol_from_node(&self, node: Node<'a>) -> Option<IndexedSymbol> {
-        let (name, kind) = match node.kind() {
-            "function_definition" => (
-                self.node_text(node.child_by_field_name("name")?),
-                "function",
-            ),
-            "method_declaration" => (self.node_text(node.child_by_field_name("name")?), "method"),
-            "class_declaration" => (self.node_text(node.child_by_field_name("name")?), "class"),
-            "interface_declaration" => (
-                self.node_text(node.child_by_field_name("name")?),
-                "interface",
-            ),
-            "trait_declaration" => (self.node_text(node.child_by_field_name("name")?), "trait"),
-            "enum_declaration" => (self.node_text(node.child_by_field_name("name")?), "enum"),
-            _ => return None,
-        };
-        let signature = self.signature_until_body(node);
-        let exported = self.php_is_public(node);
-        Some(self.make_symbol(name, kind, node, signature, exported))
-    }
-
-    fn php_is_public(&self, node: Node<'a>) -> bool {
-        // Top-level functions are global; methods default to public unless a
-        // `visibility_modifier` says private/protected.
-        if node.kind() != "method_declaration" {
-            return true;
-        }
-        let mut cursor = node.walk();
-        let mut saw = false;
-        let mut public = false;
-        for child in node.children(&mut cursor) {
-            if child.kind() == "visibility_modifier" {
-                saw = true;
-                if self.node_text(child).eq_ignore_ascii_case("public") {
-                    public = true;
-                }
-            }
-        }
-        !saw || public
-    }
-
-    fn make_symbol(
-        &self,
-        name: String,
-        kind: &str,
-        node: Node<'a>,
-        signature: String,
-        exported: bool,
-    ) -> IndexedSymbol {
-        let qualified_name = self
-            .scope
-            .last()
-            .map(|parent| format!("{}.{}", parent.name, name))
-            .unwrap_or_else(|| name.clone());
-        IndexedSymbol {
-            name,
-            qualified_name,
-            kind: kind.to_string(),
-            start_line: node.start_position().row + 1,
-            end_line: node.end_position().row + 1,
-            signature,
-            exported,
-        }
-    }
-
-    fn reference_from_node(&self, node: Node<'a>) -> Option<IndexedReference> {
-        let kind = node.kind();
-        // JSX is its own case because the "callable" isn't a function in the
-        // grammar — it's the element name in <Component … />. Only register
-        // names that look like React components (leading uppercase or
-        // member-expression like `Foo.Bar`); lowercase identifiers are intrinsic
-        // HTML elements and would just be noise.
-        if is_js_family(self.language)
-            && matches!(kind, "jsx_self_closing_element" | "jsx_opening_element")
-        {
-            let name_node = node.child_by_field_name("name")?;
-            let symbol_name = self.jsx_component_name(name_node)?;
-            return Some(IndexedReference {
-                symbol_name,
-                from_qualified_name: self.scope.last().map(|scope| scope.name.clone()),
-                line: node.start_position().row + 1,
-                column: node.start_position().column + 1,
-                context: self
-                    .lines
-                    .get(node.start_position().row)
-                    .map(|line| line.trim().to_string())
-                    .unwrap_or_default(),
-                kind: "jsx".to_string(),
-            });
-        }
-
-        let (function_node, ref_kind) = match (self.language, kind) {
-            (Language::Python, "call") => (node.child_by_field_name("function")?, "call"),
-            (Language::JavaScript | Language::TypeScript | Language::Tsx, "call_expression") => {
-                (node.child_by_field_name("function")?, "call")
-            }
-            (Language::Go, "call_expression") => (node.child_by_field_name("function")?, "call"),
-            (Language::Rust, "call_expression") => (node.child_by_field_name("function")?, "call"),
-            (Language::Rust, "macro_invocation") => (node.child_by_field_name("macro")?, "macro"),
-            (Language::Java, "method_invocation") => (node.child_by_field_name("name")?, "call"),
-            (Language::Java, "object_creation_expression") => {
-                (node.child_by_field_name("type")?, "new")
-            }
-            (Language::C | Language::Cpp, "call_expression") => {
-                (node.child_by_field_name("function")?, "call")
-            }
-            (Language::Cpp, "new_expression") => (
-                node.child_by_field_name("type").or_else(|| {
-                    self.first_child_with_kinds(node, &["type_identifier", "qualified_identifier"])
-                })?,
-                "new",
-            ),
-            (Language::CSharp, "invocation_expression") => {
-                (node.child_by_field_name("function")?, "call")
-            }
-            (Language::CSharp, "object_creation_expression") => {
-                (node.child_by_field_name("type")?, "new")
-            }
-            (Language::Ruby, "call") => (node.child_by_field_name("method")?, "call"),
-            (Language::Ruby, "method_call") => (node.child_by_field_name("method")?, "call"),
-            (Language::Php, "function_call_expression") => {
-                (node.child_by_field_name("function")?, "call")
-            }
-            (Language::Php, "member_call_expression") => {
-                (node.child_by_field_name("name")?, "call")
-            }
-            (Language::Php, "scoped_call_expression") => {
-                (node.child_by_field_name("name")?, "call")
-            }
-            (Language::Php, "object_creation_expression") => (
-                self.first_child_with_kinds(node, &["name", "qualified_name"])?,
-                "new",
-            ),
-            _ => return None,
-        };
-        let symbol_name = self.called_name(function_node)?;
-        if self.skip_refs.contains(symbol_name.as_str()) {
-            return None;
-        }
-        Some(IndexedReference {
-            symbol_name,
-            from_qualified_name: self.scope.last().map(|scope| scope.name.clone()),
-            line: node.start_position().row + 1,
-            column: node.start_position().column + 1,
-            context: self
-                .lines
-                .get(node.start_position().row)
-                .map(|line| line.trim().to_string())
-                .unwrap_or_default(),
-            kind: ref_kind.to_string(),
+/// Writes one prepared file. `full` means the index was emptied first.
+fn store(
+    tx: &Connection,
+    file: &SourceFile,
+    prepared: Prepared,
+    full: bool,
+    report: &mut IndexReport,
+) -> Result<FileOutcome> {
+    let rel_path = &file.rel_path;
+    let warn = |report: &mut IndexReport, message: String| {
+        report.warnings.push(IndexWarning {
+            path: rel_path.clone(),
+            message,
         })
-    }
-
-    fn import_from_node(&self, node: Node<'a>) -> Option<IndexedImport> {
-        // Per-language import / use statements. We capture the source/path
-        // string (or, for Rust `use foo::bar`, the full path text) so that
-        // `imports(path)` and `imported_by(source)` can answer module-level
-        // dependency questions without re-reading the file.
-        let (source, kind) = match (self.language, node.kind()) {
-            (Language::JavaScript | Language::TypeScript | Language::Tsx, "import_statement") => {
-                let src = node
-                    .child_by_field_name("source")
-                    .or_else(|| self.first_child_with_kinds(node, &["string"]))?;
-                (self.strip_quotes(self.node_text(src)), "import")
+    };
+    let (sha, loc, parsed) = match prepared {
+        Prepared::Unreadable(error) => {
+            warn(report, format!("failed to read file: {error}"));
+            return Ok(FileOutcome::Skipped(SkipReason::Unreadable));
+        }
+        Prepared::Minified => return Ok(FileOutcome::Skipped(SkipReason::Minified)),
+        Prepared::SameContent => {
+            if let Some((existing_id, _)) = db::file_sha(tx, rel_path)? {
+                db::touch_file(tx, existing_id, file.size, file.mtime_ns)?;
+                report.files_reused += 1;
+                return Ok(FileOutcome::Reused(existing_id));
             }
-            (Language::JavaScript | Language::TypeScript | Language::Tsx, "call_expression") => {
-                // CommonJS `require('./foo')` and dynamic ESM `import('./foo')`.
-                // Both look like call_expressions in the grammar; only record
-                // them when the callee is exactly `require` or `import`, with
-                // a single string argument.
-                let fn_node = node.child_by_field_name("function")?;
-                let name = self.node_text(fn_node);
-                if name != "require" && name != "import" {
-                    return None;
+            return Ok(FileOutcome::Skipped(SkipReason::Unreadable));
+        }
+        Prepared::Parsed {
+            sha,
+            loc,
+            lossy,
+            parsed,
+        } => {
+            if lossy {
+                warn(
+                    report,
+                    "not valid UTF-8; indexed with replacement characters".to_string(),
+                );
+            }
+            (sha, loc, parsed)
+        }
+    };
+    if !full {
+        if let Some((existing_id, _)) = db::file_sha(tx, rel_path)? {
+            db::delete_file_cascade(tx, existing_id)?;
+        }
+    }
+    let parsed = match parsed {
+        Ok(parsed) => parsed,
+        Err(error) => {
+            warn(
+                report,
+                format!("failed to parse {}: {error}", file.language),
+            );
+            return Ok(FileOutcome::Skipped(SkipReason::Unreadable));
+        }
+    };
+    let file_id = db::insert_file(
+        tx,
+        rel_path,
+        file.language,
+        &sha,
+        loc,
+        file.size,
+        file.mtime_ns,
+    )?;
+    if parsed.has_errors {
+        db::mark_parse_errors(tx, file_id)?;
+    }
+    let symbol_ids = db::insert_symbols(tx, file_id, &parsed.symbols)?;
+    if !full {
+        db::fts_insert_file(tx, file_id)?;
+    }
+    let mut ids_by_name: HashMap<String, i64> = HashMap::with_capacity(symbol_ids.len());
+    for (symbol, id) in parsed.symbols.iter().zip(&symbol_ids) {
+        ids_by_name
+            .entry(symbol.qualified_name.clone())
+            .or_insert(*id);
+    }
+    report.references_indexed +=
+        db::insert_references(tx, file_id, &parsed.references, &symbol_ids, &ids_by_name)?;
+    db::insert_imports(tx, file_id, &parsed.imports)?;
+    db::insert_bindings(tx, file_id, &parsed.bindings)?;
+    db::insert_hints(tx, file_id, &parsed.hints)?;
+    db::set_file_module(tx, file_id, parsed.module.as_deref())?;
+    db::insert_facts(tx, file_id, &parsed.facts, &parsed.symbols, &symbol_ids)?;
+    report.files_indexed += 1;
+    report.symbols_indexed += symbol_ids.len();
+    Ok(FileOutcome::Indexed(file_id))
+}
+
+/// Unchanged files keep their rows; others are prepared and stored.
+fn index_discovered(
+    tx: &Connection,
+    files: &[SourceFile],
+    full: bool,
+    report: &mut IndexReport,
+) -> Result<Vec<FileOutcome>> {
+    let mut outcomes: Vec<Option<FileOutcome>> = vec![None; files.len()];
+    let mut pending = Vec::new();
+    for (index, file) in files.iter().enumerate() {
+        let mut known_sha = None;
+        if !full {
+            if let Some((id, size, mtime_ns)) = db::file_stat(tx, &file.rel_path)? {
+                if size == file.size && mtime_ns == file.mtime_ns {
+                    report.files_reused += 1;
+                    outcomes[index] = Some(FileOutcome::Reused(id));
+                    continue;
                 }
-                let args = node.child_by_field_name("arguments")?;
-                let string_arg = self.first_child_with_kinds(args, &["string"])?;
-                let kind = if name == "require" {
-                    "require"
-                } else {
-                    "import"
-                };
-                (self.strip_quotes(self.node_text(string_arg)), kind)
-            }
-            (Language::Python, "import_statement") => {
-                let name_node = node.child_by_field_name("name").or_else(|| {
-                    self.first_child_with_kinds(node, &["dotted_name", "aliased_import"])
-                })?;
-                (self.node_text(name_node), "import")
-            }
-            (Language::Python, "import_from_statement") => {
-                let module = node.child_by_field_name("module_name")?;
-                (self.node_text(module), "from")
-            }
-            (Language::Go, "import_spec") => {
-                let path_node = node.child_by_field_name("path").or_else(|| {
-                    self.first_child_with_kinds(node, &["interpreted_string_literal"])
-                })?;
-                (self.strip_quotes(self.node_text(path_node)), "import")
-            }
-            (Language::Rust, "use_declaration") => {
-                // tree-sitter-rust exposes the argument as a "argument" field
-                // holding a path-like node (scoped_identifier, use_list, etc.).
-                let arg = node
-                    .child_by_field_name("argument")
-                    .or_else(|| self.first_named_child(node))?;
-                (self.node_text(arg), "use")
-            }
-            (Language::Java, "import_declaration") => {
-                let target = self.first_child_with_kinds(
-                    node,
-                    &["scoped_identifier", "identifier", "asterisk"],
-                )?;
-                (self.node_text(target), "import")
-            }
-            (Language::C | Language::Cpp, "preproc_include") => {
-                let path = node.child_by_field_name("path").or_else(|| {
-                    self.first_child_with_kinds(node, &["string_literal", "system_lib_string"])
-                })?;
-                let cleaned = self
-                    .node_text(path)
-                    .trim_matches(|c: char| matches!(c, '"' | '<' | '>' | ' '))
-                    .to_string();
-                (cleaned, "include")
-            }
-            (Language::CSharp, "using_directive") => {
-                let name = node
-                    .child_by_field_name("name")
-                    .or_else(|| self.first_named_child(node))?;
-                (self.node_text(name), "using")
-            }
-            (Language::Ruby, "call") => {
-                // require / require_relative / load 'path'
-                let method = node.child_by_field_name("method")?;
-                let mname = self.node_text(method);
-                if mname != "require" && mname != "require_relative" && mname != "load" {
-                    return None;
-                }
-                let args = node.child_by_field_name("arguments")?;
-                let string_arg =
-                    self.first_child_with_kinds(args, &["string", "string_content"])?;
-                (self.strip_quotes(self.node_text(string_arg)), "require")
-            }
-            (Language::Php, "namespace_use_declaration") => {
-                let clause = self
-                    .first_child_with_kinds(node, &["namespace_use_clause"])
-                    .unwrap_or(node);
-                let name = self.first_child_with_kinds(
-                    clause,
-                    &["qualified_name", "namespace_name", "name"],
-                )?;
-                (self.node_text(name), "use")
-            }
-            _ => return None,
-        };
-        if source.is_empty() {
-            return None;
-        }
-        Some(IndexedImport {
-            source,
-            line: node.start_position().row + 1,
-            kind: kind.to_string(),
-        })
-    }
-
-    fn strip_quotes(&self, s: String) -> String {
-        s.trim_matches(|c: char| c == '"' || c == '\'' || c == '`')
-            .to_string()
-    }
-
-    fn first_child_with_kinds(&self, node: Node<'a>, kinds: &[&str]) -> Option<Node<'a>> {
-        let mut cursor = node.walk();
-        let mut found: Option<Node<'a>> = None;
-        for child in node.children(&mut cursor) {
-            if kinds.contains(&child.kind()) {
-                found = Some(child);
-                break;
+                known_sha = db::file_sha(tx, &file.rel_path)?.map(|(_, sha)| sha);
             }
         }
-        found
+        pending.push((index, known_sha));
     }
-
-    fn first_named_child(&self, node: Node<'a>) -> Option<Node<'a>> {
-        let mut cursor = node.walk();
-        let mut found: Option<Node<'a>> = None;
-        for child in node.children(&mut cursor) {
-            if child.is_named() {
-                found = Some(child);
-                break;
-            }
-        }
-        found
-    }
-
-    fn jsx_component_name(&self, name_node: Node<'a>) -> Option<String> {
-        match name_node.kind() {
-            "identifier" => {
-                let text = self.node_text(name_node);
-                let first = text.chars().next()?;
-                if first.is_ascii_uppercase() || first == '_' {
-                    Some(text)
-                } else {
-                    None
-                }
-            }
-            "nested_identifier" | "member_expression" => {
-                // <Foo.Bar /> — record the rightmost segment as the component.
-                let last = name_node
-                    .child_by_field_name("property")
-                    .or_else(|| name_node.child_by_field_name("name"))
-                    .or_else(|| {
-                        name_node.named_child(name_node.named_child_count().saturating_sub(1))
-                    })?;
-                Some(self.node_text(last))
-            }
-            _ => {
-                let text = self.node_text(name_node);
-                let first = text.chars().next()?;
-                if first.is_ascii_uppercase() {
-                    Some(text)
-                } else {
-                    None
-                }
-            }
-        }
-    }
-
-    fn called_name(&self, node: Node<'a>) -> Option<String> {
-        match node.kind() {
-            "identifier" | "property_identifier" | "type_identifier" => Some(self.node_text(node)),
-            "attribute" => node
-                .child_by_field_name("attribute")
-                .map(|child| self.node_text(child))
-                .or_else(|| Some(last_identifier(self.node_text(node)))),
-            "member_expression" | "selector_expression" | "member_access_expression" => node
-                .child_by_field_name("property")
-                .or_else(|| node.child_by_field_name("field"))
-                .or_else(|| node.child_by_field_name("name"))
-                .map(|child| self.node_text(child))
-                .or_else(|| Some(last_identifier(self.node_text(node)))),
-            "qualified_identifier" => node
-                .child_by_field_name("name")
-                .map(|child| self.node_text(child))
-                .or_else(|| Some(last_identifier(self.node_text(node)))),
-            "field_expression" => node
-                .child_by_field_name("field")
-                .map(|child| self.node_text(child))
-                .or_else(|| Some(last_identifier(self.node_text(node)))),
-            "scoped_identifier" => node
-                .child_by_field_name("name")
-                .map(|child| self.node_text(child))
-                .or_else(|| Some(last_identifier(self.node_text(node)))),
-            "subscript" => node
-                .child_by_field_name("value")
-                .and_then(|child| self.called_name(child)),
-            _ => Some(last_identifier(self.node_text(node))).filter(|name| !name.is_empty()),
-        }
-    }
-
-    fn node_text(&self, node: Node<'a>) -> String {
-        node.utf8_text(self.content.as_bytes())
-            .unwrap_or_default()
-            .trim()
-            .to_string()
-    }
-
-    fn signature_until_body(&self, node: Node<'a>) -> String {
-        let text = self.node_text(node);
-        let first_line = text.lines().next().unwrap_or_default().trim();
-        if first_line.len() <= 180 {
-            first_line.to_string()
-        } else {
-            format!("{}...", &first_line[..180])
-        }
-    }
-
-    fn has_export_ancestor(&self, node: Node<'a>) -> bool {
-        let mut parent = node.parent();
-        while let Some(current) = parent {
-            if current.kind() == "export_statement" {
-                return true;
-            }
-            parent = current.parent();
-        }
-        false
-    }
+    prepare_all(files, &pending, |index, prepared| {
+        outcomes[index] = Some(store(tx, &files[index], prepared, full, report)?);
+        Ok(())
+    })?;
+    Ok(outcomes.into_iter().flatten().collect())
 }
 
-fn is_go_exported(name: &str) -> bool {
-    name.chars().next().is_some_and(|c| c.is_ascii_uppercase())
-}
+/// Ignores the index but keeps the shareable project config committable.
+pub const INDEX_DIR_GITIGNORE: &str = "*\n!.gitignore\n!config.toml\n";
 
-fn rust_is_pub(node: Node<'_>) -> bool {
-    let mut cursor = node.walk();
-    for child in node.children(&mut cursor) {
-        if child.kind() == "visibility_modifier" {
-            return true;
-        }
+pub fn ignore_index_dir(db_path: &Path) -> Result<()> {
+    let Some(dir) = db_path.parent() else {
+        return Ok(());
+    };
+    let ignore_file = dir.join(".gitignore");
+    let outdated = fs::read_to_string(&ignore_file).map_or(true, |content| content == "*\n");
+    if dir.file_name().is_some_and(|name| name == ".tessera") && outdated {
+        fs::write(ignore_file, INDEX_DIR_GITIGNORE)?;
     }
-    false
+    Ok(())
 }
 
-fn java_is_public(node: Node<'_>) -> bool {
-    // Java visibility lives in a `modifiers` child. In tree-sitter-java the
-    // `public` modifier shows up as its own typed child node, so we don't need
-    // the source bytes — walking the modifier subtree by kind() is enough.
-    let mut cursor = node.walk();
-    for child in node.children(&mut cursor) {
-        if child.kind() != "modifiers" {
-            continue;
-        }
-        let mut inner = child.walk();
-        for modifier in child.children(&mut inner) {
-            if modifier.kind() == "public" {
-                return true;
-            }
-        }
-    }
-    false
-}
-
-fn last_identifier(text: String) -> String {
-    text.rsplit(|ch: char| !(ch.is_ascii_alphanumeric() || ch == '_' || ch == '$'))
-        .find(|part| !part.is_empty())
-        .unwrap_or_default()
-        .to_string()
-}
+pub use crate::extract::{parse_file, parse_file_at, ParsedFile};

@@ -1,3 +1,5 @@
 /target
-/.tessera
+/.tessera/*
+!/.tessera/config.toml
 /.claude
+/npm/platforms/*/bin/

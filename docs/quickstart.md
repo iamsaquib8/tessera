@@ -1,99 +1,55 @@
 # Quickstart
 
-Install the package:
+Tessera gives your coding agent a deterministic map of your code: where
+things are defined, who calls them, what a change affects, and whether the
+code it just wrote calls things that exist.
+
+## Install
+
+Pick one. All of them install the same single binary.
 
 ```sh
-npm install -g tessera-codegraph
-# or: brew install iamsaquib8/tessera/tessera
-# or: curl -fsSL https://raw.githubusercontent.com/iamsaquib8/tessera/main/install.sh | sh
-# or: docker run --rm -v "$PWD:/work" ghcr.io/iamsaquib8/tessera index /work
-# or:
-cargo install tessera-codegraph
+npx tessera-codegraph status             # no install; Node 18+
+npm i -g tessera-codegraph               # then use `tessera`
+brew install iamsaquib8/tessera/tessera  # macOS / Linux
+curl -fsSL https://raw.githubusercontent.com/iamsaquib8/tessera/main/install.sh | sh
+cargo binstall tessera-codegraph         # prebuilt, via cargo-binstall
+cargo install tessera-codegraph          # from source (Rust 1.90+)
+docker run --rm -v "$PWD:/work" ghcr.io/iamsaquib8/tessera find <symbol>
 ```
 
-Index a repository:
+The install script verifies the release checksum before installing and puts
+the binary in `~/.local/bin` (no sudo).
+
+## First commands
+
+Run these from anywhere inside a repository. There is no setup step: the
+first query builds the index under `.tessera/`, and every later query
+refreshes only what changed.
 
 ```sh
-cd path/to/project
-tessera init --mcp-configs
-tessera index .
-tessera doctor
+tessera find UserRepo.findById --body     # definition, signature, body
+tessera refs loadUser                     # every call site
+tessera blast formatName                  # who is affected, ranked, plus tests
+tessera verify --snippet - --language typescript < new_code.ts
+tessera context findById                  # one bundle to read before editing
+tessera status                            # index health and setup hints
 ```
 
-Re-running `tessera index .` reuses unchanged files via sha-diff. Use `--full` to rebuild from scratch.
-Run `tessera watch .` while editing to keep the index fresh automatically.
+Add `--json` to any command for machine-readable output.
 
-Ask graph questions:
+## Connect your agent
+
+Claude Code:
 
 ```sh
-tessera find-definition findById
-tessera find-references findById
-tessera get-outline src
-tessera expand-symbol findById
-tessera impact findById
-tessera watch . --poll-ms 500
-tessera validate findByIdd
-tessera tests-for findById
-tessera stats
-tessera doctor --json
-tessera completions bash
-tessera mcp-http --addr 127.0.0.1:8765
-tessera search '*Repository*' --kind class --language java
-tessera search parseFrom --language java
-tessera search 'init*' --kind method --exported
-tessera unused --kind function --exported=false
-tessera context-pack findById --budget 1500
-tessera plan-query "edit findById safely" --symbol findById
-tessera edit-prep findById --budget 1800
-tessera diff-impact origin/main
-tessera export --from findById --group-by directory --html-out graph.html
-tessera imports src/users.ts
-tessera imported-by ./users
-tessera signature UserService
-tessera siblings findById
+claude mcp add tessera -- tessera mcp
+# no global install:
+claude mcp add tessera -- npx -y tessera-codegraph mcp
 ```
 
-Validate a snippet (stdin):
+Every other agent, including Cursor, Codex, Gemini CLI, Antigravity, Copilot,
+OpenCode, and Kiro, is covered in [integrations](integrations.md).
 
-```sh
-echo 'findByIdd(1)' | tessera validate-snippet --language typescript
-```
-
-Use JSON output for scripts or agents:
-
-```sh
-tessera impact findById --json
-```
-
-The v0.5 JSON response schema snapshot lives in
-[`docs/json-schemas/tessera-cli-v0.5.schema.json`](json-schemas/tessera-cli-v0.5.schema.json).
-
-For include/exclude rules in larger repos, see [`docs/configuration.md`](configuration.md).
-
-Use a custom database path:
-
-```sh
-tessera index . --db /tmp/project.tessera.db
-tessera get-outline src --db /tmp/project.tessera.db
-```
-
-Generate the perf chart used in the README:
-
-```sh
-tessera bench --path examples/sample
-tessera bench --out docs/benchmarks.md       # write the chart to disk
-```
-
-Rebuild the memory-mapped snapshot manually:
-
-```sh
-tessera snapshot
-```
-
-Try the bundled sample:
-
-```sh
-tessera index examples/sample --db /tmp/tessera-sample.db
-tessera find-definition findById --db /tmp/tessera-sample.db
-tessera impact findById --db /tmp/tessera-sample.db
-```
+Next: [the first five minutes](first-five-minutes.md) walks through a real
+edit.

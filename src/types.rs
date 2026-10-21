@@ -2,6 +2,8 @@ use std::fmt::{self, Display};
 
 use serde::{Deserialize, Serialize};
 
+use crate::output::MatchKind;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Language {
@@ -21,6 +23,11 @@ pub enum Language {
     CSharp,
     Ruby,
     Php,
+    /// Data files read for contract facts only, with no symbols.
+    Proto,
+    Sql,
+    OpenApi,
+    Prisma,
 }
 
 impl Language {
@@ -40,8 +47,29 @@ impl Language {
             "cs" => Some(Self::CSharp),
             "rb" => Some(Self::Ruby),
             "php" | "phtml" => Some(Self::Php),
+            "proto" => Some(Self::Proto),
+            "sql" => Some(Self::Sql),
+            "prisma" => Some(Self::Prisma),
             _ => None,
         }
+    }
+
+    /// The language of a file by name: OpenAPI documents are YAML or JSON
+    /// named after the spec (`openapi.yaml`, `petstore-swagger.json`).
+    pub fn from_path(path: &std::path::Path) -> Option<Self> {
+        let ext = path.extension()?.to_str()?;
+        let stem = path.file_stem()?.to_string_lossy().to_lowercase();
+        if matches!(ext, "yaml" | "yml" | "json")
+            && (stem.contains("openapi") || stem.contains("swagger"))
+        {
+            return Some(Self::OpenApi);
+        }
+        Self::from_extension(ext)
+    }
+
+    /// Read for contract facts only; no grammar, no symbols.
+    pub fn is_data(&self) -> bool {
+        matches!(self, Self::Proto | Self::Sql | Self::OpenApi | Self::Prisma)
     }
 
     pub fn from_name(name: &str) -> Option<Self> {
@@ -77,6 +105,10 @@ impl Language {
             Self::CSharp => "csharp",
             Self::Ruby => "ruby",
             Self::Php => "php",
+            Self::Proto => "proto",
+            Self::Sql => "sql",
+            Self::OpenApi => "openapi",
+            Self::Prisma => "prisma",
         }
     }
 }
@@ -84,22 +116,6 @@ impl Language {
 impl Display for Language {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(self.family())
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum GraphEngineKind {
-    Sqlite,
-    Cozo,
-}
-
-impl Display for GraphEngineKind {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Sqlite => f.write_str("sqlite"),
-            Self::Cozo => f.write_str("cozo"),
-        }
     }
 }
 
@@ -140,6 +156,9 @@ pub struct IndexedSymbol {
     pub end_line: usize,
     pub signature: String,
     pub exported: bool,
+    pub container: Option<String>,
+    pub arity: Option<(u16, Option<u16>)>,
+    pub default_export: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -153,14 +172,126 @@ pub struct IndexedImport {
 pub struct IndexedReference {
     pub symbol_name: String,
     pub from_qualified_name: Option<String>,
+    /// Index of the enclosing symbol in the file's symbol list; tells
+    /// overloads that share a qualified name apart.
+    #[serde(default)]
+    pub from_symbol: Option<usize>,
     pub line: usize,
     pub column: usize,
     pub context: String,
     pub kind: String,
+    pub receiver: Receiver,
+    pub receiver_name: Option<String>,
+    pub arg_count: Option<u16>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Receiver {
+    #[default]
+    None,
+    This,
+    Super,
+    Name,
+    Other,
+}
+
+impl Receiver {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::This => "this",
+            Self::Super => "super",
+            Self::Name => "name",
+            Self::Other => "other",
+        }
+    }
+
+    pub fn parse(value: &str) -> Self {
+        match value {
+            "this" => Self::This,
+            "super" => Self::Super,
+            "name" => Self::Name,
+            "other" => Self::Other,
+            _ => Self::None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BindingKind {
+    Named,
+    Default,
+    Namespace,
+    Require,
+    RequireMember,
+    ReExport,
+    ReExportAll,
+    JavaSingle,
+    JavaWildcard,
+    JavaStatic,
+}
+
+impl BindingKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Named => "named",
+            Self::Default => "default",
+            Self::Namespace => "namespace",
+            Self::Require => "require",
+            Self::RequireMember => "require_member",
+            Self::ReExport => "re_export",
+            Self::ReExportAll => "re_export_all",
+            Self::JavaSingle => "java_single",
+            Self::JavaWildcard => "java_wildcard",
+            Self::JavaStatic => "java_static",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct IndexedBinding {
+    pub local: String,
+    pub imported: Option<String>,
+    pub source: String,
+    pub kind: BindingKind,
+    pub line: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HintOrigin {
+    Declared,
+    New,
+    Param,
+    Field,
+    Return,
+}
+
+impl HintOrigin {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Declared => "declared",
+            Self::New => "new",
+            Self::Param => "param",
+            Self::Field => "field",
+            Self::Return => "return",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct IndexedTypeHint {
+    pub scope: Option<String>,
+    pub name: String,
+    pub type_name: String,
+    pub origin: HintOrigin,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DefinitionResult {
+    pub match_kind: MatchKind,
     pub matches: Vec<SymbolRecord>,
     pub meta: QueryMeta,
 }
@@ -174,6 +305,9 @@ impl Display for DefinitionResult {
                 "  hint: run `tessera search <name>` for fuzzy lookup, `tessera validate <name>` for near-misses, or re-index with `tessera index . --full` if the DB is stale."
             );
         }
+        if let MatchKind::Fuzzy { .. } = self.match_kind {
+            writeln!(f, "No exact definition; closest matches:")?;
+        }
         for symbol in &self.matches {
             writeln!(
                 f,
@@ -184,7 +318,7 @@ impl Display for DefinitionResult {
                 writeln!(f, "  {}", symbol.signature)?;
             }
         }
-        write_meta(f, &self.meta)
+        Ok(())
     }
 }
 
@@ -210,7 +344,7 @@ impl Display for ReferencesResult {
                 reference.path, reference.line, reference.column, reference.context
             )?;
         }
-        write_meta(f, &self.meta)
+        Ok(())
     }
 }
 
@@ -239,7 +373,7 @@ impl Display for OutlineResult {
                 )?;
             }
         }
-        write_meta(f, &self.meta)
+        Ok(())
     }
 }
 
@@ -274,7 +408,7 @@ impl Display for ExpandResult {
                 writeln!(f, "  {} at line {}", dep.symbol_name, dep.line)?;
             }
         }
-        write_meta(f, &self.meta)
+        Ok(())
     }
 }
 
@@ -282,6 +416,7 @@ impl Display for ExpandResult {
 pub struct ImpactResult {
     pub symbol: String,
     pub callers: Vec<ImpactCaller>,
+    pub capped: bool,
     pub meta: QueryMeta,
 }
 
@@ -309,7 +444,7 @@ impl Display for ImpactResult {
                 )?;
             }
         }
-        write_meta(f, &self.meta)
+        Ok(())
     }
 }
 
@@ -333,15 +468,7 @@ pub struct CriticalityBreakdown {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct QueryMeta {
-    pub tokens_returned_estimate: usize,
-    pub alternative_queries: Vec<AlternativeQuery>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AlternativeQuery {
-    pub tool: String,
-    pub tokens_estimate: usize,
-    pub fidelity: f32,
+    pub tokens: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -357,7 +484,6 @@ pub struct SymbolSuggestion {
 pub struct ValidateResult {
     pub query: String,
     pub exists: bool,
-    pub bloom_hit: bool,
     pub candidates: Vec<SymbolSuggestion>,
     pub meta: QueryMeta,
 }
@@ -367,7 +493,7 @@ impl Display for ValidateResult {
         if self.exists {
             writeln!(f, "✓ {} exists in the graph.", self.query)?;
         } else {
-            writeln!(f, "✗ {} not found (bloom={}).", self.query, self.bloom_hit)?;
+            writeln!(f, "✗ {} not found.", self.query)?;
         }
         if !self.candidates.is_empty() {
             writeln!(f, "Nearest candidates:")?;
@@ -385,7 +511,7 @@ impl Display for ValidateResult {
                 self.query
             )?;
         }
-        write_meta(f, &self.meta)
+        Ok(())
     }
 }
 
@@ -431,7 +557,7 @@ impl Display for ValidateSnippetResult {
                 }
             }
         }
-        write_meta(f, &self.meta)
+        Ok(())
     }
 }
 
@@ -496,16 +622,8 @@ impl Display for ContextPack {
                 )?;
             }
         }
-        write_meta(f, &self.meta)
+        Ok(())
     }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PlanQueryResult {
-    pub query: String,
-    pub inferred_intent: String,
-    pub steps: Vec<PlanStep>,
-    pub meta: QueryMeta,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -515,21 +633,6 @@ pub struct PlanStep {
     pub command: String,
     pub reason: String,
     pub expected_tokens: usize,
-}
-
-impl Display for PlanQueryResult {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        writeln!(f, "Plan for {:?} ({})", self.query, self.inferred_intent)?;
-        for step in &self.steps {
-            writeln!(
-                f,
-                "  {}. {}  ~{} tokens",
-                step.order, step.command, step.expected_tokens
-            )?;
-            writeln!(f, "     {}", step.reason)?;
-        }
-        write_meta(f, &self.meta)
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -579,7 +682,7 @@ impl Display for EditPrepResult {
                 writeln!(f, "  {}. {}", step.order, step.command)?;
             }
         }
-        write_meta(f, &self.meta)
+        Ok(())
     }
 }
 
@@ -646,7 +749,7 @@ impl Display for DiffImpactResult {
                 )?;
             }
         }
-        write_meta(f, &self.meta)
+        Ok(())
     }
 }
 
@@ -675,7 +778,7 @@ impl Display for ImportsResult {
                 writeln!(f, "  {} ({}) @ line {}", imp.source, imp.kind, imp.line)?;
             }
         }
-        write_meta(f, &self.meta)
+        Ok(())
     }
 }
 
@@ -701,7 +804,7 @@ impl Display for ImportedByResult {
                 writeln!(f, "  {} @ line {}", imp.from_path, imp.line)?;
             }
         }
-        write_meta(f, &self.meta)
+        Ok(())
     }
 }
 
@@ -731,7 +834,7 @@ impl Display for SignatureResult {
                 writeln!(f, "    {:<9} {}", m.kind, m.signature)?;
             }
         }
-        write_meta(f, &self.meta)
+        Ok(())
     }
 }
 
@@ -768,7 +871,7 @@ impl Display for SiblingsResult {
                 )?;
             }
         }
-        write_meta(f, &self.meta)
+        Ok(())
     }
 }
 
@@ -834,7 +937,7 @@ impl Display for UnusedResult {
                 )?;
             }
         }
-        write_meta(f, &self.meta)
+        Ok(())
     }
 }
 
@@ -874,7 +977,7 @@ impl Display for SearchResult {
                 )?;
             }
         }
-        write_meta(f, &self.meta)
+        Ok(())
     }
 }
 
@@ -888,17 +991,12 @@ pub struct StatsResult {
     pub kinds: Vec<KindCount>,
     pub top_fanout: Vec<TopFanout>,
     pub db_path: String,
-    pub snapshot_present: bool,
     pub meta: QueryMeta,
 }
 
 impl Display for StatsResult {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        writeln!(
-            f,
-            "Tessera index at {} (snapshot={})",
-            self.db_path, self.snapshot_present
-        )?;
+        writeln!(f, "Tessera index at {}", self.db_path)?;
         writeln!(
             f,
             "  files={}  symbols={}  references={}  edges={}",
@@ -928,7 +1026,7 @@ impl Display for StatsResult {
                 writeln!(f, "    {:>4} {}", tf.callers, tf.qualified_name)?;
             }
         }
-        write_meta(f, &self.meta)
+        Ok(())
     }
 }
 
@@ -971,42 +1069,8 @@ impl Display for TestsForResult {
                 )?;
             }
         }
-        write_meta(f, &self.meta)
+        Ok(())
     }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct BenchResult {
-    pub path: String,
-    pub files: usize,
-    pub symbols: usize,
-    pub references: usize,
-    pub index_full_ms: u128,
-    pub index_incremental_ms: u128,
-    pub queries: Vec<BenchQuery>,
-    pub savings: Vec<BenchSavings>,
-    pub chart: String,
-}
-
-impl Display for BenchResult {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        writeln!(f, "{}", self.chart)
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct BenchQuery {
-    pub name: String,
-    pub ms: u128,
-    pub tokens: usize,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct BenchSavings {
-    pub label: String,
-    pub raw_tokens: usize,
-    pub tessera_tokens: usize,
-    pub ratio: f32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1035,7 +1099,7 @@ impl Display for ConnectResult {
                 "No call path from {} to {} (within search depth).",
                 self.from, self.to
             )?;
-            return write_meta(f, &self.meta);
+            return Ok(());
         }
         writeln!(
             f,
@@ -1052,7 +1116,7 @@ impl Display for ConnectResult {
                 arrow, node.qualified_name, node.path, node.line
             )?;
         }
-        write_meta(f, &self.meta)
+        Ok(())
     }
 }
 
@@ -1077,20 +1141,4 @@ impl Display for ExportResult {
         // `dot`/mermaid. Counts + truncation go to the meta line as a comment.
         write!(f, "{}", self.diagram)
     }
-}
-
-fn write_meta(f: &mut fmt::Formatter<'_>, meta: &QueryMeta) -> fmt::Result {
-    writeln!(
-        f,
-        "\n_meta: ~{} tokens returned; alternatives: {}",
-        meta.tokens_returned_estimate,
-        meta.alternative_queries
-            .iter()
-            .map(|query| format!(
-                "{} (~{} tokens, {:.2} fidelity)",
-                query.tool, query.tokens_estimate, query.fidelity
-            ))
-            .collect::<Vec<_>>()
-            .join(", ")
-    )
 }

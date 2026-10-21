@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "tessera": {
+      "command": "${CLAUDE_PLUGIN_ROOT}/scripts/tessera-run",
+      "args": [
+        "mcp"
+      ]
+    }
+  }
+}

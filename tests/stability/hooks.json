@@ -1,0 +1,132 @@
+{
+  "antigravity post-edit": [
+    "block -",
+    "context -",
+    "silent {}"
+  ],
+  "antigravity session-start": [
+    "block -",
+    "context -",
+    "silent {}"
+  ],
+  "antigravity stop": [
+    "block {\"decision\":\"continue\",\"reason\":\"T\"}",
+    "context {\"decision\":\"continue\",\"reason\":\"T\"}",
+    "silent {\"decision\":\"stop\"}"
+  ],
+  "augment post-edit": [
+    "block {\"hookSpecificOutput\":{\"hookEventName\":\"PostToolUse\",\"additionalContext\":\"T\"}}",
+    "context {\"hookSpecificOutput\":{\"hookEventName\":\"PostToolUse\",\"additionalContext\":\"T\"}}",
+    "silent -"
+  ],
+  "augment session-start": [
+    "block -",
+    "context -",
+    "silent -"
+  ],
+  "augment stop": [
+    "block {\"hookSpecificOutput\":{\"hookEventName\":\"Stop\",\"decision\":\"block\",\"reason\":\"T\"}}",
+    "context {\"hookSpecificOutput\":{\"hookEventName\":\"Stop\",\"decision\":\"block\",\"reason\":\"T\"}}",
+    "silent -"
+  ],
+  "claude post-edit": [
+    "block {\"decision\":\"block\",\"reason\":\"T\"}",
+    "context {\"hookSpecificOutput\":{\"hookEventName\":\"PostToolUse\",\"additionalContext\":\"T\"}}",
+    "silent -"
+  ],
+  "claude pre-edit": [
+    "block {\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"additionalContext\":\"T\"}}",
+    "context {\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"additionalContext\":\"T\"}}",
+    "silent -"
+  ],
+  "claude session-start": [
+    "block -",
+    "context -",
+    "silent -"
+  ],
+  "claude stop": [
+    "block {\"decision\":\"block\",\"reason\":\"T\"}",
+    "context -",
+    "silent -"
+  ],
+  "codex post-edit": [
+    "block {\"decision\":\"block\",\"reason\":\"T\"}",
+    "context {\"hookSpecificOutput\":{\"hookEventName\":\"PostToolUse\",\"additionalContext\":\"T\"}}",
+    "silent -"
+  ],
+  "codex pre-edit": [
+    "block {\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"additionalContext\":\"T\"}}",
+    "context {\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"additionalContext\":\"T\"}}",
+    "silent -"
+  ],
+  "codex session-start": [
+    "block -",
+    "context -",
+    "silent -"
+  ],
+  "codex stop": [
+    "block {\"decision\":\"block\",\"reason\":\"T\"}",
+    "context -",
+    "silent {}"
+  ],
+  "copilot post-edit": [
+    "block {\"additionalContext\":\"T\"}",
+    "context {\"additionalContext\":\"T\"}",
+    "silent -"
+  ],
+  "copilot session-start": [
+    "block -",
+    "context -",
+    "silent -"
+  ],
+  "copilot stop": [
+    "block {\"decision\":\"block\",\"reason\":\"T\"}",
+    "context {\"decision\":\"block\",\"reason\":\"T\"}",
+    "silent -"
+  ],
+  "cursor post-edit": [
+    "block {\"additional_context\":\"T\"}",
+    "context {\"additional_context\":\"T\"}",
+    "silent -"
+  ],
+  "cursor session-start": [
+    "block -",
+    "context -",
+    "silent -"
+  ],
+  "cursor stop": [
+    "block {\"followup_message\":\"T\"}",
+    "context {\"followup_message\":\"T\"}",
+    "silent -"
+  ],
+  "gemini post-edit": [
+    "block {\"hookSpecificOutput\":{\"additionalContext\":\"T\"}}",
+    "context {\"hookSpecificOutput\":{\"additionalContext\":\"T\"}}",
+    "silent -"
+  ],
+  "gemini session-start": [
+    "block -",
+    "context -",
+    "silent -"
+  ],
+  "gemini stop": [
+    "block {\"decision\":\"deny\",\"reason\":\"T\"}",
+    "context {\"decision\":\"deny\",\"reason\":\"T\"}",
+    "silent -"
+  ],
+  "qwen post-edit": [
+    "block {\"decision\":\"block\",\"reason\":\"T\"}",
+    "context {\"hookSpecificOutput\":{\"hookEventName\":\"PostToolUse\",\"additionalContext\":\"T\"}}",
+    "silent -"
+  ],
+  "qwen session-start": [
+    "block -",
+    "context -",
+    "silent -"
+  ],
+  "qwen stop": [
+    "block {\"decision\":\"block\",\"reason\":\"T\"}",
+    "context -",
+    "silent -"
+  ]
+}

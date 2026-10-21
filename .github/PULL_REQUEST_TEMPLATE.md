@@ -1,13 +1,13 @@
-## Summary
+## What and why
 
-<!-- What does this PR change and why? -->
+<!-- One or two sentences: what changes for users, and why. -->
 
-## Test plan
+## How it is tested
 
-- [ ] `cargo fmt --check`
-- [ ] `cargo clippy --all-targets --all-features -- -D warnings`
-- [ ] `cargo test --all-targets --all-features`
+<!-- Which test fails without this change? For extraction changes, explain the golden snapshot diff. -->
 
-## Notes
+## Checklist
 
-<!-- Breaking changes, follow-ups, or docs updates -->
+- [ ] `cargo fmt --check` and `cargo clippy --all-targets -- -D warnings` pass
+- [ ] `cargo test --all-targets` passes
+- [ ] User-facing change noted in `CHANGELOG.md` and the matching `docs/` page

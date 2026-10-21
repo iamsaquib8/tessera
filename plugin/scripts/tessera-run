@@ -1,0 +1,22 @@
+#!/bin/sh
+# Starts the tessera this plugin was released with: one on PATH at the same
+# version, otherwise the npm package at that version through npx.
+version=1.0.0
+if command -v tessera >/dev/null 2>&1 && [ "$(tessera --version 2>/dev/null)" = "tessera $version" ]; then
+  set -- tessera "$@"
+elif command -v npx >/dev/null 2>&1; then
+  set -- npx --yes "tessera-codegraph@$version" "$@"
+elif command -v tessera >/dev/null 2>&1; then
+  set -- tessera "$@"
+else
+  echo "tessera $version is not installed; see https://github.com/iamsaquib8/tessera#install" >&2
+  exit 0
+fi
+# A hook never stops the agent because of a problem in Tessera itself.
+case " $* " in
+  *" hook "*)
+    "$@"
+    exit 0
+    ;;
+esac
+exec "$@"

@@ -1,0 +1,35 @@
+---
+source: tests/golden.rs
+expression: graph_dump(& db)
+---
+{
+  "symbols": [
+    "src/i18n.c:1-3 function greet [exported] | const char *greet(void) { //x éééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééé",
+    "src/main.c:3-3 function lookup [exported] | int lookup(int id) { return id * 2; }",
+    "src/main.c:5-5 function main [exported] | int main(void) { return store_load(lookup(1)); }",
+    "src/store.c:3-5 struct item [exported] | struct item {",
+    "src/store.c:7-7 function lookup | static int lookup(int id) { return id; }",
+    "src/store.c:9-9 function store_load [exported] | int store_load(int id) { return lookup(id); }",
+    "tests/test_store.c:3-3 function test_store_load [exported] | int test_store_load(void) { return store_load(1) == 1; }"
+  ],
+  "refs": [
+    "src/main.c:5:25 call store_load/1 <- main",
+    "src/main.c:5:36 call lookup/1 <- main",
+    "src/store.c:9:33 call lookup/1 <- store_load",
+    "tests/test_store.c:3:36 call store_load/1 <- test_store_load"
+  ],
+  "bindings": [],
+  "hints": [],
+  "modules": [],
+  "imports": [
+    "src/main.c:1 include store.h",
+    "src/store.c:1 include store.h",
+    "tests/test_store.c:1 include ../src/store.h"
+  ],
+  "edges": [
+    "src/main.c main -call-> src/main.c:lookup [high/local]",
+    "src/main.c main -call-> src/store.c:store_load [medium/name]",
+    "src/store.c store_load -call-> src/store.c:lookup [high/local]",
+    "tests/test_store.c test_store_load -call-> src/store.c:store_load [medium/name]"
+  ]
+}

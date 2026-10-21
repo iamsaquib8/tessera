@@ -1,243 +1,80 @@
-# MCP Server
-
-Tessera exposes its code graph through a stdio MCP server.
+# MCP server
 
 ```sh
-tessera mcp --db .tessera/tessera.db
+tessera mcp                          # stdio
+tessera mcp --http 127.0.0.1:8765    # Streamable HTTP on POST /mcp, health on GET /health
 ```
 
-Index first:
+Both transports start answering at once. The first index builds in the
+background; until it exists, tool calls return `isError: true` with "Index is
+building … retry in a few seconds". After that, a file watcher re-indexes
+changed files within about 200 ms.
 
-```sh
-tessera index .
-```
+## Protocol
 
-For clients or CI wrappers that cannot spawn a stdio server, Tessera also
-exposes the same JSON-RPC MCP surface over local HTTP:
+Tessera is a dual-era server:
 
-```sh
-tessera mcp-http --addr 127.0.0.1:8765 --db .tessera/tessera.db
-```
+- **Modern clients (2026-07-28).** Requests carry
+  `_meta["io.modelcontextprotocol/protocolVersion"]` and are served
+  statelessly. `server/discover` lists the supported versions. An
+  unsupported version gets error `-32022` with the `supported` list.
+- **Legacy clients (2025-11-25, 2025-06-18, 2025-03-26, 2024-11-05).** They
+  use the `initialize` handshake. Tessera echoes the requested version when it
+  supports it, and otherwise answers 2025-11-25.
 
-- `POST /mcp` handles JSON-RPC MCP requests.
-- `GET /sse` emits a readiness event with the MCP endpoint and Tessera version.
-- `GET /health` returns service, version, DB, root, schema, snapshot, and
-  endpoint metadata.
+Errors follow JSON-RPC:
+
+| Code | Meaning |
+| --- | --- |
+| `-32700` | parse error |
+| `-32600` | invalid request; batches are not supported |
+| `-32601` | unknown method |
+| `-32602` | unknown tool or invalid arguments |
+
+A tool that runs but fails returns a normal result with `isError: true`, so
+the model can read the message and recover. Notifications never get a reply.
+
+HTTP specifics:
+
+- `Origin` must be absent or `localhost` / `127.0.0.1` / `[::1]`; any other
+  origin gets 403.
+- Notifications get 202.
+- `GET` and `DELETE` on `/mcp` get 405.
+- Modern requests must send `MCP-Protocol-Version`, `Mcp-Method`, and, for
+  `tools/call`, `Mcp-Name`, all matching the body. A missing or mismatched
+  header gets 400 with code `-32020`.
 
 ## Tools
 
-### `find_definition`
+Every tool is read-only (`readOnlyHint: true`) and rejects unknown arguments.
+Responses are compact text by default; pass `"format": "json"` for
+machine-readable output. List tools are paginated: `limit` (default 25) and
+`cursor`. When there is more, the text ends with `cursor o:N`.
 
-```json
-{ "symbol": "findById" }
+| Tool | Use it for | Arguments |
+| --- | --- | --- |
+| `find` | Where a symbol is defined: kind, file:line, signature, optional body. With `path`, outline a file or directory plus its imports. | `symbol` or `path`, `include_body` |
+| `search` | Fuzzy or glob name search with filters. `unused: true` lists functions nothing calls. | `pattern`, `kinds`, `languages`, `path`, `exported`, `unused` |
+| `refs` | Every reference to a symbol with its confidence, or the files importing a file. | `target`, `tests_only`, `min_confidence` |
+| `blast` | Callers ranked by impact, plus test files to run, for a symbol or a git diff. | `symbol` or `diff_from` (+`diff_to`), `depth` |
+| `verify` | Does a symbol exist; does every call in a snippet resolve; did a change break a call site, an import, or a contract? | `symbol`, `snippet` + `language`, or `changed` / `staged` / `diff_from` |
+| `context` | Body, callees, callers, tests, and siblings in one budgeted bundle. | `symbol`, `budget_tokens` |
+| `path` | Shortest call chain from one symbol to another, across services through routes and gRPC calls. | `from`, `to`, `depth` |
+| `map` | Contracts between services: routes, gRPC methods, topics, tables, with both sides; or what a service serves and calls. | `kind` (`route`, `rpc`, `topic`, `table`, `service`), `query` |
+| `status` | Index root, freshness, counts, and setup hints. | none |
+
+Symbols can be written `name`, `Class.method`, or `A::B`. References and
+callers are resolved through scope, imports, and declared types, and each
+carries a confidence: unmarked lines are exact, "likely" lines matched a
+unique name, "possible" lines are ambiguous or name-level. See
+[accuracy](accuracy.md).
+
+## Checking conformance yourself
+
+The repository's `tests/mcp_conformance.rs` drives the binary through full
+stdio and HTTP sessions. To poke the server interactively:
+
+```sh
+npx @modelcontextprotocol/inspector tessera mcp
+npx @modelcontextprotocol/inspector --cli tessera mcp --method tools/list
 ```
-
-Returns matching definitions with file, line range, kind, signature, and export status. Falls back to fuzzy matches when there is no exact hit.
-
-### `find_references`
-
-```json
-{ "symbol": "findById" }
-```
-
-Returns call/reference sites with one-line context.
-
-### `get_outline`
-
-```json
-{ "path": "src" }
-```
-
-Returns a semantic skeleton for a file or directory without symbol bodies.
-
-### `expand_symbol`
-
-```json
-{ "symbol": "findById" }
-```
-
-Returns a symbol body and immediate dependencies.
-
-### `impact`
-
-```json
-{ "symbol": "findById", "depth": 4 }
-```
-
-Returns transitive callers ranked by personalised PageRank. Each caller includes a `breakdown` (`pagerank`, `fanout_in`, `fanout_out`, `exported`, `test_coverage`, `depth_decay`) so the score is auditable.
-
-### `validate`
-
-```json
-{ "symbol": "findByIdd" }
-```
-
-Returns `{ exists, bloom_hit, candidates }`. Used to catch hallucinated identifiers — the Bloom-filter check short-circuits negatives, and unresolved queries get up to five near-miss suggestions ranked by Jaro-Winkler confidence.
-
-### `validate_snippet`
-
-```json
-{
-  "code": "findById(id); findByIdd(id);",
-  "language": "typescript"
-}
-```
-
-Parses the snippet with the same Tree-sitter pipeline used by `index` and validates every call against the graph. Returns per-call resolution plus near-miss suggestions for unresolved calls.
-
-### `search`
-
-```json
-{
-  "pattern": "*Repository*",
-  "kinds": ["class", "interface"],
-  "languages": ["java"],
-  "exported": true,
-  "path_prefix": "consumer/",
-  "limit": 50
-}
-```
-
-Fuzzy / `*`-glob search across indexed symbols, filterable by kind, language, exported, and path prefix. Use this instead of running `grep -r` + reading files when looking up a symbol whose exact name you don't remember.
-
-### `context_pack`
-
-```json
-{ "symbol": "findById", "budget": 1500 }
-```
-
-Returns `{ symbol, body, dependency_signatures, caller_signatures, tests }` token-budgeted. Replaces 3-5 round trips an agent makes to "understand" a symbol before editing it. Body is clipped to ~40 % of the budget; dependency and caller signatures (no bodies) fill the rest; tests trim to fit.
-
-### `plan_query`
-
-```json
-{ "task": "edit findById safely", "symbol": "findById" }
-```
-
-Returns an ordered tool plan with commands, reasons, inferred intent, and token
-estimates. Use it as the first MCP call when an agent knows the task shape but
-not the cheapest Tessera workflow.
-
-### `edit_prep`
-
-```json
-{ "symbol": "findById", "budget": 1800 }
-```
-
-Returns a pre-edit bundle: `validate`, `signature`, `siblings`,
-`context_pack`, `tests_for`, and next recommended checks. This is the v0.7
-agent workflow shortcut for preparing a symbol edit without five separate tool
-calls.
-
-### `connect`
-
-```json
-{ "from": "handler", "to": "loadUser", "depth": 8 }
-```
-
-Returns the shortest call path from one symbol to another, or a not-found result
-when no path exists inside the depth budget.
-
-### `export`
-
-```json
-{
-  "format": "mermaid",
-  "from": "handler",
-  "depth": 3,
-  "limit": 800,
-  "group_by": "language",
-  "collapse_tests": true,
-  "exported_only": false
-}
-```
-
-Returns a rendered call graph as Mermaid or DOT. v0.8 export controls can group
-nodes by `file`, `directory`, or `language`; hide test/spec nodes; and restrict
-the graph to exported endpoints. The CLI also supports `--html-out graph.html`
-to write a copy-button Mermaid preview page.
-
-### `diff_impact`
-
-```json
-{ "from": "origin/main", "to": "HEAD", "depth": 3 }
-```
-
-Shells out to `git diff -U0`, maps changed hunks to indexed symbols, and runs PageRank impact on each. Single tool call answers "what does this PR break?" — returns the changed symbols plus the top impacted callers, deduplicated and ranked by criticality.
-
-### `imports`
-
-```json
-{ "path": "src/users.ts" }
-```
-
-List imports / uses / requires declared in a file. Path can be a directory prefix.
-
-### `imported_by`
-
-```json
-{ "source": "./users" }
-```
-
-Inverse of `imports`: list files that import a given module / source path. Substring-match, so `./users` finds importers of `./users.ts`, `./users/index.ts`, etc.
-
-### `signature`
-
-```json
-{ "symbol": "UserService" }
-```
-
-Returns just the signature plus, for container kinds (class / struct / interface / trait / enum / record / impl / module), the signatures of nested members. No bodies — vastly cheaper than `expand_symbol` when the agent only needs the shape.
-
-### `siblings`
-
-```json
-{ "symbol": "findById" }
-```
-
-Symbols that share callers with the target, ranked by overlap count. Useful for finding the cluster of related abstractions to refactor together.
-
-### `stats`
-
-```json
-{}
-```
-
-Summary statistics: counts, languages, kinds, top fan-out symbols, snapshot presence.
-
-### `tests_for`
-
-```json
-{ "symbol": "findById" }
-```
-
-Returns tests whose call graph transitively touches the symbol — heuristically by inspecting caller file paths for test/spec markers.
-
-### `unused`
-
-```json
-{
-  "kinds": ["function"],
-  "languages": ["typescript"],
-  "exported": false,
-  "path_prefix": "src/",
-  "limit": 50
-}
-```
-
-Returns indexed symbols with zero inbound references and zero inbound call edges. Test files are excluded from the report.
-
-## Example MCP Configuration
-
-```json
-{
-  "mcpServers": {
-    "tessera": {
-      "command": "tessera",
-      "args": ["mcp", "--db", ".tessera/tessera.db"]
-    }
-  }
-}
-```
-
-The project must be indexed before the MCP server can return useful results.

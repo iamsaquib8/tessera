@@ -1,74 +1,85 @@
 # X / Twitter thread
 
-Attach `assets/demo.svg` (export a PNG/GIF) or `assets/social-preview.png` to tweet 1. Keep tweet 1 strong enough to stand alone.
+Eight posts. Post 1 has to work on its own. Each screenshot gets its own
+post. X does not accept SVG, so export `assets/demo.svg` to PNG first (open
+it in a browser and screenshot it at 2x, or
+`rsvg-convert -z 2 -o demo.png assets/demo.svg`).
+
+Each paragraph below is one line, so it pastes as written. Every post is
+under 280 characters, counting a link as 23.
 
 ---
 
 **1/**
-Your AI coding agent burns most of its context window on `grep` + reading files
-just to answer "who calls this?" — and sometimes invents functions that don't exist.
 
-I built Tessera to fix both. A local, deterministic code graph for agents.
+Your coding agent says done. Tessera checks.
 
-🧵 github.com/iamsaquib8/tessera
-[attach social-preview.png]
+A local tool that checks every edit an AI agent makes against an index of the whole repo, and holds the agent at "done" until the callers it broke are fixed.
+
+No LLM. Same code, same answer. Apache-2.0.
+
+github.com/iamsaquib8/tessera
+
+[attach: demo.svg exported to PNG]
 
 **2/**
-On a real 1,063-file service, "who calls BaseWorker?" is:
 
-• raw grep + read → ~36,311 tokens
-• tessera → ~41 tokens
+The failure it targets: an agent greps, opens a few files, renames a method, and reports success. The caller in another module that still uses the old name shows up later, in CI, in review, or in production.
 
-886× cheaper. On a 951-file Java service, another query: 60× cheaper.
-
-The benchmark ships in the binary — `tessera bench` reproduces it on your repo.
+Before an edit: `blast` and `context`. After it: `verify`.
 
 **3/**
-The key design choice: the graph is built from the AST (Tree-sitter), NOT an LLM.
 
-Same input → same graph, every time. Zero tokens to build it.
+Hooks run `verify` after each edit and at the end of the turn. Claude Code's Stop hook blocks with:
 
-Most "codebase knowledge graph" tools use an LLM extraction pass. That's fine for
-breadth — but it's non-deterministic and can hallucinate its own edges.
+V1 src/users/repo.ts:17 `findById` is not defined in src/users/repo.ts; did you mean UserRepo.findOne?
+
+Also Codex, Cursor, Gemini CLI, Copilot CLI and 3 more.
 
 **4/**
-Because Tessera's graph is ground truth, it does the opposite of hallucinating —
-it *catches* the model's hallucinations:
 
-$ tessera validate findByIdd
-✗ not found — maybe findById (0.98)
+It works across services. Rename the Go handler for ShippingService/GetQuote in microservices-demo, and `verify` names the two clients, in checkout and the frontend, that still call it.
 
-A guard rail, deterministic, free to run.
+`tessera ui` shows the same thing as a local page on 127.0.0.1.
+
+[attach: assets/ui-impact.png]
 
 **5/**
-What you can ask it:
-• impact — who's affected by a change, ranked by personalized PageRank
-• connect A B — the shortest call path between two functions
-• export — the call graph as Mermaid, paste into a PR
-• validate — did the model make this up?
 
-CLI · MCP server · Rust library.
+`tessera map` links HTTP routes, gRPC methods, Kafka topics and tables to the code on both sides: Express, NestJS, Next.js, Spring, gRPC in six languages, JPA, Prisma and more.
+
+The contract map draws each service and what runs between them.
+
+[attach: assets/ui-map.png]
 
 **6/**
-11 languages: TS/TSX/JS, Python, Go, Rust, Java, C, C++, C#, Ruby, PHP.
-Incremental re-index in ~38ms, so it runs on every save.
 
-Install without Rust:
-npm i -g tessera-codegraph
-brew install iamsaquib8/tessera/tessera
-curl … | sh
+Measured, not claimed:
+
+- 99.7% of high-confidence references match compiler ground truth (TS/JS/Java)
+- gRPC in microservices-demo: 15/15 servers, 34/34 clients, no wrong link
+- false-positive hunt: a blind find-and-replace leaves 15 blocking findings, all real
+
+The benchmark is public.
 
 **7/**
-Works with Claude Code, Cursor, Cline, Zed, Codex — anything that speaks MCP.
-There's also a drop-in `/tessera` skill for Claude Code (zero install).
 
-Apache-2.0. Pre-alpha, built in public, solo.
+Limits: deep resolution is TypeScript, JavaScript and Java. Python, Go, Rust, C, C++, C#, Ruby and PHP resolve within a file and by unique name. It does not type-check, so keep running tsc and your tests.
 
-⭐ github.com/iamsaquib8/tessera — a star genuinely helps it reach people.
+Full list: github.com/iamsaquib8/tessera/blob/main/docs/when-not-to-use.md
 
-**8/ (reply-bait)**
-Open question I keep going back and forth on: should I add an optional embedding
-layer for fuzzy recall ("find the thing that does auth-ish stuff"), or is keeping
-it 100% deterministic the whole point?
+**8/**
 
-Tell me I'm wrong.
+Try it in any repo, no setup:
+
+npx tessera-codegraph blast <symbol>
+npx tessera-codegraph init
+
+`init` finds which of 21 agents you use and shows a diff before writing. On pull requests: uses: iamsaquib8/tessera/action@v1
+
+Rust, 12 languages, stable 1.x contract.
+
+---
+
+Pin post 1. Answer questions in replies rather than quote posts. Do not ask
+for reposts or stars.

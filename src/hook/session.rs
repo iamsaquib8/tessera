@@ -1,0 +1,181 @@
+//! Per-session hook state, kept beside the index (never in the repository's
+//! tracked files) and locked so concurrent hooks of one session take turns.
+
+use std::collections::{BTreeMap, BTreeSet};
+use std::fs::{self, File, OpenOptions};
+use std::path::{Path, PathBuf};
+use std::time::{Duration, SystemTime};
+
+use anyhow::{Context, Result};
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
+
+use super::Reply;
+
+/// Session files untouched for this long are removed at the next session start.
+const EXPIRY: Duration = Duration::from_secs(7 * 24 * 60 * 60);
+
+#[derive(Debug, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Session {
+    /// `HEAD` when the session was first seen; `None` outside git or before
+    /// the first commit.
+    pub baseline: Option<String>,
+    /// Files already changed when the session was first seen, by content
+    /// hash. Stop leaves them out unless they change again.
+    pub dirty: BTreeMap<String, String>,
+    /// Files the agent edited through its tools.
+    pub edited: BTreeSet<String>,
+    /// Symbols the pre-edit note already announced, as `path#qualified name`.
+    pub announced: BTreeSet<String>,
+    /// Problems the index already held when the session began (and those
+    /// the agent gave up on after the stop limit), by hashed key with how
+    /// many findings had each. They never block. `None` until taken.
+    pub baseline_problems: Option<BTreeMap<String, u32>>,
+    /// The agent's blocking problems after the last check, by key with how
+    /// many findings have each, so fixing one call site of several counts.
+    pub problems: BTreeMap<String, u32>,
+    /// Stop blocks since the turn began.
+    pub stop_blocks: u32,
+    /// The latest answers, so the same event arriving through a second
+    /// wiring gets the same answer instead of a second check.
+    pub answered: Vec<Answered>,
+    /// What the hooks did this session, for evaluation and support.
+    pub counts: Counts,
+    /// Every finding a hook has blocked on, as `id path message`.
+    pub blocked: BTreeSet<String>,
+}
+
+#[derive(Debug, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Answered {
+    /// The event: the edited files with their content, or the stopped turn.
+    pub key: String,
+    pub reply: Option<Reply>,
+    /// When the answer was ready, in milliseconds since the Unix epoch.
+    pub finished_ms: u64,
+    /// The adapters (`tessera hook <adapter>`) that gave it.
+    pub adapters: Vec<String>,
+}
+
+#[derive(Debug, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Counts {
+    /// Pre-edit notes shown.
+    pub notes: u32,
+    /// Post-edit reports that did not block.
+    pub reports: u32,
+    pub post_blocks: u32,
+    pub stop_blocks: u32,
+}
+
+/// The locked session file; the lock is released when this is dropped.
+pub struct Store {
+    path: PathBuf,
+    _lock: File,
+}
+
+impl Store {
+    /// Opens (or starts) the session `id` stored next to `db_path`. The bool
+    /// is true when the session is new.
+    pub fn open(db_path: &Path, id: &str) -> Result<(Self, Session, bool)> {
+        let dir = sessions_dir(db_path);
+        fs::create_dir_all(&dir).with_context(|| format!("failed to create {}", dir.display()))?;
+        let name = file_name(id);
+        let lock_path = dir.join(format!("{name}.lock"));
+        let lock = OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(&lock_path)
+            .with_context(|| format!("failed to open {}", lock_path.display()))?;
+        lock.lock()
+            .with_context(|| format!("failed to lock {}", lock_path.display()))?;
+        let path = dir.join(format!("{name}.json"));
+        let (session, new) = match fs::read(&path) {
+            Ok(bytes) => (serde_json::from_slice(&bytes).unwrap_or_default(), false),
+            Err(_) => (Session::default(), true),
+        };
+        Ok((Self { path, _lock: lock }, session, new))
+    }
+
+    pub fn save(&self, session: &Session) -> Result<()> {
+        let tmp = self.path.with_extension("json.tmp");
+        fs::write(&tmp, serde_json::to_vec(session)?)?;
+        fs::rename(&tmp, &self.path)?;
+        Ok(())
+    }
+}
+
+pub fn sessions_dir(db_path: &Path) -> PathBuf {
+    db_path.parent().unwrap_or(Path::new(".")).join("sessions")
+}
+
+/// Removes session files nobody has touched for a week.
+pub fn expire(db_path: &Path) {
+    let Ok(entries) = fs::read_dir(sessions_dir(db_path)) else {
+        return;
+    };
+    let now = SystemTime::now();
+    for entry in entries.flatten() {
+        let stale = entry
+            .metadata()
+            .and_then(|m| m.modified())
+            .is_ok_and(|modified| now.duration_since(modified).unwrap_or_default() > EXPIRY);
+        if stale {
+            let _ = fs::remove_file(entry.path());
+        }
+    }
+}
+
+/// Session ids become file names: kept as they are when safe, hashed otherwise.
+fn file_name(id: &str) -> String {
+    let safe = !id.is_empty()
+        && id.len() <= 64
+        && id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_');
+    if safe {
+        id.to_string()
+    } else {
+        hash(id.as_bytes())[..32].to_string()
+    }
+}
+
+pub fn hash(bytes: &[u8]) -> String {
+    format!("{:x}", Sha256::digest(bytes))
+}
+
+/// The content hash Stop compares against `Session::dirty`.
+pub fn content_hash(path: &Path) -> String {
+    fs::read(path)
+        .map(|bytes| hash(&bytes))
+        .unwrap_or_else(|_| "deleted".to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn unsafe_ids_are_hashed() {
+        assert_eq!(file_name("abc-123_x"), "abc-123_x");
+        assert_eq!(file_name("../etc/passwd").len(), 32);
+        assert_eq!(file_name("").len(), 32);
+    }
+
+    #[test]
+    fn state_survives_a_round_trip() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let db = temp.path().join("tessera.db");
+        {
+            let (store, mut session, new) = Store::open(&db, "s").unwrap();
+            assert!(new);
+            session.edited.insert("a.ts".into());
+            store.save(&session).unwrap();
+        }
+        let (_, session, new) = Store::open(&db, "s").unwrap();
+        assert!(!new);
+        assert!(session.edited.contains("a.ts"));
+    }
+}

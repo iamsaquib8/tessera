@@ -1,0 +1,12 @@
+- { name: bug, color: d64545, description: Wrong answer, crash, or broken install }
+- { name: needs-repro, color: f0b4b4, description: Needs a minimal example }
+- { name: language-support, color: 2b4bdb, description: New language or extraction gap }
+- { name: framework-pack, color: 5a74e6, description: Routes, queues, tables for the contract map }
+- { name: agents, color: 2e9e8f, description: Agent integrations, MCP config, hooks }
+- { name: mcp, color: 6bc1b4, description: MCP server and tools }
+- { name: cli, color: 6b7686, description: Command-line interface }
+- { name: docs, color: c5ccd6, description: Documentation }
+- { name: performance, color: 1c2330, description: Speed and memory }
+- { name: packaging, color: 8a97aa, description: npm, Homebrew, Docker, releases }
+- { name: good first issue, color: 7ee0c9, description: Scoped for a first contribution }
+- { name: help wanted, color: 9fb3f5, description: Maintainer would welcome a PR }

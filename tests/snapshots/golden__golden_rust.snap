@@ -1,0 +1,50 @@
+---
+source: tests/golden.rs
+expression: graph_dump(& db)
+---
+{
+  "symbols": [
+    "src/api.rs:13-20 module tests | mod tests {",
+    "src/api.rs:17-19 function tests.handles | fn handles() {",
+    "src/api.rs:3-5 function handle [exported] | pub fn handle(i: usize) -> bool {",
+    "src/api.rs:7-10 function load [exported] | pub fn load(i: usize) -> bool {",
+    "src/i18n.rs:1-3 function greet [exported] | pub fn greet() -> &'static str { //x ééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééé…",
+    "src/lib.rs:1-1 module api [exported] | pub mod api;",
+    "src/lib.rs:2-2 module store [exported] | pub mod store;",
+    "src/store.rs:1-3 struct Store [exported] | pub struct Store {",
+    "src/store.rs:10-12 function Store.get [exported] | pub fn get(&self, i: usize) -> Option<&String> {",
+    "src/store.rs:15-17 function load [exported] | pub fn load(i: usize) -> bool {",
+    "src/store.rs:5-13 impl Store | impl Store {",
+    "src/store.rs:6-8 function Store.new [exported] | pub fn new() -> Self {"
+  ],
+  "refs": [
+    "src/api.rs:4:12 call store.load/1 <- handle",
+    "src/api.rs:8:20 call Store.new/0 <- load",
+    "src/api.rs:9:14 call other.is_some/0 <- load",
+    "src/api.rs:9:7 call s.get/1 <- load",
+    "src/store.rs:11:20 call other.get/1 <- Store.get",
+    "src/store.rs:16:12 call Store.new/0 <- load",
+    "src/store.rs:16:18 call other.get/1 <- load",
+    "src/store.rs:16:25 call other.is_some/0 <- load",
+    "src/store.rs:7:28 call Vec.new/0 <- Store.new"
+  ],
+  "bindings": [],
+  "hints": [],
+  "modules": [],
+  "imports": [
+    "src/api.rs:1 use crate::store::{self, Store}",
+    "src/api.rs:14 use super::*"
+  ],
+  "edges": [
+    "src/api.rs handle -call-> src/api.rs:load [low/name]",
+    "src/api.rs handle -call-> src/store.rs:load [low/name]",
+    "src/api.rs load -call-> is_some [name]",
+    "src/api.rs load -call-> src/store.rs:Store.get [medium/name]",
+    "src/api.rs load -call-> src/store.rs:Store.new [medium/name]",
+    "src/store.rs Store.get -call-> get [name]",
+    "src/store.rs Store.new -call-> new [name]",
+    "src/store.rs load -call-> is_some [name]",
+    "src/store.rs load -call-> src/store.rs:Store.get [medium/name]",
+    "src/store.rs load -call-> src/store.rs:Store.new [high/static]"
+  ]
+}

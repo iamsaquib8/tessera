@@ -1,18 +1,20 @@
-use std::fs;
-use std::path::{Path, PathBuf};
-use std::thread;
+use std::path::{Component, Path, PathBuf};
+use std::sync::mpsc::channel;
 use std::time::Duration;
 
 use anyhow::Result;
-use sha2::{Digest, Sha256};
-use walkdir::{DirEntry, WalkDir};
+use notify_debouncer_mini::notify::{RecommendedWatcher, RecursiveMode};
+use notify_debouncer_mini::{new_debouncer, DebounceEventResult, Debouncer};
 
-use crate::indexer::{self, IndexOptions};
+use crate::fresh;
+use crate::indexer::{self, IndexOptions, IndexReport};
 use crate::types::Language;
+use crate::workspace::Workspace;
+
+const IGNORED_DIRS: &[&str] = &[".git", ".tessera", "node_modules", "target", "__pycache__"];
 
 #[derive(Debug, Clone)]
 pub struct WatchOptions {
-    pub poll_interval: Duration,
     pub debounce: Duration,
     pub index_options: IndexOptions,
     pub once: bool,
@@ -21,157 +23,96 @@ pub struct WatchOptions {
 impl Default for WatchOptions {
     fn default() -> Self {
         Self {
-            poll_interval: Duration::from_millis(500),
-            debounce: Duration::from_millis(250),
+            debounce: Duration::from_millis(200),
             index_options: IndexOptions::default(),
             once: false,
         }
     }
 }
 
-pub fn watch_path(root: &Path, db_path: &Path, options: WatchOptions) -> Result<()> {
-    let root = root.canonicalize().unwrap_or_else(|_| PathBuf::from(root));
-    let mut last_fingerprint = fingerprint_sources(&root)?;
-    index_once(&root, db_path, options.index_options)?;
-
-    if options.once {
-        return Ok(());
-    }
-
-    println!(
-        "[watch] watching {} every {}ms",
-        root.display(),
-        options.poll_interval.as_millis()
-    );
-
-    loop {
-        thread::sleep(options.poll_interval);
-        let current = fingerprint_sources(&root)?;
-        if current == last_fingerprint {
-            continue;
-        }
-
-        thread::sleep(options.debounce);
-        let settled = fingerprint_sources(&root)?;
-        if settled == last_fingerprint {
-            continue;
-        }
-
-        last_fingerprint = settled;
-        index_once(&root, db_path, options.index_options)?;
-    }
+/// Keeps the index fresh while the returned guard is alive.
+pub struct WatchGuard {
+    _debouncer: Debouncer<RecommendedWatcher>,
 }
 
-fn index_once(root: &Path, db_path: &Path, options: IndexOptions) -> Result<()> {
-    let report = indexer::index_path_with(root, db_path, options)?;
-    let mode = match report.mode {
-        indexer::IndexMode::Full => "full",
-        indexer::IndexMode::Incremental => "incremental",
-    };
-    println!(
-        "[watch:{mode}] indexed {} files (+{} reused, -{} removed), {} symbols, {} references into {} in {}ms",
-        report.files_indexed,
-        report.files_reused,
-        report.files_removed,
-        report.symbols_indexed,
-        report.references_indexed,
-        db_path.display(),
-        report.elapsed_ms
-    );
-    if !report.warnings.is_empty() {
-        eprintln!("[watch] indexed with {} warning(s)", report.warnings.len());
-        for warning in report.warnings.iter().take(5) {
-            eprintln!("  {}: {}", warning.path, warning.message);
+pub fn start(ws: Workspace, debounce: Duration) -> Result<WatchGuard> {
+    let root = ws.root.canonicalize().unwrap_or_else(|_| ws.root.clone());
+    let watched_root = root.clone();
+    let mut debouncer = new_debouncer(debounce, move |result: DebounceEventResult| {
+        let Ok(events) = result else {
+            return;
+        };
+        let paths: Vec<PathBuf> = events.into_iter().map(|event| event.path).collect();
+        if let Err(error) = apply_changes(&ws, &watched_root, &paths) {
+            eprintln!("tessera watch: {error:#}");
         }
+    })?;
+    debouncer.watcher().watch(&root, RecursiveMode::Recursive)?;
+    Ok(WatchGuard {
+        _debouncer: debouncer,
+    })
+}
+
+fn apply_changes(ws: &Workspace, root: &Path, paths: &[PathBuf]) -> Result<()> {
+    let mut files = Vec::new();
+    for path in paths {
+        let canonical = path.canonicalize().unwrap_or_else(|_| path.clone());
+        let Ok(rel) = canonical
+            .strip_prefix(root)
+            .or_else(|_| path.strip_prefix(root))
+        else {
+            continue;
+        };
+        if rel.components().any(|c| match c {
+            Component::Normal(name) => IGNORED_DIRS.contains(&name.to_string_lossy().as_ref()),
+            _ => false,
+        }) {
+            continue;
+        }
+        let is_source = rel
+            .extension()
+            .and_then(|ext| ext.to_str())
+            .and_then(Language::from_extension)
+            .is_some();
+        if !is_source || path.is_dir() {
+            // Directory renames and unknown changes are cheaper to reconcile with one stat walk.
+            fresh::ensure(ws)?;
+            return Ok(());
+        }
+        files.push(rel.to_string_lossy().replace('\\', "/"));
+    }
+    if !files.is_empty() {
+        files.sort();
+        files.dedup();
+        indexer::index_files(ws, &files)?;
     }
     Ok(())
 }
 
-fn fingerprint_sources(root: &Path) -> Result<String> {
-    let mut entries: Vec<(String, Vec<u8>)> = Vec::new();
-    for entry in WalkDir::new(root)
-        .into_iter()
-        .filter_entry(should_enter)
-        .filter_map(Result::ok)
-        .filter(|entry| entry.file_type().is_file())
-    {
-        let path = entry.path();
-        if language_for_path(path).is_none() {
-            continue;
-        }
-        let Ok(content) = fs::read(path) else {
-            continue;
-        };
-        let rel_path = path
-            .strip_prefix(root)
-            .unwrap_or(path)
-            .to_string_lossy()
-            .replace('\\', "/");
-        entries.push((rel_path, content));
+pub fn watch_path(root: &Path, db_path: &Path, options: WatchOptions) -> Result<()> {
+    let ws = Workspace {
+        root: root.canonicalize().unwrap_or_else(|_| root.to_path_buf()),
+        db_path: db_path.to_path_buf(),
+    };
+    let report = indexer::index_path_with(&ws.root, &ws.db_path, options.index_options)?;
+    print_report(&report);
+    if options.once {
+        return Ok(());
     }
-
-    entries.sort_by(|a, b| a.0.cmp(&b.0));
-    let mut hasher = Sha256::new();
-    for (path, content) in entries {
-        hasher.update(path.as_bytes());
-        hasher.update([0]);
-        hasher.update(content);
-        hasher.update([0]);
-    }
-    Ok(format!("{:x}", hasher.finalize()))
+    let _guard = start(ws.clone(), options.debounce)?;
+    eprintln!("[watch] watching {}", ws.root.display());
+    let (_keep_alive, wait) = channel::<()>();
+    let _ = wait.recv();
+    Ok(())
 }
 
-fn should_enter(entry: &DirEntry) -> bool {
-    let name = entry.file_name().to_string_lossy();
-    !matches!(
-        name.as_ref(),
-        ".git"
-            | ".hg"
-            | ".svn"
-            | "node_modules"
-            | "target"
-            | "dist"
-            | "build"
-            | ".next"
-            | ".venv"
-            | "venv"
-            | "__pycache__"
-            | ".tessera"
-    )
-}
-
-fn language_for_path(path: &Path) -> Option<Language> {
-    path.extension()
-        .and_then(|ext| ext.to_str())
-        .and_then(Language::from_extension)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn fingerprint_changes_when_source_changes() {
-        let temp = tempfile::tempdir().unwrap();
-        let path = temp.path().join("app.ts");
-        fs::write(&path, "export function a() { return 1; }\n").unwrap();
-
-        let first = fingerprint_sources(temp.path()).unwrap();
-        fs::write(&path, "export function a() { return 2; }\n").unwrap();
-        let second = fingerprint_sources(temp.path()).unwrap();
-
-        assert_ne!(first, second);
-    }
-
-    #[test]
-    fn fingerprint_ignores_unindexed_files() {
-        let temp = tempfile::tempdir().unwrap();
-        fs::write(temp.path().join("README.md"), "one\n").unwrap();
-
-        let first = fingerprint_sources(temp.path()).unwrap();
-        fs::write(temp.path().join("README.md"), "two\n").unwrap();
-        let second = fingerprint_sources(temp.path()).unwrap();
-
-        assert_eq!(first, second);
-    }
+fn print_report(report: &IndexReport) {
+    println!(
+        "[watch] indexed {} files (+{} reused, -{} removed, {} skipped) in {}ms",
+        report.files_indexed,
+        report.files_reused,
+        report.files_removed,
+        report.files_skipped,
+        report.elapsed_ms
+    );
 }

@@ -1,0 +1,502 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Tessera</title>
+<style>
+:root {
+  --bg: #f4f6f9;
+  --panel: #ffffff;
+  --ink: #161c27;
+  --muted: #5b6677;
+  --line: #dfe3e9;
+  --accent: #2b4bdb;
+  --accent-soft: #d6ddfa;
+  --teal: #2e9e8f;
+  --teal-soft: #d3efe9;
+  --stop: #c2410c;
+  --stop-soft: #fde4d6;
+  --warn: #9a6a00;
+  --warn-soft: #fbf0cc;
+  --display: "Archivo Variable", "Archivo", "Inter", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --mono: ui-monospace, "SFMono-Regular", "JetBrains Mono", Menlo, Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #11151d;
+    --panel: #181e29;
+    --ink: #e7eaef;
+    --muted: #8a97aa;
+    --line: #2a3344;
+    --accent: #5c78f0;
+    --accent-soft: #1f2b5c;
+    --teal: #3cc0ae;
+    --teal-soft: #163b37;
+    --stop: #f0814a;
+    --stop-soft: #3b2117;
+    --warn: #e2b649;
+    --warn-soft: #362c12;
+  }
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; background: var(--bg); color: var(--ink); }
+body { font: 15px/1.5 var(--display); -webkit-font-smoothing: antialiased; }
+code { font-family: var(--mono); font-size: 0.9em; }
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+a:focus-visible, button:focus-visible, input:focus-visible { outline: 2px solid var(--teal); outline-offset: 2px; border-radius: 4px; }
+code, .mono { font-family: var(--mono); font-size: 13px; }
+header {
+  display: flex; align-items: center; gap: 16px; padding: 14px 24px;
+  border-bottom: 1px solid var(--line); background: var(--panel); position: sticky; top: 0; z-index: 2;
+}
+header .brand { display: flex; align-items: center; gap: 10px; font-weight: 700; letter-spacing: -0.01em; font-size: 17px; }
+header nav { display: flex; gap: 4px; margin-left: 12px; overflow-x: auto; }
+header nav a {
+  padding: 6px 12px; border-radius: 8px; color: var(--muted); font-weight: 600; white-space: nowrap;
+}
+header nav a.on { background: var(--accent-soft); color: var(--accent); text-decoration: none; }
+header .where { margin-left: auto; color: var(--muted); font-size: 13px; text-align: right; min-width: 0; }
+header .where .root { font-family: var(--mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 40vw; display: inline-block; vertical-align: bottom; }
+.pill { display: inline-block; padding: 1px 8px; border-radius: 999px; font-size: 12px; font-weight: 600; }
+.pill.fresh { background: var(--teal-soft); color: var(--teal); }
+.pill.stale { background: var(--warn-soft); color: var(--warn); }
+main { max-width: 1120px; margin: 0 auto; padding: 28px 24px 64px; }
+h1 { font-size: 30px; line-height: 1.15; letter-spacing: -0.02em; margin: 0 0 6px; }
+h2 { font-size: 17px; margin: 32px 0 10px; letter-spacing: -0.01em; }
+.lede { color: var(--muted); margin: 0 0 20px; max-width: 68ch; }
+.panel { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; }
+.rows { list-style: none; margin: 0; padding: 0; }
+.rows li { padding: 10px 16px; border-top: 1px solid var(--line); display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 4px 16px; align-items: baseline; }
+.rows li:first-child { border-top: 0; }
+.rows li.more { color: var(--muted); }
+.rows li > span:first-child { min-width: 0; overflow-wrap: anywhere; }
+.rows .sub { color: var(--muted); font-size: 13px; grid-column: 1 / -1; overflow-wrap: anywhere; }
+.split .rows li { grid-template-columns: minmax(0, 1fr); }
+.rows .where { font-family: var(--mono); font-size: 12.5px; color: var(--muted); overflow-wrap: anywhere; }
+.tag { font-family: var(--mono); font-size: 11.5px; font-weight: 700; padding: 1px 6px; border-radius: 4px; margin-right: 8px; }
+.tag.stop { background: var(--stop-soft); color: var(--stop); }
+.tag.warn { background: var(--warn-soft); color: var(--warn); }
+.tag.info { background: var(--accent-soft); color: var(--accent); }
+.verdict { display: flex; align-items: center; gap: 14px; padding: 18px 20px; margin-bottom: 8px; }
+.verdict .count { font-size: 40px; font-weight: 800; line-height: 1; letter-spacing: -0.03em; }
+.verdict.stop .count { color: var(--stop); }
+.verdict.ok .count { color: var(--teal); }
+.facts { display: flex; flex-wrap: wrap; gap: 8px 22px; color: var(--muted); font-size: 14px; margin: 6px 0 0; }
+.facts b { color: var(--ink); }
+.empty { padding: 18px 16px; color: var(--muted); }
+.search { display: flex; gap: 8px; margin: 0 0 18px; }
+.search input {
+  flex: 1; font: inherit; padding: 10px 14px; border-radius: 10px; border: 1px solid var(--line);
+  background: var(--panel); color: var(--ink); min-width: 0;
+}
+button {
+  font: inherit; font-weight: 600; padding: 9px 16px; border-radius: 10px; border: 1px solid var(--accent);
+  background: var(--accent); color: #fff; cursor: pointer;
+}
+button.quiet { background: transparent; color: var(--accent); }
+.kinds { display: flex; gap: 6px; flex-wrap: wrap; margin: 0 0 16px; }
+.kinds button { padding: 5px 12px; font-size: 13px; }
+/* The mosaic: services as tiles, contracts as the grout between them. */
+.mosaic { position: relative; padding: 18px; overflow: hidden; }
+.mosaic svg.links { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+.tiles { position: relative; display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 22px; }
+.tile {
+  position: relative; text-align: left; border: 0; border-radius: 9px; padding: 14px 14px 12px;
+  background: var(--accent); color: #fff; min-height: 86px; cursor: pointer;
+  box-shadow: 0 1px 0 rgba(0,0,0,0.08); transition: transform 120ms ease, background 120ms ease;
+}
+.tile:nth-child(3n) { transform: rotate(-1.4deg); }
+.tile:nth-child(3n+1) { transform: rotate(1deg); }
+.tile:nth-child(5n+2) { transform: rotate(-0.6deg); }
+.tile .name { font-weight: 700; font-size: 14px; overflow-wrap: break-word; }
+.tile .n { font-size: 12px; opacity: 0.85; margin-top: 6px; }
+.tile.dim { background: var(--line); color: var(--muted); }
+.tile.on { background: var(--teal); transform: rotate(0deg) scale(1.03); }
+.tile.peer { background: var(--accent); outline: 2px solid var(--teal); outline-offset: 2px; }
+.links path { fill: none; stroke: var(--muted); stroke-opacity: 0.35; stroke-width: 1.4; }
+.links path.hot { stroke: var(--teal); stroke-opacity: 0.9; stroke-width: 2.2; }
+.split { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 16px; }
+pre.body { margin: 0; padding: 14px 16px; overflow: auto; font: 12.5px/1.55 var(--mono); max-height: 420px; }
+.note { color: var(--muted); font-size: 13px; }
+.conf { font-size: 11.5px; color: var(--muted); font-family: var(--mono); }
+@media (max-width: 760px) {
+  header { flex-wrap: wrap; padding: 12px 16px; }
+  header nav { margin-left: 0; width: 100%; }
+  header .where { margin-left: 0; width: 100%; text-align: left; }
+  header .where .root { max-width: 100%; }
+  main { padding: 20px 16px 48px; }
+  .split { grid-template-columns: minmax(0, 1fr); }
+  h1 { font-size: 24px; }
+}
+@media (prefers-reduced-motion: reduce) { .tile { transition: none; } }
+</style>
+</head>
+<body>
+<header>
+  <div class="brand">
+    <svg width="22" height="22" viewBox="0 0 70 70" aria-hidden="true"><g>
+      <rect x="3.5" y="3.5" width="18" height="18" rx="3.2" fill="#2B4BDB" transform="rotate(-2.2 12.5 12.5)"/>
+      <rect x="24.5" y="3.5" width="18" height="18" rx="3.2" fill="#3653E0" transform="rotate(1.6 33.5 12.5)"/>
+      <rect x="48.1" y="0.9" width="18" height="18" rx="3.2" fill="#2E9E8F" transform="rotate(9 57.1 9.9)"/>
+      <rect x="3.5" y="24.5" width="18" height="18" rx="3.2" fill="#2442C4" transform="rotate(-1.1 12.5 33.5)"/>
+      <rect x="24.5" y="24.5" width="18" height="18" rx="3.2" fill="#3A5AE8" transform="rotate(2.0 33.5 33.5)"/>
+      <rect x="45.5" y="24.5" width="18" height="18" rx="3.2" fill="#2847CF" transform="rotate(-1.6 54.5 33.5)"/>
+      <rect x="3.5" y="45.5" width="18" height="18" rx="3.2" fill="#3150D9" transform="rotate(1.2 12.5 54.5)"/>
+      <rect x="24.5" y="45.5" width="18" height="18" rx="3.2" fill="#2240BE" transform="rotate(-2.0 33.5 54.5)"/>
+      <rect x="45.5" y="45.5" width="18" height="18" rx="3.2" fill="#3352DD" transform="rotate(1.4 54.5 54.5)"/>
+    </g></svg>
+    Tessera
+  </div>
+  <nav>
+    <a href="#/impact" data-view="impact">Change impact</a>
+    <a href="#/map" data-view="map">Contract map</a>
+    <a href="#/search" data-view="search">Search</a>
+  </nav>
+  <div class="where" id="where"></div>
+</header>
+<main id="main" aria-live="polite"></main>
+<script>
+"use strict";
+// `tessera ui --export` turns this on.
+const STATIC = false;
+const LIST_LIMIT = 50;
+const main = document.getElementById("main");
+
+function esc(text) {
+  return String(text ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+}
+function hash(text) {
+  let h = 0x811c9dc5;
+  for (const byte of new TextEncoder().encode(text)) {
+    h ^= byte;
+    h = Math.imul(h, 0x01000193) >>> 0;
+  }
+  return h.toString(16).padStart(8, "0");
+}
+async function get(route, params = {}) {
+  let url;
+  if (STATIC) {
+    if (route === "symbol") url = "data/symbols/" + hash(params.name) + ".json";
+    else url = "data/" + route + ".json";
+  } else {
+    const q = new URLSearchParams(Object.entries(params).filter(([, v]) => v));
+    url = "api/" + route + (q.toString() ? "?" + q : "");
+  }
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(res.status === 404 ? "Not in this export." : "Request failed (" + res.status + ").");
+  const body = await res.json();
+  if (body && body.error) throw new Error(body.error);
+  return body;
+}
+function symbolLink(name) {
+  return '<a href="#/symbol/' + encodeURIComponent(name) + '">' + esc(name) + "</a>";
+}
+function where(path, line) {
+  return '<span class="where">' + esc(path) + (line ? ":" + esc(line) : "") + "</span>";
+}
+function fail(error) {
+  main.innerHTML = '<div class="panel empty">' + esc(error.message || error) + "</div>";
+}
+
+function count(n, one, many) {
+  return "<span><b>" + n + "</b> " + (n === 1 ? one : many) + "</span>";
+}
+
+/** A service name for a tile: breaks after separators and before a
+ * trailing "service", never in the middle of a word. */
+function tileName(name) {
+  return esc(name)
+    .replace(/([/_.-])/g, "$1<wbr>")
+    .replace(/(.)(service|server|worker|api)$/i, "$1<wbr>$2");
+}
+
+/** A finding's message, with `code` spans set as code. */
+function prose(text) {
+  return esc(text).replace(/`([^`]+)`/g, "<code>$1</code>");
+}
+
+async function header() {
+  try {
+    const s = await get("status");
+    const fresh = s.freshness && s.freshness.state === "fresh";
+    document.getElementById("where").innerHTML =
+      '<span class="root" title="' + esc(s.root) + '">' + esc(s.root.split(/[\\/]/).filter(Boolean).pop() || s.root) + "</span> " +
+      '<span class="pill ' + (fresh || STATIC ? "fresh" : "stale") + '">' +
+      (STATIC ? "snapshot" : fresh ? "index fresh" : "index refreshing") + "</span><br>" +
+      esc(s.files.toLocaleString()) + " files, " + esc(s.symbols.toLocaleString()) + " symbols";
+  } catch (_) { /* the views still work */ }
+}
+
+async function impact() {
+  main.innerHTML = '<div class="empty">Reading the working tree…</div>';
+  let r;
+  try { r = await get("impact"); } catch (e) { return fail(e); }
+  const findings = r.verify.findings.filter((f) => f.id !== "V6");
+  const blocking = findings.filter((f) => f.blocking);
+  const advisory = findings.filter((f) => !f.blocking);
+  const blast = r.blast || { changed: [], callers: [], page: { total: 0 } };
+  const verdict = blocking.length
+    ? '<div class="panel verdict stop"><span class="count">' + blocking.length + "</span><div><b>" +
+      (blocking.length === 1 ? "problem" : "problems") + " to fix before this change is done</b><div class=\"note\">Only high-confidence findings count here.</div></div></div>"
+    : '<div class="panel verdict ok"><span class="count">0</span><div><b>problems found in this change</b><div class="note">Calls, argument counts, imports and contracts all resolve.</div></div></div>';
+  let html = "<h1>Change impact</h1>" +
+    '<p class="lede">The uncommitted changes in this repository, what they break, and what they reach.</p>' + verdict +
+    '<div class="facts">' + [
+      count(blast.changed.length, "changed symbol", "changed symbols"),
+      count(blast.page.total, "caller", "callers"),
+      count(r.verify.tests.length, "test to run", "tests to run"),
+      count(r.contracts.length, "contract touched", "contracts touched"),
+    ].join("") + "</div>";
+  // A huge change lists the first rows of each section, not thousands.
+  const rows = (items, render, empty) => items.length
+    ? '<ul class="panel rows">' + items.slice(0, LIST_LIMIT).map(render).join("") +
+      (items.length > LIST_LIMIT ? '<li class="more"><span>…and ' + (items.length - LIST_LIMIT).toLocaleString() + " more</span></li>" : "") + "</ul>"
+    : '<div class="panel empty">' + esc(empty) + "</div>";
+  // Changed symbols that the listed callers reach come first.
+  const reach = {};
+  for (const c of blast.callers) if (c.via) reach[c.via] = (reach[c.via] || 0) + 1;
+  const changed = blast.changed.slice().sort((a, b) => (reach[b.qualified_name] || 0) - (reach[a.qualified_name] || 0));
+  const finding = (f) => "<li><span><span class=\"tag " + (f.blocking ? "stop" : "warn") + "\">" + esc(f.id) + "</span>" + prose(f.message) + "</span>" + where(f.path, f.line) + "</li>";
+  if (blocking.length) html += "<h2>To fix</h2>" + rows(blocking, finding, "");
+  if (advisory.length) html += "<h2>Worth a look</h2>" + rows(advisory, finding, "");
+  html += "<h2>Contracts this change touches</h2>" + rows(r.contracts, (c) =>
+    '<li><span><span class="tag info">' + esc(c.kind) + "</span>" + esc(c.name) + '</span><span class="note">' +
+    (c.services.length ? "also used by " + c.services.map(esc).join(", ") : "used only here") + "</span></li>",
+    "No route, gRPC method or topic is defined or called in the changed files.");
+  html += "<h2>Changed symbols</h2>" + rows(changed, (s) => "<li><span>" + symbolLink(s.qualified_name) + "</span>" + where(s.path, s.start_line) + "</li>", "No symbol changed.");
+  html += "<h2>Callers, closest first</h2>" + rows(blast.callers, (c) =>
+    "<li><span>" + symbolLink(c.symbol.qualified_name) + ' <span class="conf">' + esc(c.confidence) + "</span></span>" +
+    where(c.symbol.path, c.symbol.start_line) + '<span class="sub">' + (c.depth === 1 ? "calls the changed code" : esc(c.depth) + " calls away") + "</span></li>",
+    "Nothing calls the changed code.");
+  html += "<h2>Tests to run</h2>" + rows(r.verify.tests, (t) => "<li><span class=\"mono\">" + esc(t) + "</span></li>", "No test reaches the changed code.");
+  main.innerHTML = html;
+}
+
+/** Above this many services the map shows one tile per top directory. */
+const AGGREGATE_ABOVE = 60;
+let mapState = { kind: "", selected: null, group: "" };
+async function contractMap() {
+  main.innerHTML = '<div class="empty">Reading contracts…</div>';
+  let services, contracts;
+  try {
+    [services, contracts] = await Promise.all([get("services"), get("map")]);
+  } catch (e) { return fail(e); }
+  const views = services.services || [];
+  const all = contracts.contracts || [];
+  // Drop the directory every service shares (`src/`), so tiles read as names.
+  const shared = (() => {
+    const names = views.map((v) => v.name);
+    if (names.length < 2) return "";
+    let prefix = names[0];
+    for (const n of names) while (!n.startsWith(prefix)) prefix = prefix.slice(0, -1);
+    return prefix.slice(0, prefix.lastIndexOf("/") + 1);
+  })();
+  const short = (name) => (shared && name.startsWith(shared) ? name.slice(shared.length) : name) || name;
+  const groupOf = (name) => {
+    const s = short(name);
+    const at = s.indexOf("/");
+    return at > 0 ? s.slice(0, at) : s;
+  };
+  let display = views;
+  if (mapState.group) {
+    display = views.filter((v) => groupOf(v.name) === mapState.group);
+  } else if (views.length > AGGREGATE_ABOVE) {
+    const groups = new Map();
+    for (const v of views) {
+      const g = groupOf(v.name);
+      if (!groups.has(g)) groups.set(g, []);
+      groups.get(g).push(v);
+    }
+    if (groups.size > 1 && groups.size < views.length) {
+      const regroup = (links, own) => links.map((l) => ({ ...l, services: [...new Set(l.services.map(groupOf))].filter((g) => g !== own) }));
+      display = [...groups].map(([g, members]) => ({
+        name: g,
+        members,
+        serves: regroup(members.flatMap((m) => m.serves), g),
+        calls: regroup(members.flatMap((m) => m.calls), g),
+      }));
+    }
+  }
+  const membersOf = (v) => new Set(v.members ? v.members.map((m) => m.name) : [v.name]);
+  const kinds = ["", "route", "rpc", "topic", "table"];
+  const label = { "": "All", route: "Routes", rpc: "gRPC", topic: "Topics", table: "Tables" };
+  const shown = all.filter((c) => !mapState.kind || c.kind === mapState.kind);
+  let html = "<h1>Contract map</h1>" +
+    '<p class="lede">Each tile is a service. Lines are the routes, gRPC methods and topics between them. Pick a service to see what it serves and calls.</p>' +
+    '<div class="kinds">' + kinds.map((k) => '<button class="' + (mapState.kind === k ? "" : "quiet") + '" data-kind="' + k + '">' + label[k] + "</button>").join("") +
+    (mapState.group ? '<button class="quiet" data-group="">All of ' + views.length.toLocaleString() + " services</button>" : "") + "</div>" +
+    (display !== views && !mapState.group ? '<p class="note">' + views.length.toLocaleString() + " services, grouped by directory. Pick a group to open it.</p>" : "");
+  if (!views.length) {
+    html += '<div class="panel empty">No contracts between services were found. Tessera reads Express, Fastify, NestJS, Next.js, Spring, gRPC, Kafka and ORM code; see docs/contracts.md.</div>';
+  } else {
+    html += '<div class="panel mosaic" id="mosaic"><svg class="links" id="links"></svg><div class="tiles">' +
+      display.map((v, i) => '<button class="tile" data-i="' + i + '" title="' + esc(v.name) + '"><div class="name">' + tileName(v.members ? v.name : short(v.name)) + '</div><div class="n">' +
+        (v.members ? v.members.length + " services, " : "") + "serves " + v.serves.length + ", calls " + v.calls.length + "</div></button>").join("") + "</div></div>";
+  }
+  html += '<h2 id="contracts-title">Contracts</h2><div id="contracts"></div>';
+  main.innerHTML = html;
+  main.querySelectorAll("[data-kind]").forEach((b) => b.addEventListener("click", () => { mapState.kind = b.dataset.kind; contractMap(); }));
+  main.querySelectorAll("[data-group]").forEach((b) => b.addEventListener("click", () => { mapState.group = ""; mapState.selected = null; contractMap(); }));
+  const list = (items) => items.length
+    ? '<ul class="panel rows">' + items.map((c) => "<li><span><span class=\"tag info\">" + esc(c.kind) + "</span>" + esc(c.name) +
+      '</span><span class="note">' + esc(side(c.providers)) + " → " + esc(side(c.consumers)) + "</span>" +
+      '<span class="sub">' + c.providers.concat(c.consumers).slice(0, 6).map((s) => esc(s.path) + ":" + esc(s.line) + (s.symbol ? " " + esc(s.symbol) : "")).join("<br>") +
+      "</span></li>").join("") + "</ul>"
+    : '<div class="panel empty">None.</div>';
+  const side = (sites) => {
+    const names = [...new Set(sites.map((s) => s.service))];
+    return names.length ? names.join(", ") : "nobody here";
+  };
+  const render = () => {
+    const sel = mapState.selected;
+    const view = sel === null ? null : display[sel];
+    const peers = new Set();
+    if (view) for (const l of view.serves.concat(view.calls)) for (const s of l.services) peers.add(s);
+    main.querySelectorAll(".tile").forEach((t) => {
+      const v = display[Number(t.dataset.i)];
+      t.classList.toggle("on", view !== null && v === view);
+      t.classList.toggle("peer", peers.has(v.name));
+      t.classList.toggle("dim", view !== null && v !== view && !peers.has(v.name));
+    });
+    const members = view ? membersOf(view) : null;
+    const items = view
+      ? shown.filter((c) => c.providers.concat(c.consumers).some((s) => members.has(s.service)))
+      : mapState.group
+        ? shown.filter((c) => c.providers.concat(c.consumers).some((s) => groupOf(s.service) === mapState.group))
+        : shown;
+    document.getElementById("contracts-title").textContent = view ? "Contracts of " + view.name : "Contracts";
+    document.getElementById("contracts").innerHTML = list(items.slice(0, 200));
+    draw(view);
+  };
+  const draw = (view) => {
+    const svg = document.getElementById("links");
+    const box = document.getElementById("mosaic");
+    if (!svg || !box) return;
+    const origin = box.getBoundingClientRect();
+    const tiles = new Map();
+    main.querySelectorAll(".tile").forEach((t) => {
+      const r = t.getBoundingClientRect();
+      tiles.set(display[Number(t.dataset.i)].name, { x: r.left - origin.left + r.width / 2, y: r.top - origin.top + r.height / 2 });
+    });
+    const paths = [];
+    const seen = new Set();
+    for (const v of display) {
+      for (const link of v.calls) {
+        if (mapState.kind && link.kind !== mapState.kind) continue;
+        for (const other of link.services) {
+          const key = v.name + "→" + other;
+          if (seen.has(key) || !tiles.has(other)) continue;
+          seen.add(key);
+          const a = tiles.get(v.name), b = tiles.get(other);
+          const mx = (a.x + b.x) / 2, my = (a.y + b.y) / 2 - Math.min(60, Math.abs(a.x - b.x) / 4);
+          const hot = view && (view.name === v.name || view.name === other);
+          paths.push('<path class="' + (hot ? "hot" : "") + '" d="M' + a.x + "," + a.y + " Q" + mx + "," + my + " " + b.x + "," + b.y + '"/>');
+        }
+      }
+    }
+    svg.innerHTML = paths.join("");
+  };
+  main.querySelectorAll(".tile").forEach((t) => t.addEventListener("click", () => {
+    const i = Number(t.dataset.i);
+    if (display[i].members) {
+      mapState.group = display[i].name;
+      mapState.selected = null;
+      return contractMap();
+    }
+    mapState.selected = mapState.selected === i ? null : i;
+    render();
+  }));
+  window.onresize = () => draw(mapState.selected === null ? null : display[mapState.selected]);
+  render();
+}
+
+async function symbol(name) {
+  main.innerHTML = '<div class="empty">Reading ' + esc(name) + "…</div>";
+  let r;
+  try { r = await get("symbol", { name }); } catch (e) { return fail(e); }
+  const def = r.find.matches[0];
+  if (!def) return fail("No definition of " + name + " in the index.");
+  const s = def.symbol;
+  const refs = r.refs.references || [];
+  const callers = (r.blast && r.blast.callers) || [];
+  const tests = (r.blast && r.blast.tests) || [];
+  let html = "<h1>" + esc(s.qualified_name) + "</h1>" +
+    '<p class="lede">' + esc(s.kind) + " in " + where(s.path, s.start_line) + "</p>" +
+    (s.signature ? '<div class="panel"><pre class="body">' + esc(s.signature) + "</pre></div>" : "");
+  html += '<div class="split"><div><h2>References (' + r.refs.page.total + ")</h2>" +
+    (refs.length ? '<ul class="panel rows">' + refs.slice(0, 100).map((h) =>
+      "<li><span>" + (h.from_symbol ? symbolLink(h.from_symbol) : '<span class="note">module code</span>') +
+      ' <span class="conf">' + esc(h.confidence) + "</span></span>" + where(h.path, h.line) +
+      '<span class="sub mono">' + esc(h.context || "") + "</span></li>").join("") + "</ul>"
+      : '<div class="panel empty">Nothing references it.</div>') + "</div>" +
+    "<div><h2>Callers by impact</h2>" +
+    (callers.length ? '<ul class="panel rows">' + callers.map((c) => "<li><span>" + symbolLink(c.symbol.qualified_name) +
+      "</span>" + where(c.symbol.path, c.symbol.start_line) + "</li>").join("") + "</ul>"
+      : '<div class="panel empty">No callers.</div>') +
+    "<h2>Tests that reach it</h2>" +
+    (tests.length ? '<ul class="panel rows">' + tests.map((t) => '<li><span class="mono">' + esc(t) + "</span></li>").join("") + "</ul>"
+      : '<div class="panel empty">No test reaches it.</div>') + "</div></div>";
+  if (def.body) html += '<h2>Body</h2><div class="panel"><pre class="body">' + esc(def.body) + "</pre></div>";
+  if (!STATIC) {
+    html += '<h2>Does it reach…</h2><form class="search" id="pathform"><input id="pathto" placeholder="another symbol, e.g. CartService.GetCart" aria-label="Target symbol"><button>Find a path</button></form><div id="pathout"></div>';
+  }
+  main.innerHTML = html;
+  const form = document.getElementById("pathform");
+  if (form) form.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const to = document.getElementById("pathto").value.trim();
+    const out = document.getElementById("pathout");
+    if (!to) return;
+    try {
+      const p = await get("path", { from: s.qualified_name, to });
+      out.innerHTML = p.found
+        ? '<ol class="panel rows">' + p.path.map((n) => "<li><span>" + symbolLink(n.qualified_name) + "</span>" + where(n.path, n.line) + "</li>").join("") + "</ol>"
+        : '<div class="panel empty">No call path from ' + esc(s.qualified_name) + " to " + esc(to) + ".</div>";
+    } catch (e) { out.innerHTML = '<div class="panel empty">' + esc(e.message) + "</div>"; }
+  });
+}
+
+let searchIndex = null;
+async function search(query) {
+  main.innerHTML = '<h1>Search</h1><p class="lede">Find a function, class or method by name. Globs work: <code>load*</code>.</p>' +
+    '<form class="search" id="sform"><input id="q" value="' + esc(query) + '" placeholder="Symbol name" aria-label="Symbol name" autofocus><button>Search</button></form><div id="results"></div>';
+  document.getElementById("sform").addEventListener("submit", (event) => {
+    event.preventDefault();
+    location.hash = "#/search?q=" + encodeURIComponent(document.getElementById("q").value.trim());
+  });
+  if (!query) return;
+  const out = document.getElementById("results");
+  let hits;
+  try {
+    if (STATIC) {
+      searchIndex = searchIndex || (await get("search")).hits;
+      const needle = query.toLowerCase().replace(/\*/g, "");
+      hits = searchIndex.filter((h) => h.symbol.qualified_name.toLowerCase().includes(needle)).slice(0, 50);
+    } else {
+      hits = (await get("search", { q: query })).hits;
+    }
+  } catch (e) { out.innerHTML = '<div class="panel empty">' + esc(e.message) + "</div>"; return; }
+  out.innerHTML = hits.length
+    ? '<ul class="panel rows">' + hits.map((h) => "<li><span>" + symbolLink(h.symbol.qualified_name) + ' <span class="conf">' + esc(h.symbol.kind) +
+      "</span></span>" + where(h.symbol.path, h.symbol.start_line) + "</li>").join("") + "</ul>"
+    : '<div class="panel empty">No symbol matches ' + esc(query) + ".</div>";
+}
+
+function route() {
+  const h = location.hash.replace(/^#\/?/, "") || "impact";
+  const [view, rest] = h.split("/", 2).length > 1 ? [h.slice(0, h.indexOf("/")), h.slice(h.indexOf("/") + 1)] : [h.split("?")[0], ""];
+  document.querySelectorAll("header nav a").forEach((a) => a.classList.toggle("on", a.dataset.view === view || (view === "symbol" && a.dataset.view === "search")));
+  window.onresize = null;
+  if (view === "map") return contractMap();
+  if (view === "symbol") return symbol(decodeURIComponent(rest));
+  if (view.startsWith("search")) return search(new URLSearchParams(h.split("?")[1] || "").get("q") || "");
+  return impact();
+}
+window.addEventListener("hashchange", route);
+header();
+route();
+</script>
+</body>
+</html>

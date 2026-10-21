@@ -1,0 +1,4 @@
+# LF on every platform: the plugin and install scripts run under sh, the
+# plugin ships copies of files that must match their sources byte for byte,
+# and fixtures and snapshots should read the same on Windows as elsewhere.
+* text=auto eol=lf

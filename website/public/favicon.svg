@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 70 70" width="70" height="70" role="img" aria-label="Tessera">
+  <rect x="3.5" y="3.5" width="18" height="18" rx="3.2" fill="#2B4BDB" transform="rotate(-2.2 12.5 12.5)"/>
+  <rect x="24.5" y="3.5" width="18" height="18" rx="3.2" fill="#3653E0" transform="rotate(1.6 33.5 12.5)"/>
+  <rect x="48.1" y="0.9" width="18" height="18" rx="3.2" fill="#2E9E8F" transform="rotate(9 57.1 9.9)"/>
+  <rect x="3.5" y="24.5" width="18" height="18" rx="3.2" fill="#2442C4" transform="rotate(-1.1 12.5 33.5)"/>
+  <rect x="24.5" y="24.5" width="18" height="18" rx="3.2" fill="#3A5AE8" transform="rotate(2.0 33.5 33.5)"/>
+  <rect x="45.5" y="24.5" width="18" height="18" rx="3.2" fill="#2847CF" transform="rotate(-1.6 54.5 33.5)"/>
+  <rect x="3.5" y="45.5" width="18" height="18" rx="3.2" fill="#3150D9" transform="rotate(1.2 12.5 54.5)"/>
+  <rect x="24.5" y="45.5" width="18" height="18" rx="3.2" fill="#2240BE" transform="rotate(-2.0 33.5 54.5)"/>
+  <rect x="45.5" y="45.5" width="18" height="18" rx="3.2" fill="#3352DD" transform="rotate(1.4 54.5 54.5)"/>
+</svg>

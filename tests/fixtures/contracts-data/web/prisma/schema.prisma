@@ -1,0 +1,4 @@
+model Customer {
+  id Int @id
+  @@map("customers")
+}

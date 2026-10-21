@@ -1,17 +1,21 @@
 //! # tessera-codegraph
 //!
 //! Local semantic code graph for AI coding agents. Index a repository into
-//! SQLite + a memory-mapped snapshot; ask deterministic questions about
+//! SQLite; ask deterministic questions about
 //! symbols, references, blast radius, and hallucinated identifiers.
 //!
 //! ```no_run
+//! use tessera_codegraph::query::BlastArgs;
 //! use tessera_codegraph::{Index, IndexOptions};
 //!
 //! # fn main() -> anyhow::Result<()> {
 //! Index::build("./my-repo", "./my-repo/.tessera/tessera.db", IndexOptions::default())?;
 //! let idx = Index::open("./my-repo/.tessera/tessera.db")?;
-//! let impact = idx.impact("findById", 4)?;
-//! for caller in impact.callers.iter().take(5) {
+//! let blast = idx.blast(&BlastArgs {
+//!     symbol: Some("findById".into()),
+//!     ..BlastArgs::default()
+//! })?;
+//! for caller in blast.callers.iter().take(5) {
 //!     println!(
 //!         "{:5.1}  {} @ {}:{}",
 //!         caller.criticality,
@@ -26,21 +30,24 @@
 //!
 //! The library binary `tessera` is also built from this crate; see the README.
 
-pub mod bench;
-pub mod bloom;
-pub mod completions;
+pub mod agents;
 pub mod config;
 pub mod db;
-pub mod doctor;
-pub mod engine;
+pub mod extract;
+pub mod facts;
+pub mod fresh;
+pub mod hook;
 pub mod indexer;
 pub mod init;
 pub mod mcp;
-pub mod mcp_http;
+pub mod output;
 pub mod query;
-pub mod snapshot;
+pub mod resolve;
 pub mod types;
+pub mod ui;
+pub mod walk;
 pub mod watch;
+pub mod workspace;
 
 use std::path::{Path, PathBuf};
 
@@ -48,37 +55,48 @@ use anyhow::Result;
 use rusqlite::Connection;
 
 pub use indexer::{IndexMode, IndexOptions, IndexReport};
-pub use query::{ExportGroupBy, ExportOptions};
-pub use types::{
-    AlternativeQuery, BenchQuery, BenchResult, BenchSavings, ConnectResult, ContextPack,
-    CriticalityBreakdown, DefinitionResult, DiffChangedSymbol, DiffImpactResult,
-    DiffImpactedSymbol, EditPrepResult, ExpandResult, ExportResult, GraphEngineKind, ImpactCaller,
-    ImpactResult, ImportRecord, ImportedByResult, ImportsResult, KindCount, Language,
-    LanguageCount, OutlineResult, PlanQueryResult, PlanStep, QueryMeta, ReferenceRecord,
-    ReferencesResult, SearchHit, SearchOptions, SearchResult, Sibling, SiblingsResult,
-    SignatureLine, SignatureResult, SnippetReferenceCheck, StatsResult, SymbolRecord,
-    SymbolSuggestion, TestsForResult, TopFanout, UnusedOptions, UnusedResult, UnusedSymbol,
-    ValidateResult, ValidateSnippetResult,
+pub use query::{
+    BlastArgs, BlastResult, ContextArgs, ContextResult, ExportGroupBy, ExportOptions, FindArgs,
+    FindResult, PathArgs, RefsArgs, RefsResult, SearchArgs, SearchResults, StatusResult,
+    VerifyArgs, VerifyResult,
 };
+pub use types::{ConnectResult, ExportResult, Language, ReferenceRecord, SymbolRecord};
+pub use workspace::Workspace;
 
-/// High-level handle to a Tessera index. Holds a single SQLite connection and,
-/// when present, a memory-mapped snapshot for hot-path queries.
+/// Read-only handle to a Tessera index.
 pub struct Index {
     conn: Connection,
     db_path: PathBuf,
+    root: PathBuf,
 }
 
 impl Index {
-    /// Open an existing index. Returns an error if the database doesn't exist
-    /// or can't be migrated to the current schema.
+    /// Open an existing index read-only.
     pub fn open(db_path: impl AsRef<Path>) -> Result<Self> {
         let db_path = db_path.as_ref().to_path_buf();
-        let conn = db::open_existing(&db_path)?;
-        Ok(Self { conn, db_path })
+        let conn = db::open_ro(&db_path)?;
+        let root = db::get_meta(&conn, "root")?
+            .map(PathBuf::from)
+            .unwrap_or_else(|| db_path.parent().unwrap_or(Path::new(".")).to_path_buf());
+        Ok(Self {
+            conn,
+            db_path,
+            root,
+        })
     }
 
-    /// Build (or refresh) an index from a repository on disk. This is the
-    /// library equivalent of `tessera index <root>`.
+    /// Open the index of `ws` read-only, reading files under `ws.root` (which
+    /// stays correct after the repository is moved).
+    pub fn open_workspace(ws: &Workspace) -> Result<Self> {
+        let conn = db::open_ro(&ws.db_path)?;
+        Ok(Self {
+            conn,
+            db_path: ws.db_path.clone(),
+            root: ws.root.clone(),
+        })
+    }
+
+    /// Build or refresh an index; the library equivalent of `tessera index <root>`.
     pub fn build(
         root: impl AsRef<Path>,
         db_path: impl AsRef<Path>,
@@ -91,110 +109,64 @@ impl Index {
         &self.db_path
     }
 
+    pub fn root(&self) -> &Path {
+        &self.root
+    }
+
     pub fn connection(&self) -> &Connection {
         &self.conn
     }
 
-    pub fn find_definition(&self, symbol: &str) -> Result<DefinitionResult> {
-        query::find_definition_conn(&self.conn, symbol)
+    pub fn workspace(&self) -> Workspace {
+        Workspace {
+            root: self.root.clone(),
+            db_path: self.db_path.clone(),
+        }
     }
 
-    pub fn find_references(&self, symbol: &str) -> Result<ReferencesResult> {
-        query::find_references_conn(&self.conn, symbol)
+    pub fn find(&self, args: &FindArgs) -> Result<FindResult> {
+        query::find(&self.conn, &self.root, args)
     }
 
-    pub fn outline(&self, path: impl AsRef<Path>) -> Result<OutlineResult> {
-        query::get_outline_conn(&self.conn, path.as_ref())
+    pub fn search(&self, args: &SearchArgs) -> Result<SearchResults> {
+        query::search(&self.conn, args)
     }
 
-    pub fn expand(&self, symbol: &str) -> Result<ExpandResult> {
-        query::expand_symbol_conn(&self.conn, symbol)
+    pub fn refs(&self, args: &RefsArgs) -> Result<RefsResult> {
+        query::refs(&self.conn, args)
     }
 
-    pub fn impact(&self, symbol: &str, depth: usize) -> Result<ImpactResult> {
-        query::impact_conn(&self.conn, symbol, depth)
+    pub fn blast(&self, args: &BlastArgs) -> Result<BlastResult> {
+        query::blast(&self.conn, &self.root, args)
     }
 
-    pub fn validate(&self, symbol: &str) -> Result<ValidateResult> {
-        query::validate_conn(&self.conn, symbol)
+    pub fn path(&self, args: &PathArgs) -> Result<ConnectResult> {
+        query::path(&self.conn, args)
     }
 
-    pub fn validate_snippet(
-        &self,
-        code: &str,
-        language: Language,
-    ) -> Result<ValidateSnippetResult> {
-        query::validate_snippet_conn(&self.conn, code, language)
+    pub fn context(&self, args: &ContextArgs) -> Result<ContextResult> {
+        query::context(&self.conn, &self.root, args)
     }
 
-    pub fn stats(&self) -> Result<StatsResult> {
-        query::stats_conn(&self.conn, &self.db_path)
+    pub fn verify(&self, args: &VerifyArgs) -> Result<VerifyResult> {
+        query::verify(&self.conn, &self.root, args)
     }
 
-    pub fn tests_for(&self, symbol: &str) -> Result<TestsForResult> {
-        query::tests_for_conn(&self.conn, symbol)
+    /// The pull-request report for a change: findings, callers, contracts
+    /// touched, tests to run.
+    pub fn report(&self, changes: &query::Changes) -> Result<query::report::Report> {
+        query::report::run(&self.conn, &self.root, changes)
     }
 
-    pub fn connect(&self, from: &str, to: &str, depth: usize) -> Result<ConnectResult> {
-        query::connect_conn(&self.conn, from, to, depth)
+    pub fn map(&self, args: &query::MapArgs) -> Result<query::MapResult> {
+        query::map(&self.conn, &self.root, args)
     }
 
-    pub fn export(
-        &self,
-        format: &str,
-        from: Option<&str>,
-        depth: usize,
-        limit: usize,
-    ) -> Result<ExportResult> {
-        query::export_conn(&self.conn, format, from, depth, limit)
+    pub fn status(&self) -> Result<StatusResult> {
+        query::status(&self.workspace())
     }
 
-    pub fn export_with_options(&self, options: ExportOptions) -> Result<ExportResult> {
+    pub fn export(&self, options: ExportOptions) -> Result<ExportResult> {
         query::export_conn_with_options(&self.conn, options)
-    }
-
-    pub fn search(&self, pattern: &str, options: SearchOptions) -> Result<SearchResult> {
-        query::search_conn(&self.conn, pattern, options)
-    }
-
-    pub fn unused(&self, options: UnusedOptions) -> Result<UnusedResult> {
-        query::unused_conn(&self.conn, options)
-    }
-
-    pub fn context_pack(&self, symbol: &str, budget_tokens: usize) -> Result<ContextPack> {
-        query::context_pack_conn(&self.conn, symbol, budget_tokens)
-    }
-
-    pub fn plan_query(&self, task: &str, symbol: Option<&str>) -> PlanQueryResult {
-        query::plan_query(task, symbol)
-    }
-
-    pub fn edit_prep(&self, symbol: &str, budget_tokens: usize) -> Result<EditPrepResult> {
-        query::edit_prep_conn(&self.conn, symbol, budget_tokens)
-    }
-
-    pub fn diff_impact(
-        &self,
-        from_ref: &str,
-        to_ref: Option<&str>,
-        depth: usize,
-    ) -> Result<DiffImpactResult> {
-        query::diff_impact_conn(&self.conn, from_ref, to_ref, depth)
-    }
-
-    pub fn imports(&self, path: &str) -> Result<ImportsResult> {
-        query::imports_conn(&self.conn, path)
-    }
-
-    pub fn imported_by(&self, source: &str) -> Result<ImportedByResult> {
-        query::imported_by_conn(&self.conn, source)
-    }
-
-    pub fn signature(&self, symbol: &str) -> Result<SignatureResult> {
-        query::signature_conn(&self.conn, symbol)
-    }
-
-    pub fn siblings(&self, symbol: &str) -> Result<SiblingsResult> {
-        query::siblings_conn(&self.conn, symbol)
     }
 }

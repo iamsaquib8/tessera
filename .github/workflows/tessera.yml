@@ -1,0 +1,21 @@
+# Tessera on its own pull requests, with the binary built from the branch.
+name: Tessera report
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  report:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --release --locked
+      - uses: ./action
+        with:
+          binary: target/release/tessera

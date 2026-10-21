@@ -1,27 +1,23 @@
-# Security Policy
+# Security policy
 
-Tessera is a local-first tool. It indexes source files into a SQLite database on your machine and does not require a cloud service.
+## Supported versions
 
-## Reporting a Vulnerability
+Security fixes go into the latest release. Before 1.0, only the newest minor
+version is supported.
 
-Please do not open a public issue for security-sensitive reports.
+## Reporting a vulnerability
 
-Send a private report through GitHub Security Advisories for the repository. Include:
+Report it privately through
+[GitHub security advisories](https://github.com/iamsaquib8/tessera/security/advisories/new).
+Please don't open a public issue. You'll get an acknowledgement within a few
+days and a fix or a mitigation plan as soon as one is ready.
 
-- affected version or commit
-- operating system
-- reproduction steps
-- expected and actual behavior
-- any relevant logs or sample files
+## What Tessera does and does not do
 
-## Scope
-
-Security-sensitive issues include:
-
-- unexpected network access
-- unsafe handling of repository contents
-- path traversal or arbitrary file writes
-- malformed MCP input causing code execution
-- dependency vulnerabilities with practical impact
-
-Parser inaccuracies and ordinary crashes are usually normal bugs unless they cross one of those boundaries.
+- It reads source files under the repository root and writes only to its
+  index directory (`.tessera/` by default, or `--db`).
+- It makes no network calls. `blast --diff` runs a local `git diff`.
+- `tessera mcp --http` binds where you tell it (use `127.0.0.1`). It rejects
+  non-local `Origin` headers and serves read-only tools only.
+- Release archives are published with SHA256SUMS and build-provenance
+  attestations, and `install.sh` verifies the checksum before installing.

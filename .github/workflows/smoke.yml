@@ -1,0 +1,144 @@
+name: Install smoke tests
+
+# Installs a published release through every channel on every OS and runs a
+# real query, so a broken install path is caught before users hit it. Called
+# by release.yml once every channel is published; run by hand for any version.
+on:
+  workflow_call:
+    inputs:
+      version:
+        type: string
+        required: true
+      prerelease:
+        type: boolean
+        default: false
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to test, e.g. 0.10.0"
+        required: true
+      prerelease:
+        description: "Skip channels a pre-release is not published to (Homebrew, crates.io)"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+env:
+  VERSION: ${{ inputs.version }}
+  PRERELEASE: ${{ inputs.prerelease }}
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      include: ${{ steps.plan.outputs.include }}
+    steps:
+      - id: plan
+        run: |
+          channels="npx script"
+          [ "$PRERELEASE" = true ] || channels="$channels brew binstall"
+          include=""
+          for os in ubuntu-latest macos-latest windows-latest; do
+            for channel in $channels; do
+              [ "$os/$channel" = "windows-latest/brew" ] && continue
+              include="$include{\"os\":\"$os\",\"channel\":\"$channel\"},"
+            done
+          done
+          echo "include=[${include%,}]" >> "$GITHUB_OUTPUT"
+
+  smoke:
+    name: ${{ matrix.channel }} (${{ matrix.os }})
+    needs: plan
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.plan.outputs.include) }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - name: Normalise version
+        run: echo "V=${VERSION#v}" >> "$GITHUB_ENV"
+
+      - if: matrix.channel == 'npx'
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - if: matrix.channel == 'npx'
+        name: Install via npx
+        run: |
+          echo "TESSERA=npx --yes tessera-codegraph@${V}" >> "$GITHUB_ENV"
+
+      - if: matrix.channel == 'script' && runner.os != 'Windows'
+        name: Install via install.sh
+        run: |
+          TESSERA_VERSION="v${V}" TESSERA_INSTALL_DIR="$HOME/.local/bin" sh install.sh
+          echo "TESSERA=$HOME/.local/bin/tessera" >> "$GITHUB_ENV"
+      - if: matrix.channel == 'script' && runner.os == 'Windows'
+        name: Install via release zip
+        run: |
+          curl -fsSL -o tessera.zip "https://github.com/iamsaquib8/tessera/releases/download/v${V}/tessera-x86_64-pc-windows-msvc.zip"
+          curl -fsSL -o SHA256SUMS "https://github.com/iamsaquib8/tessera/releases/download/v${V}/SHA256SUMS"
+          expected=$(awk '$2 == "tessera-x86_64-pc-windows-msvc.zip" { print $1 }' SHA256SUMS)
+          actual=$(sha256sum tessera.zip | cut -d ' ' -f 1)
+          [ "$expected" = "$actual" ] || { echo "checksum mismatch"; exit 1; }
+          unzip -o tessera.zip -d tessera-bin
+          echo "TESSERA=$PWD/tessera-bin/tessera.exe" >> "$GITHUB_ENV"
+
+      - if: matrix.channel == 'brew'
+        name: Install via Homebrew
+        run: |
+          brew install iamsaquib8/tessera/tessera
+          echo "TESSERA=tessera" >> "$GITHUB_ENV"
+
+      - if: matrix.channel == 'binstall'
+        uses: cargo-bins/cargo-binstall@main
+      - if: matrix.channel == 'binstall'
+        name: Install via cargo-binstall
+        run: |
+          cargo binstall --no-confirm --version "${V}" tessera-codegraph
+          echo "TESSERA=tessera" >> "$GITHUB_ENV"
+
+      - name: Version matches the release
+        run: |
+          out=$($TESSERA --version)
+          echo "$out"
+          [ "$out" = "tessera ${V}" ]
+      - name: Answers a real query
+        working-directory: tests/fixtures/typescript
+        run: $TESSERA --quiet find findById | grep -q "UserRepo.findById"
+
+  # The npm package must run on distributions older than the release runners.
+  old-glibc:
+    name: npx (Debian 11, glibc 2.31)
+    runs-on: ubuntu-latest
+    container: node:18-bullseye
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Version matches the release
+        run: |
+          V="${VERSION#v}"
+          out=$(npx --yes "tessera-codegraph@${V}" --version)
+          echo "$out"
+          [ "$out" = "tessera ${V}" ]
+      - name: Answers a real query
+        working-directory: tests/fixtures/typescript
+        run: npx --yes "tessera-codegraph@${VERSION#v}" --quiet find findById | grep -q "UserRepo.findById"
+
+  docker:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run the published image on a bind mount owned by another user
+        run: |
+          V="${VERSION#v}"
+          docker run --rm "ghcr.io/iamsaquib8/tessera:v${V}" --version | grep -q "tessera ${V}"
+          docker run --rm -v "$PWD/tests/fixtures/typescript:/work" "ghcr.io/iamsaquib8/tessera:v${V}" --quiet find findById \
+            | grep -q "UserRepo.findById"

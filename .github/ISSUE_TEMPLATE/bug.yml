@@ -1,0 +1,38 @@
+name: Bug report
+description: Tessera gave a wrong answer, crashed, or failed to install.
+labels: ["bug", "needs-repro"]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: The command you ran and what it printed.
+      render: console
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected
+    validations:
+      required: true
+  - type: textarea
+    id: code
+    attributes:
+      label: Smallest code that shows it
+      description: A few lines are ideal; they become a test fixture.
+      render: text
+  - type: textarea
+    id: status
+    attributes:
+      label: Output of `tessera status`
+      render: text
+    validations:
+      required: true
+  - type: dropdown
+    id: install
+    attributes:
+      label: How you installed Tessera
+      options: [npm / npx, Homebrew, install.sh, cargo binstall, cargo install, Docker, built from source]
+    validations:
+      required: true

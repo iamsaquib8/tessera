@@ -11,6 +11,10 @@ pub struct TesseraConfig {
     pub exclude_paths: Vec<String>,
     /// Extra directory or file names to skip during traversal.
     pub ignore_names: Vec<String>,
+    /// Glob patterns (relative to the root) to skip.
+    pub exclude_globs: Vec<String>,
+    /// Files larger than this are skipped; `None` uses the walker default.
+    pub max_file_bytes: Option<u64>,
 }
 
 impl TesseraConfig {
@@ -39,10 +43,15 @@ impl TesseraConfig {
                 continue;
             };
             let key = key.trim();
+            if (section.as_str(), key) == ("index", "max_file_bytes") {
+                config.max_file_bytes = value.trim().replace('_', "").parse().ok();
+                continue;
+            }
             let values = parse_string_array(value.trim());
             match (section.as_str(), key) {
                 ("include", "paths") => config.include_paths = normalize_prefixes(values),
                 ("exclude", "paths") => config.exclude_paths = normalize_prefixes(values),
+                ("exclude", "globs") => config.exclude_globs = values,
                 ("ignore", "extra") => config.ignore_names = values,
                 _ => {}
             }
@@ -108,16 +117,22 @@ paths = ["src/", "lib"]
 
 [exclude]
 paths = ["src/generated/"]
+globs = ["**/*.generated.ts"]
 
 [ignore]
 extra = ["fixtures", "tmp"]
+
+[index]
+max_file_bytes = 2_097_152
 "#,
         );
+        assert_eq!(config.max_file_bytes, Some(2_097_152));
 
         assert!(config.includes_path("src/app.ts"));
         assert!(!config.includes_path("tests/app.ts"));
         assert!(config.excludes_path("src/generated/app.ts"));
         assert!(config.ignores_name("fixtures"));
         assert!(config.ignores_name("tmp"));
+        assert_eq!(config.exclude_globs, vec!["**/*.generated.ts"]);
     }
 }

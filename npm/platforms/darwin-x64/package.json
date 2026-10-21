@@ -1,0 +1,20 @@
+{
+  "name": "tessera-codegraph-darwin-x64",
+  "version": "1.0.0",
+  "description": "Prebuilt tessera binary for x86_64-apple-darwin. Installed automatically by tessera-codegraph.",
+  "os": [
+    "darwin"
+  ],
+  "cpu": [
+    "x64"
+  ],
+  "files": [
+    "bin/"
+  ],
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/iamsaquib8/tessera.git"
+  },
+  "preferUnplugged": true
+}

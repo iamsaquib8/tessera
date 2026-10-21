@@ -1,0 +1,43 @@
+---
+source: tests/golden.rs
+expression: graph_dump(& db)
+---
+{
+  "symbols": [
+    "src/Users/UserRepository.php:5-11 class UserRepository [exported] | class UserRepository",
+    "src/Users/UserRepository.php:7-10 method UserRepository.findById [exported] | public function findById($id)",
+    "src/Users/UserService.php:11-14 method UserService.__construct [exported] | public function __construct()",
+    "src/Users/UserService.php:16-19 method UserService.load [exported] | public function load($id)",
+    "src/Users/UserService.php:7-20 class UserService [exported] | class UserService",
+    "src/Util/Strings.php:13-16 function load [exported] | function load($x)",
+    "src/Util/Strings.php:5-11 class Strings [exported] | class Strings",
+    "src/Util/Strings.php:7-10 method Strings.trim [exported] | public static function trim($s)",
+    "src/Util/i18n.php:3-5 function greet [exported] | function greet() { //x éééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééé",
+    "tests/UserServiceTest.php:5-11 class UserServiceTest [exported] | class UserServiceTest extends TestCase",
+    "tests/UserServiceTest.php:7-10 method UserServiceTest.testLoad [exported] | public function testLoad()"
+  ],
+  "refs": [
+    "src/Users/UserService.php:13:27 new UserRepository <- UserService.__construct",
+    "src/Users/UserService.php:18:25 call Strings.trim/1 <- UserService.load",
+    "src/Users/UserService.php:18:43 call other.findById/1 <- UserService.load",
+    "src/Util/Strings.php:9:16 call trim/1 <- Strings.trim",
+    "tests/UserServiceTest.php:9:14 new UserService <- UserServiceTest.testLoad",
+    "tests/UserServiceTest.php:9:30 call other.load/1 <- UserServiceTest.testLoad"
+  ],
+  "bindings": [],
+  "hints": [],
+  "modules": [],
+  "imports": [
+    "src/Users/UserService.php:5 use App/Util/Strings",
+    "tests/UserServiceTest.php:3 use App/Users/UserService"
+  ],
+  "edges": [
+    "src/Users/UserService.php UserService.__construct -new-> src/Users/UserRepository.php:UserRepository [medium/name]",
+    "src/Users/UserService.php UserService.load -call-> src/Users/UserRepository.php:UserRepository.findById [medium/name]",
+    "src/Users/UserService.php UserService.load -call-> src/Util/Strings.php:Strings.trim [medium/name]",
+    "src/Util/Strings.php Strings.trim -call-> trim [name]",
+    "tests/UserServiceTest.php UserServiceTest.testLoad -call-> src/Users/UserService.php:UserService.load [low/name]",
+    "tests/UserServiceTest.php UserServiceTest.testLoad -call-> src/Util/Strings.php:load [low/name]",
+    "tests/UserServiceTest.php UserServiceTest.testLoad -new-> src/Users/UserService.php:UserService [medium/name]"
+  ]
+}

@@ -1,61 +1,85 @@
-# First Five Minutes
+# The first five minutes
 
-This path gets from install to a useful graph result without reading source
-files manually.
-
-## 1. Install
-
-```sh
-npm install -g tessera-codegraph
-# or: brew install iamsaquib8/tessera/tessera
-# or: cargo install tessera-codegraph
-```
-
-## 2. Initialize and Index
+This walks through the loop Tessera is built for: look before you edit,
+check after you edit. It uses the TypeScript fixture in this repository, so
+every output below is real.
 
 ```sh
-cd path/to/project
-tessera init --mcp-configs
-tessera index .
-tessera doctor
+git clone https://github.com/iamsaquib8/tessera && cd tessera/tests/fixtures/typescript
 ```
 
-`doctor` checks the database, schema, snapshot, parser smoke tests, ignored-path
-rules, and the MCP command to paste into an agent.
+## 1. Find the code
 
-## 3. Ask the First Questions
-
-```sh
-tessera impact findById --explain
-tessera validate findByIdd --explain
-tessera connect handleRequest writeRow
-tessera export --from findById --format mermaid
+```console
+$ tessera find findById
+method UserRepo.findById src/users/repo.ts:6-8
+  findById(id: string): string {
 ```
 
-Use `--json` on any query when feeding another tool or script.
+Misspell it and Tessera says so, instead of guessing silently:
 
-## 4. Keep It Fresh
-
-```sh
-tessera watch .
+```console
+$ tessera find findByIdd
+No exact definition of findByIdd; closest matches:
+method UserRepo.findById src/users/repo.ts:6-8
+  findById(id: string): string {
 ```
 
-`watch` reuses the same incremental SHA-diff indexer as `index`, with polling and
-debounce controls for daily editing.
+## 2. See the blast radius before editing
 
-## 5. Wire MCP
+```console
+$ tessera blast formatName
+5 callers affected by formatName (ranked; all exact):
+  100.0 d1 UserRepo.findById src/users/repo.ts:6
+  100.0 d1 loadUser src/util/format.ts:5
+   82.2 d2 loadUser src/users/repo.ts:15
+   36.3 d3 handler src/api/handler.ts:4
+   36.3 d3 describe("loadUser").it("returns the user") test/repo.test.ts:4
+Tests to run: test/repo.test.ts
+```
 
-Use the generated snippets under `.tessera/mcp/`, or add this shape to your
-agent config:
+Scores come from personalised PageRank over the call graph: callers that many
+paths run through rank higher. `d1` is a direct caller.
 
-```json
-{
-  "mcpServers": {
-    "tessera": {
-      "command": "tessera",
-      "args": ["mcp", "--db", ".tessera/tessera.db"]
-    }
+## 3. Read one bundle instead of five files
+
+```console
+$ tessera context findById
+method UserRepo.findById src/users/repo.ts:6-8
+  findById(id: string): string {
+    return formatName(this.lookup(id));
   }
-}
+Calls:
+  UserRepo.lookup  src/users/repo.ts:10  private lookup(id: string): string {
+  formatName  src/util/format.ts:1  function formatName(name: string): string {
+Called by:
+  loadUser  src/users/repo.ts:15  function loadUser(id: string): string {
+Tests:
+  describe("loadUser").it("returns the user") (test/repo.test.ts:4)
+Related (shared callers):
+  UserRepo
 ```
 
+## 4. Check what you (or your agent) wrote
+
+```console
+$ echo 'JSON.parse(x); UserRepo.findByIdd(2); loadUsr(3)' | tessera verify --snippet - --language typescript
+✗ verify: 2 problem(s)
+  [V1] `findByIdd` is not defined anywhere in the index; did you mean UserRepo.findById? (line 1)
+  [V1] `loadUsr` is not defined anywhere in the index; did you mean loadUser? (line 1)
+```
+
+`JSON.parse` is not flagged: standard globals and calls on receivers Tessera
+cannot type are skipped rather than guessed. `verify` exits with code 1 when
+it finds problems, so it works in scripts and git hooks.
+
+## 5. Give it to your agent
+
+```sh
+claude mcp add tessera -- tessera mcp
+```
+
+The MCP server answers immediately, indexes in the background, and re-indexes
+files as they change, so the agent sees its own edits on the next call. See
+[integrations](integrations.md) for other agents and [MCP](mcp.md) for the
+tools.

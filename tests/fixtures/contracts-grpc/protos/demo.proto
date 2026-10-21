@@ -1,0 +1,29 @@
+syntax = "proto3";
+
+package shop;
+
+service CartService {
+    rpc AddItem(AddItemRequest) returns (Empty) {}
+    rpc GetCart(GetCartRequest) returns (Cart) {}
+}
+
+service CurrencyService {
+    rpc GetSupportedCurrencies(Empty) returns (GetSupportedCurrenciesResponse) {}
+    rpc Convert(CurrencyConversionRequest) returns (Money) {}
+}
+
+service ProductCatalogService {
+    rpc ListProducts(Empty) returns (ListProductsResponse) {}
+}
+
+service EmailService {
+    rpc SendOrderConfirmation(SendOrderConfirmationRequest) returns (Empty) {}
+}
+
+service CheckoutService {
+    rpc PlaceOrder(PlaceOrderRequest) returns (PlaceOrderResponse) {}
+}
+
+service AdService {
+    rpc GetAds(AdRequest) returns (AdResponse) {}
+}

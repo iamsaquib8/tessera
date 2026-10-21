@@ -1,0 +1,46 @@
+---
+source: tests/golden.rs
+expression: graph_dump(& db)
+---
+{
+  "symbols": [
+    "app/i18n.py:1-2 function greet [exported] | def greet():  #x éééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééé",
+    "app/models.py:4-9 class User [exported] | class User:",
+    "app/models.py:5-6 function User.__init__ [exported] | def __init__(self, name):",
+    "app/models.py:8-9 function User.display [exported] | def display(self):",
+    "app/service.py:13-14 function cached_load [exported] | def cached_load(id):",
+    "app/service.py:7-9 function load [exported] | def load(id):",
+    "app/util.py:1-2 function format_name [exported] | def format_name(name):",
+    "app/util.py:5-6 function load [exported] | def load(id):",
+    "tests/test_service.py:4-5 function test_load [exported] | def test_load():"
+  ],
+  "refs": [
+    "app/models.py:9:16 call format_name/1 <- User.display",
+    "app/service.py:14:12 call load/1 <- cached_load",
+    "app/service.py:8:12 call User/1 <- load",
+    "app/service.py:8:22 call util.load/1 <- load",
+    "app/service.py:9:17 call user.display/0 <- load",
+    "app/util.py:2:17 call name.strip/0 <- format_name",
+    "tests/test_service.py:5:12 call load/1 <- test_load"
+  ],
+  "bindings": [],
+  "hints": [],
+  "modules": [],
+  "imports": [
+    "app/models.py:1 from app.util",
+    "app/service.py:1 from functools",
+    "app/service.py:3 from .",
+    "app/service.py:4 from .models",
+    "tests/test_service.py:1 from app.service"
+  ],
+  "edges": [
+    "app/models.py User.display -call-> app/util.py:format_name [medium/name]",
+    "app/service.py cached_load -call-> app/service.py:load [high/local]",
+    "app/service.py load -call-> app/models.py:User [medium/name]",
+    "app/service.py load -call-> app/models.py:User.display [medium/name]",
+    "app/service.py load -call-> app/util.py:load [medium/name]",
+    "app/util.py format_name -call-> strip [name]",
+    "tests/test_service.py test_load -call-> app/service.py:load [low/name]",
+    "tests/test_service.py test_load -call-> app/util.py:load [low/name]"
+  ]
+}

@@ -1,0 +1,45 @@
+---
+title: Tessera
+description: Your agent says done. Tessera checks. Deterministic blast radius before every edit and verification after it, for any AI coding agent.
+template: splash
+hero:
+  title: Your agent says done. Tessera checks.
+  tagline: Deterministic blast radius before every edit and verification after it, for any AI coding agent. Local, no LLM, Apache-2.0.
+  actions:
+    - text: Get started
+      link: quickstart/
+      variant: primary
+    - text: View on GitHub
+      link: https://github.com/iamsaquib8/tessera
+      variant: minimal
+---
+
+import light from "../../assets/how-it-works-light.svg";
+import dark from "../../assets/how-it-works-dark.svg";
+import demo from "../../assets/demo.svg";
+
+<div class="demo">
+  <img src={demo.src} alt="Terminal session: tessera blast ranks the callers of formatName, tessera context shows findById with its callers and callees, and tessera verify catches two calls to functions that do not exist." />
+</div>
+
+<div class="loop-diagram">
+  <img class="light:sl-flex dark:sl-hidden" src={light.src} alt="Before the edit, blast and context; your agent edits; after the edit, verify. Both read a local index." />
+  <img class="dark:sl-flex light:sl-hidden" src={dark.src} alt="" aria-hidden="true" />
+</div>
+
+```sh
+npx tessera-codegraph blast <symbol>    # in any repository; the first query builds the index
+claude mcp add tessera -- tessera mcp   # or any of 24 agents
+```
+
+Coding agents edit code they have only partly read. Tessera gives them an
+exact local map of the code, so they see who a change affects before they make
+it and find out what they broke before they say done. The map is built by
+tree-sitter and stored in SQLite: the same code always gives the same answer,
+and nothing leaves your machine.
+
+- **[Quickstart](quickstart/):** install and the first commands.
+- **[The first five minutes](first-five-minutes/):** the loop, with real output.
+- **[Integrations](integrations/):** Claude Code, Cursor, Codex, Gemini CLI,
+  Antigravity, Copilot, and 18 more.
+- **[Limits](when-not-to-use/):** what Tessera does not do yet.
