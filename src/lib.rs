@@ -44,6 +44,7 @@ pub mod output;
 pub mod query;
 pub mod resolve;
 pub mod types;
+pub mod ui;
 pub mod walk;
 pub mod watch;
 pub mod workspace;

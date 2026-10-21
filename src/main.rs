@@ -168,6 +168,18 @@ enum Commands {
         /// Only contracts whose name or files contain this.
         query: Option<String>,
     },
+    /// A local web UI: change impact, contract map, symbols, search.
+    Ui {
+        /// Port on 127.0.0.1.
+        #[arg(long, default_value_t = 4747)]
+        port: u16,
+        /// Open it in the browser.
+        #[arg(long)]
+        open: bool,
+        /// Write a static copy to this directory instead of serving.
+        #[arg(long, value_name = "DIR")]
+        export: Option<PathBuf>,
+    },
     /// One budgeted bundle to read before editing a symbol.
     Context {
         /// Symbol name.
@@ -601,6 +613,18 @@ fn run() -> Result<u8> {
             };
             out.print(&index.map(&query::MapArgs { kind, query })?)?;
         }
+        Commands::Ui { port, open, export } => match export {
+            Some(dir) => {
+                tessera_codegraph::ui::export(&ws, &dir)?;
+                if !out.quiet {
+                    eprintln!(
+                        "Wrote the UI to {}; serve it from any static host.",
+                        dir.display()
+                    );
+                }
+            }
+            None => tessera_codegraph::ui::serve(&ws, port, open)?,
+        },
         Commands::Context { symbol, budget } => {
             let Some(index) = open_fresh(&ws, &out)? else {
                 return Ok(0);
