@@ -1,7 +1,7 @@
 {
   "name": "tessera",
   "displayName": "Tessera",
-  "version": "0.12.0",
+  "version": "0.13.0",
   "description": "Your agent says done, Tessera checks: notes on cross-file callers before an edit, broken call sites and imports reported after it, and a stop gate until they are fixed.",
   "author": {
     "name": "Saquib",

@@ -57,9 +57,10 @@ machine-readable output. List tools are paginated: `limit` (default 25) and
 | `search` | Fuzzy or glob name search with filters. `unused: true` lists functions nothing calls. | `pattern`, `kinds`, `languages`, `path`, `exported`, `unused` |
 | `refs` | Every reference to a symbol with its confidence, or the files importing a file. | `target`, `tests_only`, `min_confidence` |
 | `blast` | Callers ranked by impact, plus test files to run, for a symbol or a git diff. | `symbol` or `diff_from` (+`diff_to`), `depth` |
-| `verify` | Does a symbol exist; does every call in a snippet resolve? | `symbol` or `snippet` + `language` |
+| `verify` | Does a symbol exist; does every call in a snippet resolve; did a change break a call site, an import, or a contract? | `symbol`, `snippet` + `language`, or `changed` / `staged` / `diff_from` |
 | `context` | Body, callees, callers, tests, and siblings in one budgeted bundle. | `symbol`, `budget_tokens` |
-| `path` | Shortest call chain from one symbol to another. | `from`, `to`, `depth` |
+| `path` | Shortest call chain from one symbol to another, across services through routes and gRPC calls. | `from`, `to`, `depth` |
+| `map` | Contracts between services: routes, gRPC methods, topics, tables, with both sides; or what a service serves and calls. | `kind` (`route`, `rpc`, `topic`, `table`, `service`), `query` |
 | `status` | Index root, freshness, counts, and setup hints. | none |
 
 Symbols can be written `name`, `Class.method`, or `A::B`. References and

@@ -813,6 +813,12 @@ impl AgentText for MapResult {
                 (labels[1], &contract.providers),
                 (labels[2], &contract.consumers),
             ];
+            let width = rows
+                .iter()
+                .flat_map(|(_, sites)| sites.iter())
+                .map(|site| site.service.chars().count())
+                .max()
+                .unwrap_or(0);
             for (label, sites) in rows {
                 for site in sites {
                     let symbol = site
@@ -826,7 +832,7 @@ impl AgentText for MapResult {
                         format!(" ({})", site.confidence)
                     };
                     out.push_str(&format!(
-                        "  {label:<11} {:<14} {}:{}{symbol}{confidence}\n",
+                        "  {label:<11} {:<width$}  {}:{}{symbol}{confidence}\n",
                         site.service, site.path, site.line
                     ));
                 }

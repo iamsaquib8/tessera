@@ -14,7 +14,7 @@ demo. Nothing is claimed until it can be reproduced. The full design is in
 | v0.10 | Foundation | done, release pending |
 | v0.11 | Precision + public accuracy benchmark | done, release pending |
 | v0.12 | Edit-safety loop (hooks in every agent that supports them) | done, release pending |
-| v0.13 | Cross-repo contract map | planned |
+| v0.13 | Cross-repo contract map | done, release pending |
 | v1.0 | Change-impact UI, GitHub Action, stable contracts | planned |
 | v1.x | Team & CI, architecture rules, precise mode, editors, runtime truth, data lineage, plugins, agent memory | planned |
 
@@ -98,6 +98,16 @@ agent arms of the refactor eval are ready to run.
   - Prisma, TypeORM, Sequelize, JPA, Flyway, OpenAPI, and `.proto`.
 - `map` queries, `path` across services, and `verify` flags a contract change
   (a removed route, an orphaned consumer).
+
+**Status:** built ([docs/contracts.md](docs/contracts.md)). gRPC in Go, C#,
+Node, Python, Java and C++; HTTP in Express, Fastify, NestJS, Next.js,
+Spring and their clients; Spring Kafka, kafkajs and NestJS microservices;
+SQL migrations, JPA, TypeORM, Sequelize and Prisma; workspaces; V5. Hand-
+labelled gRPC links: no wrong link on microservices-demo or the held-out
+opentelemetry-demo, whose first measurement found 10 of 12 servers and 16
+of 26 clients (gaps since closed). Still to come: Express mount prefixes,
+GraphQL, config keys, `path` across repositories, and a third untouched
+corpus.
 
 ## v1.0: Visible and stable
 

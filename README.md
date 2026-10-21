@@ -41,9 +41,10 @@ against it:
   Hooks run it after every edit and hold the agent at "done" until the
   breakage is fixed, in Claude Code, Codex, Gemini CLI, Copilot, Cursor and
   more.
-- **Across services** *(coming in v0.13)*: routes, queues, and tables link
-  repositories into one map, so a changed endpoint shows the frontend code
-  that calls it.
+- **Across services:** `map` links HTTP routes, gRPC methods, Kafka topics,
+  and tables to the code on both sides, in any language Tessera reads, so a
+  changed endpoint shows the frontend code that calls it, and `verify`
+  catches a removed route that a client still calls.
 
 The map is deterministic. tree-sitter parses, SQLite stores, and the same code
 always gives the same answer. No model builds it, and nothing leaves your
@@ -107,7 +108,8 @@ docker run --rm -v "$PWD:/work" ghcr.io/iamsaquib8/tessera status
 | `tessera find <symbol>` / `--path <file>` | Where is it defined? What is in this file? |
 | `tessera refs <symbol \| file>` | Who calls it? Who imports this file? |
 | `tessera search <pattern>` / `--unused` | Which symbols match? Which functions are never called? |
-| `tessera path <from> <to>` | Does A reach B, and how? |
+| `tessera path <from> <to>` | Does A reach B, and how? Follows routes and gRPC calls across services |
+| `tessera map <route\|rpc\|topic\|table\|service> [query]` | Which services call this endpoint, method, topic, or table? |
 | `tessera status` | Is the index fresh? Is anything misconfigured? |
 | `tessera init` | Wire Tessera into the agents this project uses |
 
@@ -186,7 +188,7 @@ under 50 ms at p95 on 10,000 files. Indexing is incremental.
 | v0.10 | Foundation: index any repo, zero setup, MCP for every agent |
 | v0.11 | Precision: import- and type-aware resolution, public accuracy benchmark (done) |
 | v0.12 | Edit-safety loop: hooks that check every edit, `tessera init`, Claude Code plugin, git backstop (done) |
-| v0.13 | Contract map: routes, queues, and tables across repositories |
+| v0.13 | Contract map: routes, gRPC, topics, and tables across services and repositories (done) |
 | v1.0 | Change-impact UI, GitHub Action, stable contracts |
 
 Further out: CI test selection, architecture rules, SCIP precise mode, editor

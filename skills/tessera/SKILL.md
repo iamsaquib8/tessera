@@ -40,7 +40,10 @@ tessera find --path <file>    # outline of a file or directory
 tessera refs <symbol>         # every call site
 tessera refs <file>           # files that import this file
 tessera search 'load*'        # fuzzy or glob search; --unused for dead functions
-tessera path <from> <to>      # does A reach B, and how
+tessera path <from> <to>      # does A reach B, and how (across services too)
+tessera map route /api/users  # which services serve and call an endpoint
+tessera map rpc GetCart       # gRPC method: .proto, servers, clients
+tessera map topic orders      # producers and consumers
 ```
 
 **After editing, before saying the task is done:**
@@ -74,7 +77,7 @@ tessera verify --snippet <file> --language typescript
 
 ## Prefer MCP when available
 
-If the agent supports MCP, register `tessera mcp` once. The same eight tools
-(`find`, `search`, `refs`, `blast`, `verify`, `context`, `path`, `status`)
+If the agent supports MCP, register `tessera mcp` once. The same nine tools
+(`find`, `search`, `refs`, `blast`, `verify`, `context`, `path`, `map`, `status`)
 become available without shell calls, and the server keeps the index fresh as
 files change.

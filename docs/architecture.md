@@ -6,13 +6,16 @@
    ▼
  extract/        tree-sitter 0.26, one module per language behind LanguageSupport,
    │             iterative walk → symbols, references, imports
+   │   facts/    contract facts per file: gRPC rules, packs/*.scm queries,
+   │             .proto/.sql/OpenAPI/Prisma readers
    ▼
  db.rs           SQLite (WAL, FTS5 trigram), schema in PRAGMA user_version;
    │             a version mismatch rebuilds the cache
    ▼
  fresh.rs        stat-walk freshness check; index_files re-indexes only changed paths
    ▼
- query/          eight operations: find search refs blast path context verify status
+ query/          nine operations: find search refs blast path context verify map status;
+   │             map joins facts that share a key into contracts at query time
    │             every list paginated, sorted by a stable key, measured in tokens
    ├─▶ main.rs   CLI (clap): global --root --db --json --quiet; exit codes 0/1/2/3
    ├─▶ mcp/      dual-era MCP: stdio + Streamable HTTP, background index, file watcher

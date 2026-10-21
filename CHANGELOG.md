@@ -2,6 +2,38 @@
 
 All notable changes to Tessera are documented here.
 
+## 0.13.0 - Unreleased
+
+The contract-map release. Tessera sees how services talk to each other.
+
+### Added
+
+- **`tessera map <route|rpc|topic|table|service> [query]`** and the MCP
+  `map` tool: each HTTP route, gRPC method, topic, and table with where it
+  is declared, who provides it, and who uses it, each site with its
+  handler, service, and confidence ([docs/contracts.md](docs/contracts.md)).
+- **Facts layer** (schema v8): contract facts extracted per file at index
+  time and joined by key at query time. `.proto`, `.sql`, OpenAPI and
+  Prisma files are indexed as data files.
+- **Framework packs** as tree-sitter queries in `packs/`: Express, Fastify,
+  NestJS, Next.js file routes, fetch/axios/ky/SWR, Spring MVC, Feign,
+  RestTemplate, WebClient, MockMvc, Spring Kafka, kafkajs, NestJS
+  microservices, JPA, TypeORM, Sequelize.
+- **gRPC** servers and clients in Go, C#, Node, Python, Java and C++,
+  matched against `.proto` methods.
+- **`path` across services**: contracts are call edges, so a path can run
+  from a client into another service's handler.
+- **Workspaces**: `tessera.workspace.toml` lists repositories mapped
+  together.
+- **V5** in `verify` and the hooks: a client still uses a route, gRPC
+  method, or topic the change removed.
+- **tessera-bench** contract links: hand-labelled gRPC truth for
+  microservices-demo and a held-out opentelemetry-demo.
+
+### Changed
+
+- MCP lists nine tools.
+
 ## 0.12.0 - Unreleased
 
 The edit-safety release. Tessera checks every edit an agent makes and holds

@@ -1,6 +1,6 @@
 {
   "name": "tessera-codegraph-linux-arm64-musl",
-  "version": "0.12.0",
+  "version": "0.13.0",
   "description": "Prebuilt tessera binary for aarch64-unknown-linux-musl. Static binary for every Linux distribution; installed automatically by tessera-codegraph.",
   "os": [
     "linux"

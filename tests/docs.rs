@@ -36,7 +36,9 @@ fn concrete(command: &str) -> Option<Vec<String>> {
         .replace("<file>", "src/users/repo.ts")
         .replace("<pattern>", "load*")
         .replace("<from> <to>", "handler formatName")
-        .replace("<lang>", "typescript");
+        .replace("<lang>", "typescript")
+        .replace("<route|rpc|topic|table|service>", "route")
+        .replace(" [query]", "");
     assert!(
         !filled.contains('<'),
         "unhandled placeholder in README command `{command}`"

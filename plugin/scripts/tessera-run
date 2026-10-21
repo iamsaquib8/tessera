@@ -1,7 +1,7 @@
 #!/bin/sh
 # Starts the tessera this plugin was released with: one on PATH at the same
 # version, otherwise the npm package at that version through npx.
-version=0.12.0
+version=0.13.0
 if command -v tessera >/dev/null 2>&1 && [ "$(tessera --version 2>/dev/null)" = "tessera $version" ]; then
   set -- tessera "$@"
 elif command -v npx >/dev/null 2>&1; then
