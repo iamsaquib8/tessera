@@ -6,8 +6,8 @@ test("maps each supported platform to its package", () => {
   const cases = [
     [{ platform: "darwin", arch: "arm64" }, "tessera-codegraph-darwin-arm64"],
     [{ platform: "darwin", arch: "x64" }, "tessera-codegraph-darwin-x64"],
-    [{ platform: "linux", arch: "x64", glibc: true }, "tessera-codegraph-linux-x64-gnu"],
-    [{ platform: "linux", arch: "arm64", glibc: true }, "tessera-codegraph-linux-arm64-gnu"],
+    [{ platform: "linux", arch: "x64", glibc: true }, "tessera-codegraph-linux-x64-musl"],
+    [{ platform: "linux", arch: "arm64", glibc: true }, "tessera-codegraph-linux-arm64-musl"],
     [{ platform: "linux", arch: "x64", glibc: false }, "tessera-codegraph-linux-x64-musl"],
     [{ platform: "linux", arch: "arm64", glibc: false }, "tessera-codegraph-linux-arm64-musl"],
     [{ platform: "win32", arch: "x64" }, "tessera-codegraph-win32-x64"],
@@ -41,4 +41,11 @@ test("resolves the binary path inside the platform package", () => {
   });
   assert.deepStrictEqual(seen, ["tessera-codegraph-win32-x64/bin/tessera.exe"]);
   assert.strictEqual(bin, "/fake/tessera-codegraph-win32-x64/bin/tessera.exe");
+});
+
+test("linux packages install on every libc", () => {
+  for (const arch of ["x64", "arm64"]) {
+    const pkg = require(`../platforms/linux-${arch}-musl/package.json`);
+    assert.strictEqual(pkg.libc, undefined, `linux-${arch}-musl must not be limited to musl hosts`);
+  }
 });

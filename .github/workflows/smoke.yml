@@ -1,30 +1,60 @@
 name: Install smoke tests
 
 # Installs a published release through every channel on every OS and runs a
-# real query, so a broken install path is caught before users hit it.
+# real query, so a broken install path is caught before users hit it. Called
+# by release.yml once every channel is published; run by hand for any version.
 on:
-  release:
-    types: [published]
+  workflow_call:
+    inputs:
+      version:
+        type: string
+        required: true
+      prerelease:
+        type: boolean
+        default: false
   workflow_dispatch:
     inputs:
       version:
-        description: "Version to test, e.g. 0.10.0 (no leading v)"
+        description: "Version to test, e.g. 0.10.0"
         required: true
+      prerelease:
+        description: "Skip channels a pre-release is not published to (Homebrew, crates.io)"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
 
 env:
-  VERSION: ${{ inputs.version || github.event.release.tag_name }}
+  VERSION: ${{ inputs.version }}
+  PRERELEASE: ${{ inputs.prerelease }}
 
 jobs:
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      include: ${{ steps.plan.outputs.include }}
+    steps:
+      - id: plan
+        run: |
+          channels="npx script"
+          [ "$PRERELEASE" = true ] || channels="$channels brew binstall"
+          include=""
+          for os in ubuntu-latest macos-latest windows-latest; do
+            for channel in $channels; do
+              [ "$os/$channel" = "windows-latest/brew" ] && continue
+              include="$include{\"os\":\"$os\",\"channel\":\"$channel\"},"
+            done
+          done
+          echo "include=[${include%,}]" >> "$GITHUB_OUTPUT"
+
   smoke:
     name: ${{ matrix.channel }} (${{ matrix.os }})
+    needs: plan
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
-        channel: [npx, script, brew, binstall]
-        exclude:
-          - os: windows-latest
-            channel: brew
+        include: ${{ fromJSON(needs.plan.outputs.include) }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 20
     defaults:
@@ -83,12 +113,30 @@ jobs:
         working-directory: tests/fixtures/typescript
         run: $TESSERA --quiet find findById | grep -q "UserRepo.findById"
 
+  # The npm package must run on distributions older than the release runners.
+  old-glibc:
+    name: npx (Debian 11, glibc 2.31)
+    runs-on: ubuntu-latest
+    container: node:18-bullseye
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Version matches the release
+        run: |
+          V="${VERSION#v}"
+          out=$(npx --yes "tessera-codegraph@${V}" --version)
+          echo "$out"
+          [ "$out" = "tessera ${V}" ]
+      - name: Answers a real query
+        working-directory: tests/fixtures/typescript
+        run: npx --yes "tessera-codegraph@${VERSION#v}" --quiet find findById | grep -q "UserRepo.findById"
+
   docker:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
-      - name: Run the published image
+      - name: Run the published image on a bind mount owned by another user
         run: |
           V="${VERSION#v}"
           docker run --rm "ghcr.io/iamsaquib8/tessera:v${V}" --version | grep -q "tessera ${V}"

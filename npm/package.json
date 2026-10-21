@@ -33,8 +33,6 @@
   "optionalDependencies": {
     "tessera-codegraph-darwin-arm64": "0.9.0",
     "tessera-codegraph-darwin-x64": "0.9.0",
-    "tessera-codegraph-linux-x64-gnu": "0.9.0",
-    "tessera-codegraph-linux-arm64-gnu": "0.9.0",
     "tessera-codegraph-linux-x64-musl": "0.9.0",
     "tessera-codegraph-linux-arm64-musl": "0.9.0",
     "tessera-codegraph-win32-x64": "0.9.0"

@@ -17,6 +17,8 @@ permissions:
 
 env:
   TAG: ${{ inputs.tag || github.ref_name }}
+  # Tags with a pre-release suffix (v0.10.0-rc.1) never become `latest` anywhere.
+  PRERELEASE: ${{ contains(inputs.tag || github.ref_name, '-') }}
 
 jobs:
   # A draft release collects assets; it is published only after every binary
@@ -26,6 +28,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
       - name: Create draft release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -35,7 +39,11 @@ jobs:
             echo "::notice::Release $TAG already exists; reusing it."
             exit 0
           fi
-          gh release create "$TAG" --draft --verify-tag --title "$TAG" --generate-notes
+          if [ "$PRERELEASE" = true ]; then
+            gh release create "$TAG" --draft --verify-tag --title "$TAG" --generate-notes --prerelease
+          else
+            gh release create "$TAG" --draft --verify-tag --title "$TAG" --generate-notes
+          fi
 
   binaries:
     name: binary (${{ matrix.target }})
@@ -62,6 +70,8 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
@@ -81,6 +91,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
       - name: Download release archives
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -104,15 +116,23 @@ jobs:
         run: |
           set -euo pipefail
           gh release upload "$TAG" dist/SHA256SUMS --clobber
-          gh release edit "$TAG" --draft=false --latest
+          if [ "$PRERELEASE" = true ]; then
+            gh release edit "$TAG" --draft=false --prerelease --latest=false
+          else
+            gh release edit "$TAG" --draft=false --latest
+          fi
 
   crates:
     name: publish crates.io
     needs: publish
+    # crates.io versions are permanent, so release candidates stay off it.
+    if: ${{ !contains(inputs.tag || github.ref_name, '-') }}
     runs-on: ubuntu-latest
     environment: crates-io
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: Publish (idempotent; skipped without a token)
@@ -139,6 +159,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
       - uses: actions/setup-node@v4
         with:
           node-version: 20
@@ -161,12 +183,14 @@ jobs:
             exit 0
           fi
           version="${TAG#v}"
+          dist_tag=latest
+          if [ "$PRERELEASE" = true ]; then dist_tag=next; fi
           publish() {
             name=$(node -p "require('./$1/package.json').name")
             if npm view "$name@$version" version >/dev/null 2>&1; then
               echo "$name@$version already published"
             else
-              npm publish "$1" --access public --provenance
+              npm publish "$1" --access public --provenance --tag "$dist_tag"
             fi
           }
           for dir in npm/platforms/*/; do
@@ -177,9 +201,12 @@ jobs:
   homebrew:
     name: update Homebrew tap
     needs: publish
+    if: ${{ !contains(inputs.tag || github.ref_name, '-') }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
       - name: Render formula and push to iamsaquib8/homebrew-tessera
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -201,3 +228,27 @@ jobs:
           git add Formula/tessera.rb
           git diff --cached --quiet || git commit -m "tessera ${TAG}"
           git push
+
+  # Releases published with GITHUB_TOKEN start no other workflows, so the image
+  # and the install smoke tests run here, after every channel is published.
+  docker:
+    name: container image
+    needs: publish
+    permissions:
+      contents: read
+      packages: write
+    uses: ./.github/workflows/docker.yml
+    with:
+      tag: ${{ inputs.tag || github.ref_name }}
+      prerelease: ${{ contains(inputs.tag || github.ref_name, '-') }}
+
+  smoke:
+    name: install smoke tests
+    needs: [npm, crates, homebrew, docker]
+    if: ${{ !failure() && !cancelled() }}
+    permissions:
+      contents: read
+    uses: ./.github/workflows/smoke.yml
+    with:
+      version: ${{ inputs.tag || github.ref_name }}
+      prerelease: ${{ contains(inputs.tag || github.ref_name, '-') }}

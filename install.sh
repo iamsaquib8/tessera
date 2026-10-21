@@ -80,9 +80,13 @@ tar -xzf "$tmp/$archive" -C "$tmp" || die "could not extract ${archive}"
 bin_path="$(find "$tmp" -type f -name "$BIN" | head -n 1)"
 [ -n "$bin_path" ] || die "${archive} does not contain ${BIN}"
 
-mkdir -p "$INSTALL_DIR"
-cp "$bin_path" "$INSTALL_DIR/$BIN"
-chmod 0755 "$INSTALL_DIR/$BIN"
+mkdir -p "$INSTALL_DIR" || die "could not create ${INSTALL_DIR}"
+# Copy beside the target, then rename: a running tessera keeps its old inode,
+# and macOS never sees a signed binary rewritten in place.
+staged="$INSTALL_DIR/.${BIN}.new.$$"
+cp "$bin_path" "$staged" || die "could not write to ${INSTALL_DIR}"
+chmod 0755 "$staged"
+mv -f "$staged" "$INSTALL_DIR/$BIN" || { rm -f "$staged"; die "could not replace ${INSTALL_DIR}/${BIN}"; }
 say "installed ${INSTALL_DIR}/${BIN} (sha256 verified)"
 
 case ":$PATH:" in

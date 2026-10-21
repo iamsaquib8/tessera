@@ -20,8 +20,8 @@ your machine:
 | --- | --- |
 | `tessera-codegraph-darwin-arm64` | macOS, Apple silicon |
 | `tessera-codegraph-darwin-x64` | macOS, Intel |
-| `tessera-codegraph-linux-x64-gnu` / `-musl` | Linux x64, glibc or musl |
-| `tessera-codegraph-linux-arm64-gnu` / `-musl` | Linux arm64, glibc or musl |
+| `tessera-codegraph-linux-x64-musl` | Linux x64, any distribution (static) |
+| `tessera-codegraph-linux-arm64-musl` | Linux arm64, any distribution (static) |
 | `tessera-codegraph-win32-x64` | Windows x64 |
 
 Nothing is downloaded at install time, so it works behind proxies and with

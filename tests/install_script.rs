@@ -101,3 +101,34 @@ fn refuses_a_tampered_archive() {
     assert!(String::from_utf8_lossy(&output.stderr).contains("checksum mismatch"));
     assert!(!install_dir.join("tessera").exists());
 }
+
+#[test]
+fn replaces_an_existing_binary_by_rename() {
+    use std::os::unix::fs::MetadataExt;
+    let temp = TempDir::new().unwrap();
+    let base = temp.path().join("releases");
+    fake_release(&base, "v9.9.9");
+    let install_dir = temp.path().join("bin");
+    fs::create_dir_all(&install_dir).unwrap();
+    let target = install_dir.join("tessera");
+    fs::write(&target, "old").unwrap();
+    let before = fs::metadata(&target).unwrap().ino();
+    let output = run_installer(&base, &install_dir);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_ne!(
+        fs::metadata(&target).unwrap().ino(),
+        before,
+        "the running binary must be replaced, not overwritten in place"
+    );
+    let leftovers: Vec<_> = fs::read_dir(&install_dir)
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .filter(|name| name != "tessera")
+        .collect();
+    assert!(leftovers.is_empty(), "{leftovers:?}");
+}

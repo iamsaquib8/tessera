@@ -32,7 +32,7 @@ struct Cli {
     #[arg(long, global = true, value_name = "DIR")]
     root: Option<PathBuf>,
     /// Index database. Defaults to <root>/.tessera/tessera.db.
-    #[arg(long, global = true, value_name = "FILE")]
+    #[arg(long, global = true, value_name = "FILE", env = "TESSERA_DB")]
     db: Option<PathBuf>,
     /// Print machine-readable JSON.
     #[arg(long, global = true)]

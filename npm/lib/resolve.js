@@ -3,26 +3,20 @@
 const PACKAGES = {
   "darwin-arm64": "tessera-codegraph-darwin-arm64",
   "darwin-x64": "tessera-codegraph-darwin-x64",
-  "linux-x64-gnu": "tessera-codegraph-linux-x64-gnu",
-  "linux-arm64-gnu": "tessera-codegraph-linux-arm64-gnu",
   "linux-x64-musl": "tessera-codegraph-linux-x64-musl",
   "linux-arm64-musl": "tessera-codegraph-linux-arm64-musl",
   "win32-x64": "tessera-codegraph-win32-x64",
 };
 
-function hostHasGlibc() {
-  if (process.platform !== "linux") return false;
-  const report = process.report && process.report.getReport();
-  return Boolean(report && report.header && report.header.glibcVersionRuntime);
-}
-
 function currentHost() {
-  return { platform: process.platform, arch: process.arch, glibc: hostHasGlibc() };
+  return { platform: process.platform, arch: process.arch };
 }
 
+// Linux always gets the static musl build: it runs on every distribution,
+// including glibc versions older than the ones release runners link against.
 function platformPackage(host = currentHost()) {
   let key = `${host.platform}-${host.arch}`;
-  if (host.platform === "linux") key += host.glibc ? "-gnu" : "-musl";
+  if (host.platform === "linux") key += "-musl";
   const name = PACKAGES[key];
   if (!name) {
     throw new Error(

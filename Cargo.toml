@@ -24,7 +24,7 @@ path = "src/main.rs"
 
 [dependencies]
 anyhow = "1.0"
-clap = { version = "4.5", features = ["derive"] }
+clap = { version = "4.5", features = ["derive", "env"] }
 clap_complete = "4"
 globset = "0.4"
 ignore = "0.4"
@@ -62,3 +62,10 @@ pkg-fmt = "tgz"
 
 [package.metadata.binstall.overrides.x86_64-pc-windows-msvc]
 pkg-fmt = "zip"
+
+# Linux hosts get the static musl build, which runs on any glibc version.
+[package.metadata.binstall.overrides.x86_64-unknown-linux-gnu]
+pkg-url = "{ repo }/releases/download/v{ version }/tessera-x86_64-unknown-linux-musl{ archive-suffix }"
+
+[package.metadata.binstall.overrides.aarch64-unknown-linux-gnu]
+pkg-url = "{ repo }/releases/download/v{ version }/tessera-aarch64-unknown-linux-musl{ archive-suffix }"
