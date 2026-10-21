@@ -1,9 +1,12 @@
-use std::collections::{BTreeSet, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::fmt;
+use std::io::{Read, Write};
 use std::path::Path;
-use std::process::Command;
+use std::process::{Command, Stdio};
+use std::sync::LazyLock;
 
 use anyhow::{anyhow, bail, Result};
+use regex::Regex;
 use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
 
@@ -238,6 +241,11 @@ struct Contracted {
     path: String,
     line: usize,
     confidence: String,
+    /// The source line the fact came from.
+    evidence: String,
+    /// The link is exact, not a path parameter standing in for a literal
+    /// segment (`/users/{}` reached by `/users/me`).
+    exact: bool,
 }
 
 fn facts_where(
@@ -246,7 +254,7 @@ fn facts_where(
     args: &[&dyn rusqlite::ToSql],
 ) -> Result<Vec<Contracted>> {
     let mut stmt = conn.prepare_cached(&format!(
-        "SELECT f.key, fl.path, f.line, f.confidence FROM facts f
+        "SELECT f.key, fl.path, f.line, f.confidence, f.evidence FROM facts f
          JOIN files fl ON fl.id = f.file_id WHERE {sql}"
     ))?;
     let rows = stmt.query_map(args, |row| {
@@ -255,6 +263,8 @@ fn facts_where(
             path: row.get(1)?,
             line: row.get::<_, i64>(2)? as usize,
             confidence: row.get(3)?,
+            evidence: row.get::<_, Option<String>>(4)?.unwrap_or_default(),
+            exact: true,
         })
     })?;
     Ok(rows.collect::<rusqlite::Result<_>>()?)
@@ -270,29 +280,36 @@ fn contract_breaks(
     rev: &str,
     findings: &mut Vec<Finding>,
 ) -> Result<()> {
+    // Nothing can lose a client in an index without clients.
+    let clients: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM facts WHERE kind IN (?1, ?2, ?3)",
+        params![kind::HTTP_CALL, kind::RPC_CALL, kind::CONSUMER],
+        |row| row.get(0),
+    )?;
+    if clients == 0 {
+        return Ok(());
+    }
+    let candidates: Vec<&String> = changed
+        .iter()
+        .filter(|path| Language::from_path(Path::new(path.as_str())).is_some())
+        .collect();
+    let before = files_at(root, rev, &candidates);
     let mut removed: Vec<(crate::facts::IndexedFact, String)> = Vec::new();
-    for path in changed {
-        let Some(language) = Language::from_path(Path::new(path)) else {
+    for path in candidates {
+        let (Some(language), Some(before)) =
+            (Language::from_path(Path::new(path)), before.get(path))
+        else {
             continue;
         };
-        let Some(before) = file_at(root, rev, path) else {
+        let Ok(parsed) = crate::extract::parse_file_at(language, path, before) else {
             continue;
         };
-        let Ok(parsed) = crate::extract::parse_file_at(language, path, &before) else {
-            continue;
-        };
-        let old: Vec<crate::facts::IndexedFact> = parsed
+        for fact in parsed
             .facts
             .into_iter()
             .filter(|f| PROVIDERS.contains(&f.kind))
-            .collect();
-        if old.is_empty() {
-            continue;
-        }
-        for fact in old {
-            let offered =
-                facts_where(conn, "f.key = ?1 AND f.kind = ?2", &[&fact.key, &fact.kind])?;
-            if offered.is_empty() {
+        {
+            if !still_offered(conn, &fact)? {
                 removed.push((fact, path.clone()));
             }
         }
@@ -304,9 +321,13 @@ fn contract_breaks(
             kind::PRODUCER => ("produced", "listener"),
             _ => ("served", "call"),
         };
+        // A route that now answers under a mounted router's prefix may
+        // still be served; Tessera does not follow mounts yet.
+        let mounted = fact.kind == kind::ROUTE
+            && (served_under_a_prefix(conn, &fact)? || mounts_a_router(&root.join(&from)));
         for consumer in consumers {
             let high = fact.confidence == "high" && consumer.confidence == "high";
-            let blocking = high && fact.kind != kind::PRODUCER;
+            let blocking = high && consumer.exact && !mounted && fact.kind != kind::PRODUCER;
             findings.push(Finding {
                 id: "V5".to_string(),
                 confidence: if high { Confidence::High } else { Confidence::Medium },
@@ -341,6 +362,76 @@ fn declared_name(conn: &Connection, fact: &crate::facts::IndexedFact) -> Result<
     })
 }
 
+/// Whether something still offers what `fact` offered: the same key, or for
+/// a route, the same path for its method or for any method.
+fn still_offered(conn: &Connection, fact: &crate::facts::IndexedFact) -> Result<bool> {
+    if !facts_where(conn, "f.key = ?1 AND f.kind = ?2", &[&fact.key, &fact.kind])?.is_empty() {
+        return Ok(true);
+    }
+    let Some((method, path)) = route_parts(&fact.key).filter(|_| fact.kind == kind::ROUTE) else {
+        return Ok(false);
+    };
+    let any = format!("http ANY {path}");
+    let same = format!("http {method} {path}");
+    let either = if method == "ANY" { "%" } else { "" };
+    Ok(!facts_where(
+        conn,
+        "f.kind = ?1 AND (f.key = ?2 OR f.key = ?3 OR f.key LIKE 'http ' || ?4 || ' ' || ?5)",
+        &[&kind::ROUTE, &any, &same, &either, &path],
+    )?
+    .is_empty())
+}
+
+/// `http GET /users/{}` → (`GET`, `/users/{}`).
+fn route_parts(key: &str) -> Option<(&str, &str)> {
+    key.strip_prefix("http ")?.split_once(' ')
+}
+
+/// A route of the same method serves a trailing part of the removed path:
+/// `GET /users` after `GET /api/users` moved into a router mounted at `/api`.
+fn served_under_a_prefix(conn: &Connection, fact: &crate::facts::IndexedFact) -> Result<bool> {
+    let Some((method, path)) = route_parts(&fact.key) else {
+        return Ok(false);
+    };
+    let removed: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
+    Ok(facts_where(conn, "f.kind = ?1", &[&kind::ROUTE])?
+        .iter()
+        .filter_map(|route| route_parts(&route.key))
+        .any(|(m, p)| {
+            let segments: Vec<&str> = p.split('/').filter(|s| !s.is_empty()).collect();
+            (m == method || m == "ANY" || method == "ANY")
+                && !segments.is_empty()
+                && segments.len() < removed.len()
+                && super::map::path_match(&removed[removed.len() - segments.len()..], &segments)
+                    .is_some()
+        }))
+}
+
+/// The file now mounts a router under a path (`app.use("/api", users)`),
+/// so a route it no longer declares may live on under that prefix.
+fn mounts_a_router(file: &Path) -> bool {
+    static MOUNT: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r#"\.(use|register)\(\s*['"`]/"#).unwrap());
+    std::fs::read_to_string(file).is_ok_and(|text| MOUNT.is_match(&text))
+}
+
+/// A request to another organisation's API: an absolute URL whose host has
+/// a dot (`api.github.com`), unlike a service name (`http://cart:8080`).
+fn external(evidence: &str) -> bool {
+    let Some(at) = evidence.find("://") else {
+        return false;
+    };
+    let host: String = evidence[at + 3..]
+        .chars()
+        .take_while(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_'))
+        .collect();
+    host.contains('.')
+        && !host.starts_with("127.")
+        && !host.ends_with(".local")
+        && !host.ends_with(".internal")
+        && host.chars().any(|c| c.is_ascii_alphabetic())
+}
+
 /// The clients of a removed provider fact.
 fn consumers_of(conn: &Connection, fact: &crate::facts::IndexedFact) -> Result<Vec<Contracted>> {
     match fact.kind {
@@ -356,17 +447,18 @@ fn consumers_of(conn: &Connection, fact: &crate::facts::IndexedFact) -> Result<V
             let calls = facts_where(conn, "f.kind = ?1", &[&kind::HTTP_CALL])?;
             Ok(calls
                 .into_iter()
-                .filter(|call| {
-                    let Some((m, p)) = call
+                .filter(|call| !external(&call.evidence))
+                .filter_map(|mut call| {
+                    let (m, p) = call
                         .key
                         .strip_prefix("http ")
-                        .and_then(|k| k.split_once(' '))
-                    else {
-                        return false;
-                    };
+                        .and_then(|k| k.split_once(' '))?;
                     let segments: Vec<&str> = p.split('/').filter(|s| !s.is_empty()).collect();
-                    (m == method || m == "ANY" || method == "ANY")
-                        && super::map::path_match(&route, &segments).is_some()
+                    if !(m == method || m == "ANY" || method == "ANY") {
+                        return None;
+                    }
+                    call.exact = super::map::path_match(&route, &segments)?;
+                    Some(call)
                 })
                 .collect())
         }
@@ -418,16 +510,76 @@ fn consumers_of(conn: &Connection, fact: &crate::facts::IndexedFact) -> Result<V
 }
 
 /// `path` as it was at `rev`; `None` when it did not exist.
-fn file_at(root: &Path, rev: &str, path: &str) -> Option<String> {
-    let out = Command::new("git")
+/// Each path's content at `rev`, read by one `git cat-file --batch`;
+/// paths that did not exist then are left out.
+fn files_at(root: &Path, rev: &str, paths: &[&String]) -> HashMap<String, String> {
+    let mut out = HashMap::new();
+    if paths.is_empty() {
+        return out;
+    }
+    let Ok(prefix) = Command::new("git")
         .arg("-C")
         .arg(root)
-        .args(["show", &format!("{rev}:./{path}")])
+        .args(["rev-parse", "--show-prefix"])
         .output()
-        .ok()?;
-    out.status
-        .success()
-        .then(|| String::from_utf8_lossy(&out.stdout).into_owned())
+    else {
+        return out;
+    };
+    let prefix = String::from_utf8_lossy(&prefix.stdout).trim().to_string();
+    let Ok(mut child) = Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args(["cat-file", "--batch"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+    else {
+        return out;
+    };
+    let request: String = paths
+        .iter()
+        .map(|path| format!("{rev}:{prefix}{path}\n"))
+        .collect();
+    let mut stdin = child.stdin.take();
+    let writer = std::thread::spawn(move || {
+        if let Some(stdin) = stdin.as_mut() {
+            let _ = stdin.write_all(request.as_bytes());
+        }
+    });
+    let mut bytes = Vec::new();
+    if let Some(mut stdout) = child.stdout.take() {
+        let _ = stdout.read_to_end(&mut bytes);
+    }
+    let _ = writer.join();
+    let _ = child.wait();
+    let mut rest = bytes.as_slice();
+    for path in paths {
+        let Some(end) = rest.iter().position(|b| *b == b'\n') else {
+            break;
+        };
+        let header = String::from_utf8_lossy(&rest[..end]).into_owned();
+        rest = &rest[end + 1..];
+        let mut fields = header.split(' ');
+        let (Some(_), Some(kind), Some(size)) = (fields.next(), fields.next(), fields.next())
+        else {
+            continue;
+        };
+        let Ok(size) = size.parse::<usize>() else {
+            continue;
+        };
+        if rest.len() < size {
+            break;
+        }
+        if kind == "blob" {
+            out.insert(
+                path.to_string(),
+                String::from_utf8_lossy(&rest[..size]).into_owned(),
+            );
+        }
+        rest = rest.get(size + 1..).unwrap_or_default();
+    }
+    out
 }
 
 /// Deep-tier languages, whose high-confidence findings block.

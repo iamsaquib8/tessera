@@ -513,3 +513,138 @@ fn markdown_report_names_the_services_a_contract_change_reaches() {
         "{text}"
     );
 }
+
+/// A committed repository holding just these files.
+fn repo_with(files: &[(&str, &str)]) -> TempDir {
+    let temp = TempDir::new().unwrap();
+    for (path, content) in files {
+        let file = temp.path().join(path);
+        fs::create_dir_all(file.parent().unwrap()).unwrap();
+        fs::write(file, content).unwrap();
+    }
+    for args in [
+        &["init", "-q"][..],
+        &["add", "."],
+        &[
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@example.com",
+            "commit",
+            "-qm",
+            "base",
+        ],
+    ] {
+        assert!(StdCommand::new("git")
+            .args(args)
+            .current_dir(temp.path())
+            .status()
+            .unwrap()
+            .success());
+    }
+    temp
+}
+
+const EXPRESS_APP: &str = "const express = require('express');\nconst app = express();\n";
+
+#[test]
+fn v5_is_silent_for_a_call_to_an_external_api() {
+    let temp = repo_with(&[
+        (
+            "api/app.js",
+            &format!("{EXPRESS_APP}app.get('/user', (req, res) => res.send('me'));\n"),
+        ),
+        (
+            "web/client.js",
+            "export function me() {\n  return fetch('https://api.github.com/user');\n}\n",
+        ),
+    ]);
+    edit(
+        temp.path(),
+        "api/app.js",
+        "app.get('/user', (req, res) => res.send('me'));\n",
+        "",
+    );
+    let (code, findings, _) = verify_changed(temp.path());
+    assert_eq!(code, 0, "{findings:?}");
+    assert!(
+        !findings.iter().any(|f| f.starts_with("V5")),
+        "{findings:?}"
+    );
+}
+
+#[test]
+fn v5_does_not_block_on_a_parameter_only_match() {
+    let temp = repo_with(&[
+        (
+            "api/app.js",
+            &format!(
+                "{EXPRESS_APP}app.get('/users/:id', (req, res) => res.send(req.params.id));\n"
+            ),
+        ),
+        (
+            "web/client.js",
+            "export function me() {\n  return fetch('/users/me');\n}\n",
+        ),
+    ]);
+    edit(
+        temp.path(),
+        "api/app.js",
+        "app.get('/users/:id', (req, res) => res.send(req.params.id));\n",
+        "",
+    );
+    let (code, findings, _) = verify_changed(temp.path());
+    assert_eq!(code, 0, "{findings:?}");
+    assert!(
+        findings.contains(&"V5 web/client.js:2".to_string()),
+        "{findings:?}"
+    );
+}
+
+#[test]
+fn v5_does_not_block_when_a_route_moves_under_a_mounted_router() {
+    let temp = repo_with(&[
+        (
+            "api/app.js",
+            &format!("{EXPRESS_APP}app.get('/api/users', (req, res) => res.send([]));\n"),
+        ),
+        (
+            "web/client.js",
+            "export function users() {\n  return fetch('/api/users');\n}\n",
+        ),
+    ]);
+    edit(
+        temp.path(),
+        "api/app.js",
+        "app.get('/api/users', (req, res) => res.send([]));\n",
+        "const users = express.Router();\nusers.get('/users', (req, res) => res.send([]));\napp.use('/api', users);\n",
+    );
+    let (code, findings, _) = verify_changed(temp.path());
+    assert_eq!(code, 0, "{findings:?}");
+}
+
+#[test]
+fn v5_is_silent_when_a_route_is_still_served_for_any_method() {
+    let temp = repo_with(&[
+        (
+            "api/app.js",
+            &format!("{EXPRESS_APP}app.get('/api/users', (req, res) => res.send([]));\n"),
+        ),
+        (
+            "web/client.js",
+            "export function users() {\n  return fetch('/api/users');\n}\n",
+        ),
+    ]);
+    edit(
+        temp.path(),
+        "api/app.js",
+        "app.get('/api/users'",
+        "app.all('/api/users'",
+    );
+    let (code, findings, _) = verify_changed(temp.path());
+    assert_eq!(code, 0, "{findings:?}");
+    assert!(
+        !findings.iter().any(|f| f.starts_with("V5")),
+        "{findings:?}"
+    );
+}
