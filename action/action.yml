@@ -7,8 +7,8 @@ branding:
 
 inputs:
   version:
-    description: Tessera release to install, e.g. v1.0.0. Ignored when `binary` is set.
-    default: latest
+    description: Tessera release to install, e.g. v1.0.0, or `latest`. Defaults to the release this action ships with. Ignored when `binary` is set.
+    default: v1.0.0
   binary:
     description: Path to a tessera binary to use instead of installing one.
     default: ""
@@ -37,10 +37,11 @@ runs:
       if: inputs.binary == ''
       shell: bash
       env:
-        TESSERA_VERSION: ${{ inputs.version != 'latest' && inputs.version || '' }}
+        TESSERA_VERSION: ${{ inputs.version }}
         TESSERA_INSTALL_DIR: ${{ runner.temp }}/tessera-bin
       run: |
-        curl -fsSL https://raw.githubusercontent.com/iamsaquib8/tessera/main/install.sh | sh
+        # The installer from this action's own checkout, not a moving branch.
+        sh "$GITHUB_ACTION_PATH/../install.sh"
         echo "${TESSERA_INSTALL_DIR}" >> "$GITHUB_PATH"
 
     - name: Restore the index
@@ -79,11 +80,14 @@ runs:
         GH_TOKEN: ${{ inputs.token }}
         PR: ${{ github.event.pull_request.number }}
         REPO: ${{ github.repository }}
+        # Whose comment to update: the Actions bot unless another token is used.
+        AUTHOR: ${{ inputs.token == github.token && 'github-actions[bot]' || '' }}
       run: |
         report="$RUNNER_TEMP/tessera-report.md"
+        # --jq runs once per page, so keep the first id of all pages.
         existing=$(gh api "repos/$REPO/issues/$PR/comments" --paginate \
-          --jq '[.[] | select(.body | startswith("<!-- tessera -->"))][0].id' 2>/dev/null || true)
-        if [ -n "$existing" ] && [ "$existing" != "null" ]; then
+          --jq '.[] | select((.body | startswith("<!-- tessera -->")) and (env.AUTHOR == "" or .user.login == env.AUTHOR)) | .id' 2>/dev/null | head -n1 || true)
+        if [ -n "$existing" ]; then
           gh api -X PATCH "repos/$REPO/issues/comments/$existing" -F body=@"$report" >/dev/null && exit 0
         else
           gh api -X POST "repos/$REPO/issues/$PR/comments" -F body=@"$report" >/dev/null && exit 0

@@ -23,7 +23,7 @@ jobs:
 
 | Input | Default | |
 | --- | --- | --- |
-| `version` | `latest` | Release to install |
+| `version` | the release this action ships with | Release to install, or `latest` |
 | `binary` | | A tessera binary to use instead (for example one built in the job) |
 | `base` | the pull request's base | Revision to compare against |
 | `fail-on` | `never` | `blocking` fails the job on high-confidence problems |
