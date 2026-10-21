@@ -6,7 +6,7 @@ use anyhow::Result;
 use rusqlite::{params, Connection, OptionalExtension};
 
 use super::modules::{ModuleResolver, ModuleTarget};
-use crate::types::Language;
+use crate::types::{Language, REQUIRED_MODULE};
 
 /// Kinds that own members: a bare call never reaches a method of these in JS,
 /// and `this` walks up to the nearest one.
@@ -468,7 +468,7 @@ impl<'c> Resolver<'c> {
                     // there; `export * as ns` needs only the module.
                     ModuleTarget::File(target) if binding.kind == "re_export" => {
                         let export = binding.imported.as_deref().unwrap_or(&binding.local);
-                        if export == "*" {
+                        if export == "*" || export == REQUIRED_MODULE {
                             return Ok("ok");
                         }
                         Ok(
@@ -1016,6 +1016,14 @@ impl<'c> Resolver<'c> {
                 match self.module(&file.path, &source, file.language) {
                     // `export * as ns from "./x"` exports the module itself.
                     ModuleTarget::File(target) if wanted == "*" => Found::Module(target),
+                    // `exports.x = require("./x")`: x's default export, or
+                    // the module object when it has none.
+                    ModuleTarget::File(target) if wanted == REQUIRED_MODULE => {
+                        match self.export_lookup(target, "default", visited, depth + 1)? {
+                            Found::Symbols(ids) => Found::Symbols(ids),
+                            _ => Found::Module(target),
+                        }
+                    }
                     ModuleTarget::File(target) => {
                         self.export_lookup(target, &wanted, visited, depth + 1)?
                     }

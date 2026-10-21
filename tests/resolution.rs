@@ -897,6 +897,52 @@ fn a_java_call_on_a_this_field_uses_the_field_type() {
 }
 
 #[test]
+fn commonjs_named_exports_of_any_value_exist() {
+    let (_temp, ws) = repo_with(&[
+        (
+            "ghost-mailer.js",
+            "module.exports = class GhostMailer {\n  send() { return 1; }\n};\n",
+        ),
+        ("mail.js", "exports.GhostMailer = require(\"./ghost-mailer\");\n"),
+        ("tables.js", "module.exports = { a: 1 };\n"),
+        (
+            "validator.js",
+            "exports.validateSchema = function validateSchema() { return 1; };\n",
+        ),
+        (
+            "schema.js",
+            "module.exports.tables = require(\"./tables\");\nmodule.exports.validate = require(\"./validator\").validateSchema;\n",
+        ),
+        ("cors.js", "exports.corsMiddleware = cors();\n"),
+        (
+            "notify.js",
+            "module.exports.notifyServerStarted = async function () { return 1; };\n",
+        ),
+        (
+            "db.js",
+            "Object.defineProperty(exports, \"knex\", { get() { return 1; } });\n",
+        ),
+        ("gift.ts", "export let service: string | undefined;\n"),
+        (
+            "main.ts",
+            "import { tables, validate } from \"./schema\";\nimport { corsMiddleware } from \"./cors\";\n\
+             import notify from \"./notify\";\nimport db, { knex } from \"./db\";\nimport { service } from \"./gift\";\n\
+             const { GhostMailer } = require(\"./mail\");\n\
+             export function run() {\n  validate();\n  new GhostMailer().send();\n  return [tables, corsMiddleware, notify, db, knex, service];\n}\n",
+        ),
+    ]);
+    assert_eq!(broken_bindings(&ws.db_path), Vec::<String>::new());
+    assert_has(
+        &edges(&ws.db_path),
+        &[
+            "run -call-> validator.js:validateSchema [high/import]",
+            "run -new-> ghost-mailer.js:GhostMailer [high/import]",
+            "run -call-> ghost-mailer.js:GhostMailer.send [high/new]",
+        ],
+    );
+}
+
+#[test]
 fn commonjs_exports_the_resolver_cannot_list_are_never_missing() {
     let (_temp, ws) = repo_with(&[
         ("anon.js", "module.exports = function () { return 1; };\n"),

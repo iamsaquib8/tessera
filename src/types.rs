@@ -254,6 +254,11 @@ impl BindingKind {
     }
 }
 
+/// The `imported` name of a CommonJS re-export of a whole required module
+/// (`exports.mailer = require("./mailer")`): its default export when it has
+/// one, else the module object itself.
+pub const REQUIRED_MODULE: &str = "module.exports";
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct IndexedBinding {
     pub local: String,

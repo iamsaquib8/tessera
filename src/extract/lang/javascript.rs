@@ -3,7 +3,7 @@ use tree_sitter::Node;
 use crate::extract::{first_child_with_kinds, strip_quotes, Cx, LanguageSupport};
 use crate::types::{
     BindingKind, HintOrigin, IndexedBinding, IndexedImport, IndexedLocal, IndexedReference,
-    IndexedSymbol, IndexedTypeHint, Language, Receiver,
+    IndexedSymbol, IndexedTypeHint, Language, Receiver, REQUIRED_MODULE,
 };
 
 pub struct JavaScript;
@@ -118,12 +118,14 @@ pub(super) fn js_symbol(cx: &Cx<'_>, node: Node<'_>) -> Option<IndexedSymbol> {
         ),
         "variable_declarator" => {
             let name = node.child_by_field_name("name")?;
-            let value = node.child_by_field_name("value")?;
-            let function = if FUNCTION_KINDS.contains(&value.kind()) {
-                Some(value)
-            } else {
-                wrapped_component(cx, value)
-            };
+            // `export let service: Service | undefined;` has no initializer.
+            let function = node.child_by_field_name("value").and_then(|value| {
+                if FUNCTION_KINDS.contains(&value.kind()) {
+                    Some(value)
+                } else {
+                    wrapped_component(cx, value)
+                }
+            });
             match function {
                 Some(function) => (cx.text(name), "function", Some(function)),
                 // A module-level constant is a symbol too, so calls in its
@@ -397,8 +399,8 @@ pub(super) fn js_bindings(cx: &Cx<'_>, node: Node<'_>, out: &mut Vec<IndexedBind
                     .named_children(&mut cursor)
                     .find(|child| !child.is_extra());
                 if let Some(value) = value {
-                    for (local, imported, kind) in module_object(cx, value) {
-                        push(local, imported, ".", kind);
+                    for (local, imported, source, kind) in module_object(cx, value) {
+                        push(local, imported, &source, kind);
                     }
                 }
             } else if is_default_export_statement(node) {
@@ -458,8 +460,8 @@ pub(super) fn js_bindings(cx: &Cx<'_>, node: Node<'_>, out: &mut Vec<IndexedBind
                 return;
             };
             if cx.text(left) == "module.exports" {
-                for (local, imported, kind) in module_object(cx, right) {
-                    push(local, imported, ".", kind);
+                for (local, imported, source, kind) in module_object(cx, right) {
+                    push(local, imported, &source, kind);
                 }
             } else if left.kind() == "subscript_expression"
                 && left
@@ -468,13 +470,13 @@ pub(super) fn js_bindings(cx: &Cx<'_>, node: Node<'_>, out: &mut Vec<IndexedBind
             {
                 // `exports[name] = …`: names only known at run time.
                 push("*".into(), None, ".", BindingKind::OpenExports);
+                push("default".into(), None, ".", BindingKind::OpenExports);
             } else if let Some(name) = commonjs_export_name(cx, left) {
-                let imported = if right.kind() == "identifier" {
-                    cx.text(right)
-                } else {
-                    name.clone()
-                };
-                push(name, Some(imported), ".", BindingKind::ReExport);
+                for (local, imported, source, kind) in exported_value(cx, name, right) {
+                    push(local, imported, &source, kind);
+                }
+                // An ES module importing it gets the exports object.
+                push("default".into(), None, ".", BindingKind::OpenExports);
             }
         }
         // `Object.assign(module.exports, …)`, `__exportStar(m, exports)` and
@@ -507,21 +509,66 @@ pub(super) fn js_bindings(cx: &Cx<'_>, node: Node<'_>, out: &mut Vec<IndexedBind
                 }
                 _ => push("*".into(), None, ".", BindingKind::OpenExports),
             }
+            push("default".into(), None, ".", BindingKind::OpenExports);
         }
         _ => {}
     }
 }
 
+/// A binding of a CommonJS module: local and imported name, source, kind.
+type ModuleBinding = (String, Option<String>, String, BindingKind);
+
+/// What exporting `value` as `name` (`exports.name = value`, or a property
+/// of `module.exports = {…}`) binds: a local name, another module's export,
+/// or a name that exists although nothing in the file defines it.
+fn exported_value(cx: &Cx<'_>, name: String, value: Node<'_>) -> Vec<ModuleBinding> {
+    let reexport = |imported: String, source: &str| {
+        vec![(
+            name.clone(),
+            Some(imported),
+            source.to_string(),
+            BindingKind::ReExport,
+        )]
+    };
+    if value.kind() == "identifier" {
+        return reexport(cx.text(value), ".");
+    }
+    // `exports.save = function save() {…}` is a symbol named `save`.
+    if FUNCTION_KINDS.contains(&value.kind()) {
+        return reexport(name.clone(), ".");
+    }
+    // `require("./x")` is x's module object; `require("./x").y` its export.
+    if let Some((_, source)) = require_call(cx, value) {
+        return reexport(REQUIRED_MODULE.to_string(), &source);
+    }
+    let required = value
+        .child_by_field_name("object")
+        .filter(|_| value.kind() == "member_expression")
+        .and_then(|object| require_call(cx, object));
+    if let (Some((_, source)), Some(property)) = (required, value.child_by_field_name("property")) {
+        return reexport(cx.text(property), &source);
+    }
+    vec![(name, None, ".".to_string(), BindingKind::OpenExports)]
+}
+
 /// The bindings for a whole module object (`module.exports = value` or
 /// `export = value`): what it names, and which names it leaves open.
-fn module_object(cx: &Cx<'_>, value: Node<'_>) -> Vec<(String, Option<String>, BindingKind)> {
-    let open = |name: &str| (name.to_string(), None, BindingKind::OpenExports);
+fn module_object(cx: &Cx<'_>, value: Node<'_>) -> Vec<ModuleBinding> {
+    let open = |name: &str| {
+        (
+            name.to_string(),
+            None,
+            ".".to_string(),
+            BindingKind::OpenExports,
+        )
+    };
     match value.kind() {
         // The value's properties are its named exports, and they are unknown.
         "identifier" => vec![
             (
                 "default".into(),
                 Some(cx.text(value)),
+                ".".to_string(),
                 BindingKind::ReExport,
             ),
             open("*"),
@@ -542,17 +589,27 @@ fn module_object(cx: &Cx<'_>, value: Node<'_>) -> Vec<(String, Option<String>, B
                 match (entry.kind(), key) {
                     ("shorthand_property_identifier", _) => {
                         let name = cx.text(entry);
-                        out.push((name.clone(), Some(name), BindingKind::ReExport));
+                        out.push((
+                            name.clone(),
+                            Some(name),
+                            ".".to_string(),
+                            BindingKind::ReExport,
+                        ));
                     }
                     ("pair", Some(key)) => match entry.child_by_field_name("value") {
-                        Some(v) if v.kind() == "identifier" => {
-                            out.push((key, Some(cx.text(v)), BindingKind::ReExport))
+                        Some(v) if !FUNCTION_KINDS.contains(&v.kind()) => {
+                            out.extend(exported_value(cx, key, v))
                         }
                         _ => out.push(open(&key)),
                     },
                     // A method or accessor is a symbol of its own.
                     ("method_definition", Some(key)) => {
-                        out.push((key.clone(), Some(key.clone()), BindingKind::ReExport));
+                        out.push((
+                            key.clone(),
+                            Some(key.clone()),
+                            ".".to_string(),
+                            BindingKind::ReExport,
+                        ));
                         out.push(open(&key));
                     }
                     // Spreads and computed keys.
