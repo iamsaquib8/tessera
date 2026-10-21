@@ -24,6 +24,8 @@ const EDIT_TOOLS: &[&str] = &[
     "str_replace_based_edit_tool",
     "create",
     "insert",
+    "save_file",
+    "remove_files",
 ];
 const PATH_KEYS: &[&str] = &[
     "file_path",
@@ -47,6 +49,11 @@ pub struct Payload {
     /// `None` when the agent does not report whether a stop hook is already
     /// continuing the turn.
     pub stop_hook_active: Option<bool>,
+    /// Why the agent stopped, when it says: `completed`/`end_turn`, or an
+    /// interruption or error.
+    pub stop_cause: Option<String>,
+    /// The agent reported changed files directly (Augment's `file_changes`).
+    pub file_changes: bool,
 }
 
 impl Payload {
@@ -66,6 +73,8 @@ impl Payload {
             .as_str()
             .or_else(|| value["workspace_roots"][0].as_str())
             .or_else(|| value["workspaceRoots"][0].as_str())
+            .or_else(|| value["workspacePaths"][0].as_str())
+            .filter(|cwd| !cwd.is_empty())
             .map(PathBuf::from);
         let tool = value["tool_name"]
             .as_str()
@@ -91,6 +100,13 @@ impl Payload {
         }
         let mut paths = Vec::new();
         collect_paths(&input, &mut paths);
+        let file_changes = match &value["file_changes"] {
+            Value::Array(changes) if !changes.is_empty() => {
+                collect_paths(&value["file_changes"], &mut paths);
+                true
+            }
+            _ => false,
+        };
         for patch in patches(&input) {
             paths.extend(patch_paths(&patch));
         }
@@ -113,17 +129,34 @@ impl Payload {
             tool,
             paths,
             old_texts,
-            stop_hook_active: value["stop_hook_active"].as_bool(),
+            stop_hook_active: value["stop_hook_active"]
+                .as_bool()
+                .or_else(|| value["loop_count"].as_u64().map(|count| count > 0)),
+            stop_cause: ["status", "agent_stop_cause"]
+                .iter()
+                .find_map(|key| value[*key].as_str())
+                .map(ToOwned::to_owned),
+            file_changes,
         }
     }
 
     /// Whether the tool edits files: a known edit tool, or any tool that
     /// names a file when the agent does not report the tool name.
     pub fn is_edit(&self) -> bool {
+        if self.file_changes {
+            return true;
+        }
         match &self.tool {
-            Some(tool) => EDIT_TOOLS.contains(&tool.to_lowercase().as_str()),
+            Some(tool) => EDIT_TOOLS.contains(&tool.to_lowercase().replace('-', "_").as_str()),
             None => !self.paths.is_empty(),
         }
+    }
+
+    /// The turn ended normally, not by an interruption or an error.
+    pub fn finished(&self) -> bool {
+        self.stop_cause
+            .as_deref()
+            .is_none_or(|cause| matches!(cause, "completed" | "end_turn"))
     }
 
     /// The edited files relative to `root`, dropping any outside it.

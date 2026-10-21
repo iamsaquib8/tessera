@@ -337,3 +337,86 @@ fn an_existing_pre_commit_hook_is_never_overwritten() {
     );
     assert!(out.contains("tessera verify --staged"), "{out}");
 }
+
+/// Every `command` string anywhere in a JSON value.
+fn commands(value: &Value, out: &mut Vec<String>) {
+    match value {
+        Value::Object(map) => {
+            for (key, child) in map {
+                match child {
+                    Value::String(text) if key == "command" => out.push(text.clone()),
+                    _ => commands(child, out),
+                }
+            }
+        }
+        Value::Array(items) => items.iter().for_each(|item| commands(item, out)),
+        _ => {}
+    }
+}
+
+#[test]
+fn every_hook_adapter_is_wired_in_its_documented_shape() {
+    use tessera_codegraph::hook::{Agent, Event};
+    let s = setup();
+    let ids = [
+        "claude",
+        "codex",
+        "qwen",
+        "gemini",
+        "copilot",
+        "cursor",
+        "augment",
+        "antigravity",
+    ];
+    let mut args = vec!["--yes"];
+    for id in &ids {
+        args.push("--agent");
+        args.push(id);
+    }
+    let (out, ok) = init(&s, &args);
+    assert!(ok, "{out}");
+    let files = [
+        ("claude", ".claude/settings.local.json", 4),
+        ("codex", ".codex/hooks.json", 4),
+        ("qwen", ".qwen/settings.json", 3),
+        ("gemini", ".gemini/settings.json", 3),
+        ("copilot", ".github/hooks/tessera.json", 3),
+        ("cursor", ".cursor/hooks.json", 3),
+        ("augment", ".augment/settings.local.json", 3),
+        ("antigravity", ".agents/hooks.json", 3),
+    ];
+    for (agent, path, count) in files {
+        let value = json(&s.root.join(path));
+        let mut found = Vec::new();
+        commands(&value, &mut found);
+        let hooks: Vec<&String> = found.iter().filter(|c| c.contains(" hook ")).collect();
+        assert_eq!(hooks.len(), count, "{path}: {found:?}");
+        for command in hooks {
+            let words: Vec<&str> = command.split_whitespace().collect();
+            assert_eq!(words[..3], ["tessera", "hook", agent], "{command}");
+            assert!(Agent::parse(words[2]).is_some(), "{command}");
+            assert!(Event::parse(words[3]).is_some(), "{command}");
+        }
+    }
+    let copilot = json(&s.root.join(".github/hooks/tessera.json"));
+    assert_eq!(copilot["version"], 1);
+    assert_eq!(copilot["hooks"]["agentStop"][0]["timeoutSec"], 60);
+    let cursor = json(&s.root.join(".cursor/hooks.json"));
+    assert_eq!(cursor["version"], 1);
+    assert!(cursor["hooks"]["stop"][0]["command"].is_string());
+    let gemini = json(&s.root.join(".gemini/settings.json"));
+    assert_eq!(
+        gemini["hooks"]["AfterAgent"][0]["hooks"][0]["timeout"],
+        60_000
+    );
+    assert!(
+        gemini["mcpServers"]["tessera"].is_object(),
+        "MCP and hooks share the file"
+    );
+    let antigravity = json(&s.root.join(".agents/hooks.json"));
+    assert_eq!(antigravity["tessera"]["Stop"][0]["type"], "command");
+    assert!(antigravity["tessera"]["PostToolUse"][0]["matcher"].is_string());
+
+    let (out, _) = init(&s, &args);
+    assert!(out.contains("Nothing to change"), "{out}");
+}

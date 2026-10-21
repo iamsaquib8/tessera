@@ -185,9 +185,9 @@ impl Planner<'_> {
                 );
             }
         }
-        if agent.hooks {
-            self.project(".claude/settings.local.json", agent.id, |text| {
-                edit::claude_hooks(text, "tessera")
+        if let Some(hooks) = agent.hooks {
+            self.project(hooks.path, agent.id, |text| {
+                edit::hooks(text, &hooks, "tessera")
             });
         }
         if self.options.with_instructions {

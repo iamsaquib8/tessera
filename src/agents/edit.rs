@@ -4,7 +4,7 @@
 
 use serde_json::{json, Value};
 
-use super::McpFormat;
+use super::{HookConfig, HookEvent, HookLayout, McpFormat};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Edit {
@@ -224,67 +224,88 @@ fn goose_entry(existing: Option<&str>, server: &Server) -> Edit {
     Edit::Write(out.join("\n") + "\n")
 }
 
-/// Claude Code hooks in a settings file: one entry per event, added next to
-/// whatever hooks are already there.
-pub fn claude_hooks(existing: Option<&str>, command: &str) -> Edit {
-    const EDIT_TOOLS: &str = "Edit|Write|MultiEdit";
-    let events = [
-        ("SessionStart", None, "session-start", 10),
-        ("PreToolUse", Some(EDIT_TOOLS), "pre-edit", 10),
-        ("PostToolUse", Some(EDIT_TOOLS), "post-edit", 30),
-        ("Stop", None, "stop", 60),
-    ];
-    let entry = |matcher: Option<&str>, event: &str, timeout: u64| {
-        let mut entry = json!({
-            "hooks": [{
-                "type": "command",
-                "command": format!("{command} hook claude {event}"),
-                "timeout": timeout,
-            }]
-        });
-        if let Some(matcher) = matcher {
-            let mut with_matcher = json!({ "matcher": matcher });
-            with_matcher["hooks"] = entry["hooks"].take();
-            entry = with_matcher;
+/// One handler for `event` in the agent's layout.
+fn hook_entry(config: &HookConfig, event: &HookEvent, command: &str) -> Value {
+    let command = format!("{command} hook {} {}", config.agent, event.event);
+    let handler = match config.layout {
+        HookLayout::Nested | HookLayout::Antigravity => {
+            json!({ "type": "command", "command": command, "timeout": event.seconds })
         }
-        entry
+        HookLayout::NestedMillis => {
+            json!({ "type": "command", "command": command, "timeout": event.seconds * 1000 })
+        }
+        HookLayout::Copilot => {
+            json!({ "type": "command", "command": command, "timeoutSec": event.seconds })
+        }
+        HookLayout::Cursor => json!({ "command": command, "timeout": event.seconds }),
     };
+    let grouped = match config.layout {
+        HookLayout::Nested | HookLayout::NestedMillis => true,
+        HookLayout::Antigravity => event.matcher.is_some(),
+        HookLayout::Copilot | HookLayout::Cursor => false,
+    };
+    if !grouped {
+        return handler;
+    }
+    let mut group = serde_json::Map::new();
+    if let Some(matcher) = event.matcher {
+        group.insert("matcher".to_string(), json!(matcher));
+    }
+    group.insert("hooks".to_string(), json!([handler]));
+    Value::Object(group)
+}
+
+/// Tessera's hooks added to an agent's hook file, next to whatever hooks
+/// are already there.
+pub fn hooks(existing: Option<&str>, config: &HookConfig, command: &str) -> Edit {
+    let (wrapper, versioned) = match config.layout {
+        HookLayout::Antigravity => ("tessera", false),
+        HookLayout::Copilot | HookLayout::Cursor => ("hooks", true),
+        HookLayout::Nested | HookLayout::NestedMillis => ("hooks", false),
+    };
+    let marker = format!("hook {} ", config.agent);
     let snippet = {
-        let mut hooks = serde_json::Map::new();
-        for (name, matcher, event, timeout) in events {
-            hooks.insert(name.to_string(), json!([entry(matcher, event, timeout)]));
+        let mut events = serde_json::Map::new();
+        for event in config.events {
+            events.insert(
+                event.name.to_string(),
+                json!([hook_entry(config, event, command)]),
+            );
         }
-        pretty(&json!({ "hooks": hooks }), "  ")
+        let mut root = serde_json::Map::new();
+        if versioned {
+            root.insert("version".to_string(), json!(1));
+        }
+        root.insert(wrapper.to_string(), Value::Object(events));
+        pretty(&Value::Object(root), "  ")
     };
     let mut root = match json_object(existing) {
         Ok(root) => root,
         Err(reason) => return manual(reason, snippet),
     };
-    let hooks = root
-        .as_object_mut()
-        .expect("checked above")
-        .entry("hooks")
-        .or_insert_with(|| json!({}));
-    let Some(hooks) = hooks.as_object_mut() else {
-        return manual("its `hooks` is not an object", snippet);
+    let object = root.as_object_mut().expect("checked above");
+    if versioned && !object.contains_key("version") {
+        object.insert("version".to_string(), json!(1));
+    }
+    let events = object.entry(wrapper).or_insert_with(|| json!({}));
+    let Some(events) = events.as_object_mut() else {
+        return manual(format!("its `{wrapper}` is not an object"), snippet);
     };
     let mut added = false;
-    for (name, matcher, event, timeout) in events {
-        let list = hooks.entry(name).or_insert_with(|| json!([]));
+    for event in config.events {
+        let list = events.entry(event.name).or_insert_with(|| json!([]));
         let Some(list) = list.as_array_mut() else {
-            return manual(format!("its `hooks.{name}` is not a list"), snippet);
+            return manual(
+                format!("its `{wrapper}.{}` is not a list", event.name),
+                snippet,
+            );
         };
-        let ours = list.iter().any(|group| {
-            group["hooks"].as_array().is_some_and(|hooks| {
-                hooks.iter().any(|hook| {
-                    hook["command"]
-                        .as_str()
-                        .is_some_and(|c| c.contains("tessera") && c.contains("hook claude"))
-                })
-            })
+        let ours = list.iter().any(|entry| {
+            let text = entry.to_string();
+            text.contains("tessera") && text.contains(&marker)
         });
         if !ours {
-            list.push(entry(matcher, event, timeout));
+            list.push(hook_entry(config, event, command));
             added = true;
         }
     }

@@ -30,6 +30,8 @@ pub struct Session {
     pub open: BTreeSet<String>,
     /// Stop blocks since the turn began.
     pub stop_blocks: u32,
+    /// Hash of the last edit event, to answer a duplicate only once.
+    pub last_edit: Option<String>,
 }
 
 /// The locked session file; the lock is released when this is dropped.

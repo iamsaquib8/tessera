@@ -69,21 +69,32 @@ impl Event {
 /// (docs/agents.md).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Agent {
-    /// Claude Code, and agents that answer in its shape: Codex CLI, Qwen Code,
-    /// and Claude Code pointed at DeepSeek.
+    /// Claude Code, also when pointed at DeepSeek.
     Claude,
+    /// Claude's shape, but Stop must always print JSON.
+    Codex,
+    /// Claude's shape; a pre-tool answer must carry a permission decision,
+    /// so it gets no pre-edit note.
+    Qwen,
+    Gemini,
     Copilot,
     Cursor,
+    Augment,
+    /// Answers `{}` to everything but Stop.
+    Antigravity,
 }
 
 impl Agent {
     pub fn parse(name: &str) -> Option<Self> {
         match squash(name).as_str() {
-            "claude" | "claudecode" | "codex" | "qwen" | "qwencode" | "deepseek" => {
-                Some(Self::Claude)
-            }
+            "claude" | "claudecode" | "deepseek" => Some(Self::Claude),
+            "codex" => Some(Self::Codex),
+            "qwen" | "qwencode" => Some(Self::Qwen),
+            "gemini" | "geminicli" => Some(Self::Gemini),
             "copilot" | "copilotcli" => Some(Self::Copilot),
             "cursor" => Some(Self::Cursor),
+            "augment" | "auggie" => Some(Self::Augment),
+            "antigravity" | "agy" => Some(Self::Antigravity),
             _ => None,
         }
     }
@@ -144,46 +155,77 @@ pub fn run(agent: &str, event: &str, input: &str, options: &HookOptions) -> Resu
             }
             None
         }
-        Event::PreEdit => hook.pre_edit(&payload, &mut session)?,
-        Event::PostEdit => hook.post_edit(&payload, &mut session)?,
+        Event::PreEdit | Event::PostEdit
+            if session.last_edit == Some(session::hash(input.as_bytes())) =>
+        {
+            // The same event again: Tessera is wired twice (plugin and init).
+            None
+        }
+        Event::PreEdit if matches!(agent, Agent::Claude | Agent::Codex) => {
+            session.last_edit = Some(session::hash(input.as_bytes()));
+            hook.pre_edit(&payload, &mut session)?
+        }
+        Event::PreEdit => None,
+        Event::PostEdit => {
+            session.last_edit = Some(session::hash(input.as_bytes()));
+            hook.post_edit(&payload, &mut session)?
+        }
         Event::Stop => hook.stop(&payload, &mut session)?,
     };
     store.save(&session)?;
-    Ok(reply.and_then(|reply| render(agent, kind, event, reply)))
+    Ok(reply
+        .and_then(|reply| render(agent, kind, event, reply))
+        .or_else(|| silent(agent, kind)))
 }
 
 /// The agent's output shape for `reply`; `None` where its contract has no
 /// way to say it.
 pub fn render(agent: Agent, kind: Event, event: &str, reply: Reply) -> Option<Value> {
-    let text = match &reply {
-        Reply::Context(text) | Reply::Block(text) => text.clone(),
+    let (text, block) = match reply {
+        Reply::Context(text) => (text, false),
+        Reply::Block(text) => (text, true),
     };
-    match agent {
-        Agent::Claude => match (kind, reply) {
-            (Event::PostEdit | Event::Stop, Reply::Block(reason)) => {
-                Some(json!({ "decision": "block", "reason": reason }))
-            }
-            (Event::PreEdit | Event::PostEdit, Reply::Context(context)) => Some(json!({
-                "hookSpecificOutput": {
-                    "hookEventName": if kind == Event::PreEdit { "PreToolUse" } else { "PostToolUse" },
-                    "additionalContext": context,
-                }
-            })),
-            _ => None,
-        },
-        Agent::Copilot => match kind {
-            Event::PostEdit => Some(json!({ "additionalContext": text })),
-            Event::Stop => Some(json!({ "decision": "block", "reason": text })),
-            _ => None,
-        },
-        Agent::Cursor => match kind {
-            Event::PostEdit if squash(event) != "afterfileedit" => {
-                Some(json!({ "additional_context": text }))
-            }
-            Event::Stop => Some(json!({ "followup_message": text })),
-            _ => None,
-        },
+    let context = |name: &str| json!({ "hookSpecificOutput": { "hookEventName": name, "additionalContext": text } });
+    match (agent, kind) {
+        (Agent::Claude | Agent::Codex | Agent::Qwen, Event::PostEdit | Event::Stop) if block => {
+            Some(json!({ "decision": "block", "reason": text }))
+        }
+        (Agent::Claude | Agent::Codex, Event::PreEdit) => Some(context("PreToolUse")),
+        (Agent::Claude | Agent::Codex | Agent::Qwen | Agent::Augment, Event::PostEdit) => {
+            Some(context("PostToolUse"))
+        }
+        (Agent::Gemini, Event::PostEdit) => {
+            Some(json!({ "hookSpecificOutput": { "additionalContext": text } }))
+        }
+        (Agent::Gemini, Event::Stop) => Some(json!({ "decision": "deny", "reason": text })),
+        (Agent::Copilot, Event::PostEdit) => Some(json!({ "additionalContext": text })),
+        (Agent::Copilot, Event::Stop) => Some(json!({ "decision": "block", "reason": text })),
+        (Agent::Cursor, Event::PostEdit) if squash(event) != "afterfileedit" => {
+            Some(json!({ "additional_context": text }))
+        }
+        (Agent::Cursor, Event::Stop) => Some(json!({ "followup_message": text })),
+        (Agent::Augment, Event::Stop) => Some(json!({
+            "hookSpecificOutput": { "hookEventName": "Stop", "decision": "block", "reason": text }
+        })),
+        (Agent::Antigravity, Event::Stop) => {
+            Some(json!({ "decision": "continue", "reason": text }))
+        }
+        _ => None,
     }
+}
+
+/// What to print when there is nothing to say, for agents that need JSON
+/// on every successful run.
+pub fn silent(agent: Agent, kind: Event) -> Option<Value> {
+    match (agent, kind) {
+        (Agent::Codex, Event::Stop) | (Agent::Antigravity, _) => Some(json!({})),
+        _ => None,
+    }
+}
+
+/// The output for a hook that could not run: the agent's no-op answer.
+pub fn fallback(agent: &str, event: &str) -> Option<Value> {
+    silent(Agent::parse(agent)?, Event::parse(event)?)
 }
 
 struct Hook<'a> {
@@ -360,6 +402,9 @@ impl Hook<'_> {
 
     /// At the end of a turn: everything changed since the session began.
     fn stop(&self, payload: &Payload, session: &mut Session) -> Result<Option<Reply>> {
+        if !payload.finished() {
+            return Ok(None);
+        }
         if payload.stop_hook_active == Some(false) {
             session.stop_blocks = 0;
         }

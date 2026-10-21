@@ -28,6 +28,66 @@ pub enum McpFormat {
     GooseYaml,
 }
 
+/// One hook event in an agent's hook config.
+#[derive(Debug, Clone, Copy)]
+pub struct HookEvent {
+    /// The agent's event name.
+    pub name: &'static str,
+    /// Tessera's event (`tessera hook <agent> <event>`).
+    pub event: &'static str,
+    pub matcher: Option<&'static str>,
+    pub seconds: u64,
+}
+
+const fn on(name: &'static str, event: &'static str, seconds: u64) -> HookEvent {
+    HookEvent {
+        name,
+        event,
+        matcher: None,
+        seconds,
+    }
+}
+
+const fn on_tools(
+    name: &'static str,
+    event: &'static str,
+    matcher: &'static str,
+    seconds: u64,
+) -> HookEvent {
+    HookEvent {
+        name,
+        event,
+        matcher: Some(matcher),
+        seconds,
+    }
+}
+
+/// How an agent's hook file is laid out.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HookLayout {
+    /// `{"hooks": {"Event": [{"matcher"?, "hooks": [{"type", "command", "timeout"}]}]}}`,
+    /// timeouts in seconds (Claude Code, Codex, Qwen).
+    Nested,
+    /// The same, with timeouts in milliseconds (Gemini, Augment).
+    NestedMillis,
+    /// `{"version": 1, "hooks": {"event": [{"type", "command", "timeoutSec"}]}}` (Copilot).
+    Copilot,
+    /// `{"version": 1, "hooks": {"event": [{"command", "timeout"}]}}` (Cursor).
+    Cursor,
+    /// `{"tessera": {"Event": [...]}}`: a named group; tool events nest a
+    /// matcher group, the others list handlers directly (Antigravity).
+    Antigravity,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct HookConfig {
+    pub path: &'static str,
+    /// The agent name `tessera hook` takes.
+    pub agent: &'static str,
+    pub layout: HookLayout,
+    pub events: &'static [HookEvent],
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct McpTarget {
     /// Relative to the project root, or to the home directory when global.
@@ -61,8 +121,8 @@ pub struct Agent {
     pub home_markers: &'static [&'static str],
     pub mcp: Option<McpTarget>,
     pub global_mcp: Option<McpTarget>,
-    /// Tessera's hook adapter for this agent writes its hook config.
-    pub hooks: bool,
+    /// Where Tessera's hooks go, for agents with a hook adapter.
+    pub hooks: Option<HookConfig>,
     pub instructions: Option<Instructions>,
     /// A step only the user can take before the config takes effect.
     pub trust: Option<&'static str>,
@@ -94,7 +154,7 @@ const NONE: Agent = Agent {
     home_markers: &[],
     mcp: None,
     global_mcp: None,
-    hooks: false,
+    hooks: None,
     instructions: None,
     trust: None,
     limits: None,
@@ -109,7 +169,17 @@ pub const AGENTS: &[Agent] = &[
         home_markers: &[".claude"],
         mcp: mcp(".mcp.json", McpFormat::McpServers),
         global_mcp: mcp(".claude.json", McpFormat::McpServers),
-        hooks: true,
+        hooks: Some(HookConfig {
+            path: ".claude/settings.local.json",
+            agent: "claude",
+            layout: HookLayout::Nested,
+            events: &[
+                on("SessionStart", "session-start", 10),
+                on_tools("PreToolUse", "pre-edit", "Edit|Write|MultiEdit", 10),
+                on_tools("PostToolUse", "post-edit", "Edit|Write|MultiEdit", 30),
+                on("Stop", "stop", 60),
+            ],
+        }),
         instructions: Some(Instructions::ClaudeMd),
         trust: Some("Claude Code asks you to approve the project's MCP server the first time; the Tessera plugin is an alternative to these files (use one or the other)."),
         ..NONE
@@ -123,8 +193,18 @@ pub const AGENTS: &[Agent] = &[
         mcp: mcp(".codex/config.toml", McpFormat::Toml),
         global_mcp: mcp(".codex/config.toml", McpFormat::Toml),
         instructions: Some(Instructions::AgentsMd),
-        trust: Some("Codex reads .codex/config.toml only in projects you have trusted."),
-        limits: Some("hooks are wired in a later release; use the git hook meanwhile"),
+        trust: Some("Codex reads .codex/ only in projects you trust, and runs new hooks only after you review them with /hooks."),
+        hooks: Some(HookConfig {
+            path: ".codex/hooks.json",
+            agent: "codex",
+            layout: HookLayout::Nested,
+            events: &[
+                on("SessionStart", "session-start", 10),
+                on_tools("PreToolUse", "pre-edit", "Edit|Write|apply_patch", 10),
+                on_tools("PostToolUse", "post-edit", "Edit|Write|apply_patch", 30),
+                on("Stop", "stop", 60),
+            ],
+        }),
         ..NONE
     },
     Agent {
@@ -136,7 +216,17 @@ pub const AGENTS: &[Agent] = &[
         mcp: mcp(".gemini/settings.json", McpFormat::McpServers),
         global_mcp: mcp(".gemini/settings.json", McpFormat::McpServers),
         instructions: Some(Instructions::Markdown("GEMINI.md")),
-        limits: Some("hooks are wired in a later release"),
+        limits: Some("no pre-edit note: its pre-tool hook carries no context"),
+        hooks: Some(HookConfig {
+            path: ".gemini/settings.json",
+            agent: "gemini",
+            layout: HookLayout::NestedMillis,
+            events: &[
+                on("SessionStart", "session-start", 10),
+                on_tools("AfterTool", "post-edit", "write_file|replace", 30),
+                on("AfterAgent", "stop", 60),
+            ],
+        }),
         ..NONE
     },
     Agent {
@@ -148,7 +238,22 @@ pub const AGENTS: &[Agent] = &[
         mcp: mcp(".agents/mcp_config.json", McpFormat::McpServers),
         global_mcp: mcp(".gemini/config/mcp_config.json", McpFormat::McpServers),
         instructions: Some(Instructions::AgentsMd),
-        limits: Some("its post-edit hook cannot return feedback; hooks are wired in a later release"),
+        limits: Some("its post-edit hook cannot return feedback, so problems are reported when it stops"),
+        hooks: Some(HookConfig {
+            path: ".agents/hooks.json",
+            agent: "antigravity",
+            layout: HookLayout::Antigravity,
+            events: &[
+                on("SessionStart", "session-start", 10),
+                on_tools(
+                    "PostToolUse",
+                    "post-edit",
+                    "write_to_file|replace_file_content|multi_replace_file_content",
+                    30,
+                ),
+                on("Stop", "stop", 60),
+            ],
+        }),
         ..NONE
     },
     Agent {
@@ -160,7 +265,17 @@ pub const AGENTS: &[Agent] = &[
         mcp: mcp(".mcp.json", McpFormat::McpServers),
         global_mcp: mcp(".copilot/mcp-config.json", McpFormat::McpServers),
         instructions: Some(Instructions::Markdown(".github/copilot-instructions.md")),
-        limits: Some("hooks are wired in a later release"),
+        limits: Some("no pre-edit note: its pre-tool hook can only allow or deny"),
+        hooks: Some(HookConfig {
+            path: ".github/hooks/tessera.json",
+            agent: "copilot",
+            layout: HookLayout::Copilot,
+            events: &[
+                on("sessionStart", "session-start", 10),
+                on("postToolUse", "post-edit", 30),
+                on("agentStop", "stop", 60),
+            ],
+        }),
         ..NONE
     },
     Agent {
@@ -182,7 +297,17 @@ pub const AGENTS: &[Agent] = &[
         mcp: mcp_in_workspace(".cursor/mcp.json", McpFormat::McpServers),
         global_mcp: mcp(".cursor/mcp.json", McpFormat::McpServers),
         instructions: Some(Instructions::CursorRule),
-        limits: Some("hooks are wired in a later release"),
+        limits: Some("no pre-edit note; Cursor stops follow-ups after 5 in a row"),
+        hooks: Some(HookConfig {
+            path: ".cursor/hooks.json",
+            agent: "cursor",
+            layout: HookLayout::Cursor,
+            events: &[
+                on("sessionStart", "session-start", 10),
+                on("postToolUse", "post-edit", 30),
+                on("stop", "stop", 60),
+            ],
+        }),
         ..NONE
     },
     Agent {
@@ -206,7 +331,17 @@ pub const AGENTS: &[Agent] = &[
         mcp: mcp(".qwen/settings.json", McpFormat::McpServers),
         global_mcp: mcp(".qwen/settings.json", McpFormat::McpServers),
         instructions: Some(Instructions::Markdown("QWEN.md")),
-        limits: Some("hooks are wired in a later release"),
+        limits: Some("no pre-edit note: its pre-tool hook would have to approve the edit"),
+        hooks: Some(HookConfig {
+            path: ".qwen/settings.json",
+            agent: "qwen",
+            layout: HookLayout::Nested,
+            events: &[
+                on("SessionStart", "session-start", 10),
+                on("PostToolUse", "post-edit", 30),
+                on("Stop", "stop", 60),
+            ],
+        }),
         ..NONE
     },
     Agent {
@@ -304,10 +439,21 @@ pub const AGENTS: &[Agent] = &[
     Agent {
         id: "augment",
         name: "Augment (Auggie)",
+        project_markers: &[".augment"],
         binaries: &["auggie"],
         home_markers: &[".augment"],
         global_mcp: mcp(".augment/settings.json", McpFormat::McpServers),
-        limits: Some("its MCP config is global only (use --global); hooks are wired in a later release"),
+        limits: Some("its MCP config is global only (use --global); no pre-edit note; hooks run in the CLI only"),
+        hooks: Some(HookConfig {
+            path: ".augment/settings.local.json",
+            agent: "augment",
+            layout: HookLayout::NestedMillis,
+            events: &[
+                on("SessionStart", "session-start", 10),
+                on("PostToolUse", "post-edit", 30),
+                on("Stop", "stop", 60),
+            ],
+        }),
         ..NONE
     },
     Agent {

@@ -738,12 +738,21 @@ fn run_hook(agent: &str, event: &str, cli: &Cli) -> u8 {
         exe: std::env::current_exe().ok(),
     };
     let result = std::panic::catch_unwind(|| hook::run(agent, event, &input, &options));
-    match result {
-        Ok(Ok(Some(value))) => println!("{value}"),
-        Ok(Ok(None)) => {}
-        Ok(Err(error)) if !cli.quiet => eprintln!("tessera hook: {error:#}"),
-        Ok(Err(_)) => {}
-        Err(_) => eprintln!("tessera hook: internal error"),
+    let value = match result {
+        Ok(Ok(value)) => value,
+        Ok(Err(error)) => {
+            if !cli.quiet {
+                eprintln!("tessera hook: {error:#}");
+            }
+            hook::fallback(agent, event)
+        }
+        Err(_) => {
+            eprintln!("tessera hook: internal error");
+            hook::fallback(agent, event)
+        }
+    };
+    if let Some(value) = value {
+        println!("{value}");
     }
     0
 }

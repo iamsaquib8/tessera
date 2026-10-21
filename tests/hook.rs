@@ -323,3 +323,291 @@ fn a_huge_change_reports_the_top_findings() {
     assert!(reason.contains("more"), "{reason}");
     assert!(reason.lines().count() <= 12, "{reason}");
 }
+
+/// The TypeScript fixture with `findById` misspelled at src/users/repo.ts:17,
+/// already indexed by a session start.
+fn broken(agent: &str, start: Value) -> TempDir {
+    let temp = repo();
+    let root = temp.path();
+    hook(agent, "session-start", start);
+    let content = fs::read_to_string(root.join("src/users/repo.ts")).unwrap();
+    write(
+        root,
+        "src/users/repo.ts",
+        &content.replace("repo.findById(id)", "repo.findByIdd(id)"),
+    );
+    temp
+}
+
+fn path_of(root: &Path, rel: &str) -> String {
+    root.join(rel).to_string_lossy().into_owned()
+}
+
+#[test]
+fn codex_answers_in_claude_shape_and_always_prints_json_at_stop() {
+    let temp = repo();
+    let root = temp.path();
+    let cwd = root.to_string_lossy().into_owned();
+    let base = json!({ "session_id": "x", "cwd": cwd, "model": "gpt" });
+    assert_eq!(
+        hook(
+            "codex",
+            "Stop",
+            json!({ "session_id": "x", "cwd": cwd, "stop_hook_active": false })
+        ),
+        json!({})
+    );
+    let content = fs::read_to_string(root.join("src/users/repo.ts")).unwrap();
+    write(
+        root,
+        "src/users/repo.ts",
+        &content.replace("repo.findById(id)", "repo.findByIdd(id)"),
+    );
+    let mut post = base.clone();
+    post.as_object_mut().unwrap().extend(
+        json!({
+            "hook_event_name": "PostToolUse",
+            "tool_name": "apply_patch",
+            "tool_input": { "command": "*** Begin Patch\n*** Update File: src/users/repo.ts\n*** End Patch\n" }
+        })
+        .as_object()
+        .unwrap()
+        .clone(),
+    );
+    let out = hook("codex", "PostToolUse", post);
+    assert_eq!(
+        out["hookSpecificOutput"]["hookEventName"], "PostToolUse",
+        "{out}"
+    );
+    assert!(out["hookSpecificOutput"]["additionalContext"]
+        .as_str()
+        .unwrap()
+        .contains("findByIdd"));
+}
+
+#[test]
+fn gemini_gets_context_after_a_tool_and_a_retry_after_the_agent() {
+    let temp = repo();
+    let root = temp.path();
+    let cwd = root.to_string_lossy().into_owned();
+    hook(
+        "gemini",
+        "SessionStart",
+        json!({ "session_id": "g", "cwd": cwd, "source": "startup" }),
+    );
+    let content = fs::read_to_string(root.join("src/users/repo.ts")).unwrap();
+    write(
+        root,
+        "src/users/repo.ts",
+        &content.replace("repo.findById(id)", "repo.findByIdd(id)"),
+    );
+    let after_tool = hook(
+        "gemini",
+        "AfterTool",
+        json!({
+            "session_id": "g", "cwd": cwd, "hook_event_name": "AfterTool",
+            "tool_name": "replace",
+            "tool_input": { "file_path": path_of(root, "src/users/repo.ts"), "old_string": "repo.findById(id)", "new_string": "repo.findByIdd(id)" },
+            "tool_response": {}
+        }),
+    );
+    assert!(
+        after_tool["hookSpecificOutput"]["additionalContext"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("findByIdd"),
+        "{after_tool}"
+    );
+    assert!(after_tool.get("decision").is_none(), "{after_tool}");
+    let after_agent = hook(
+        "gemini",
+        "AfterAgent",
+        json!({ "session_id": "g", "cwd": cwd, "hook_event_name": "AfterAgent", "prompt": "p", "prompt_response": "done", "stop_hook_active": false }),
+    );
+    assert_eq!(after_agent["decision"], "deny", "{after_agent}");
+    assert!(after_agent["reason"]
+        .as_str()
+        .unwrap()
+        .contains("src/users/repo.ts:17"));
+}
+
+#[test]
+fn copilot_blocks_agent_stop() {
+    let temp = broken("copilot", json!({ "sessionId": "c", "cwd": "" }));
+    let cwd = temp.path().to_string_lossy().into_owned();
+    let stop = hook(
+        "copilot",
+        "agentStop",
+        json!({ "sessionId": "c2", "timestamp": 0, "cwd": cwd, "stopReason": "end_turn", "stop_hook_active": false }),
+    );
+    // A session first seen at stop has no baseline for what the agent changed.
+    assert_eq!(stop, Value::Null);
+    hook(
+        "copilot",
+        "sessionStart",
+        json!({ "sessionId": "c3", "timestamp": 0, "cwd": cwd }),
+    );
+    let content = fs::read_to_string(temp.path().join("src/users/repo.ts")).unwrap();
+    write(
+        temp.path(),
+        "src/users/repo.ts",
+        &content.replace("repo.findByIdd(id)", "repo.findByIddd(id)"),
+    );
+    let stop = hook(
+        "copilot",
+        "agentStop",
+        json!({ "sessionId": "c3", "timestamp": 0, "cwd": cwd, "stopReason": "end_turn", "stop_hook_active": false }),
+    );
+    assert_eq!(stop["decision"], "block", "{stop}");
+}
+
+#[test]
+fn cursor_follows_up_at_stop_unless_the_user_aborted() {
+    let temp = repo();
+    let root = temp.path();
+    let roots = json!([root.to_string_lossy()]);
+    hook(
+        "cursor",
+        "sessionStart",
+        json!({ "conversation_id": "u", "workspace_roots": roots }),
+    );
+    let content = fs::read_to_string(root.join("src/users/repo.ts")).unwrap();
+    write(
+        root,
+        "src/users/repo.ts",
+        &content.replace("repo.findById(id)", "repo.findByIdd(id)"),
+    );
+    let aborted = hook(
+        "cursor",
+        "stop",
+        json!({ "conversation_id": "u", "workspace_roots": roots, "hook_event_name": "stop", "status": "aborted", "loop_count": 0 }),
+    );
+    assert_eq!(aborted, Value::Null);
+    let stop = hook(
+        "cursor",
+        "stop",
+        json!({ "conversation_id": "u", "workspace_roots": roots, "hook_event_name": "stop", "status": "completed", "loop_count": 0 }),
+    );
+    assert!(
+        stop["followup_message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("findByIdd"),
+        "{stop}"
+    );
+}
+
+#[test]
+fn augment_reads_file_changes_and_wraps_its_stop_decision() {
+    let temp = repo();
+    let root = temp.path();
+    let roots = json!([root.to_string_lossy()]);
+    hook(
+        "augment",
+        "SessionStart",
+        json!({ "conversation_id": "a", "workspace_roots": roots, "hook_event_name": "SessionStart" }),
+    );
+    let content = fs::read_to_string(root.join("src/users/repo.ts")).unwrap();
+    write(
+        root,
+        "src/users/repo.ts",
+        &content.replace("repo.findById(id)", "repo.findByIdd(id)"),
+    );
+    let post = hook(
+        "augment",
+        "PostToolUse",
+        json!({
+            "conversation_id": "a", "workspace_roots": roots, "hook_event_name": "PostToolUse",
+            "tool_name": "str-replace-editor", "tool_input": {}, "is_mcp_tool": false,
+            "file_changes": [{ "path": "src/users/repo.ts", "changeType": "edit" }]
+        }),
+    );
+    assert_eq!(
+        post["hookSpecificOutput"]["hookEventName"], "PostToolUse",
+        "{post}"
+    );
+    let interrupted = hook(
+        "augment",
+        "Stop",
+        json!({ "conversation_id": "a", "workspace_roots": roots, "hook_event_name": "Stop", "agent_stop_cause": "interrupted" }),
+    );
+    assert_eq!(interrupted, Value::Null);
+    let stop = hook(
+        "augment",
+        "Stop",
+        json!({ "conversation_id": "a", "workspace_roots": roots, "hook_event_name": "Stop", "agent_stop_cause": "end_turn" }),
+    );
+    assert_eq!(stop["hookSpecificOutput"]["decision"], "block", "{stop}");
+    assert_eq!(stop["hookSpecificOutput"]["hookEventName"], "Stop");
+}
+
+#[test]
+fn antigravity_gets_empty_objects_and_a_continue_at_stop() {
+    let temp = repo();
+    let root = temp.path();
+    let paths = json!([root.to_string_lossy()]);
+    assert_eq!(
+        hook(
+            "antigravity",
+            "SessionStart",
+            json!({ "conversationId": "v", "workspacePaths": paths })
+        ),
+        json!({})
+    );
+    let content = fs::read_to_string(root.join("src/users/repo.ts")).unwrap();
+    write(
+        root,
+        "src/users/repo.ts",
+        &content.replace("repo.findById(id)", "repo.findByIdd(id)"),
+    );
+    let post = hook(
+        "antigravity",
+        "PostToolUse",
+        json!({ "conversationId": "v", "workspacePaths": paths, "toolCall": { "name": "replace_file_content", "args": { "TargetFile": path_of(root, "src/users/repo.ts") } }, "error": "" }),
+    );
+    assert_eq!(post, json!({}));
+    let stop = hook(
+        "antigravity",
+        "Stop",
+        json!({ "conversationId": "v", "workspacePaths": paths, "executionNum": 1, "terminationReason": "", "fullyIdle": true }),
+    );
+    assert_eq!(stop["decision"], "continue", "{stop}");
+    assert!(stop["reason"].as_str().unwrap().contains("findByIdd"));
+}
+
+#[test]
+fn qwen_gets_no_pre_edit_note_but_post_edit_context() {
+    let temp = repo();
+    let root = temp.path();
+    let cwd = root.to_string_lossy().into_owned();
+    hook(
+        "qwen",
+        "SessionStart",
+        json!({ "session_id": "q", "cwd": cwd }),
+    );
+    let pre = hook(
+        "qwen",
+        "PreToolUse",
+        json!({ "session_id": "q", "cwd": cwd, "tool_name": "edit", "tool_input": { "file_path": path_of(root, "src/util/format.ts"), "old_string": "return name.trim();", "new_string": "x" } }),
+    );
+    assert_eq!(
+        pre,
+        Value::Null,
+        "qwen requires a permission decision with context"
+    );
+    let content = fs::read_to_string(root.join("src/users/repo.ts")).unwrap();
+    write(
+        root,
+        "src/users/repo.ts",
+        &content.replace("repo.findById(id)", "repo.findByIdd(id)"),
+    );
+    let post = hook(
+        "qwen",
+        "PostToolUse",
+        json!({ "session_id": "q", "cwd": cwd, "tool_name": "write_file", "tool_input": { "file_path": path_of(root, "src/users/repo.ts") } }),
+    );
+    assert_eq!(
+        post["hookSpecificOutput"]["hookEventName"], "PostToolUse",
+        "{post}"
+    );
+}
