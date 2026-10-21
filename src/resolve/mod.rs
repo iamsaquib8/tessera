@@ -94,8 +94,9 @@ struct Shape {
     /// import and re-export bindings, module-level, field and return type
     /// hints, and heritage clauses. Function bodies are not in it.
     surface: Vec<String>,
-    /// How many symbols carry each name, for repo-wide name matches.
-    names: HashMap<String, usize>,
+    /// Symbols per name as repo-wide name matches count them: class
+    /// members, other definitions, and the types among those.
+    names: HashMap<String, [i64; 3]>,
     /// Symbol id -> a key that survives re-indexing the file: kind,
     /// qualified name, and position among symbols sharing both.
     keys: HashMap<i64, String>,
@@ -147,7 +148,7 @@ impl Shape {
             .map(|s| s.2.as_str())
             .collect();
         let mut surface = vec![format!("l{SEP}{language}{SEP}{module:?}")];
-        let mut names: HashMap<String, usize> = HashMap::new();
+        let mut names: HashMap<String, [i64; 3]> = HashMap::new();
         let mut keys = HashMap::new();
         let mut seen: HashMap<(&str, &str), usize> = HashMap::new();
         for (id, name, qname, kind, container, exported, default, min, max) in &symbols {
@@ -157,11 +158,19 @@ impl Shape {
             if kind == "callback" {
                 continue;
             }
-            *names.entry(name.clone()).or_default() += 1;
-            if container
+            let member = container
                 .as_deref()
-                .is_none_or(|container| classes.contains(container))
-            {
+                .is_some_and(|container| classes.contains(container));
+            let count = names.entry(name.clone()).or_default();
+            if member {
+                count[0] += 1;
+            } else {
+                count[1] += 1;
+                if scope::TYPE_KINDS.contains(&kind.as_str()) {
+                    count[2] += 1;
+                }
+            }
+            if container.is_none() || member {
                 surface.push(format!(
                     "s{SEP}{qname}{SEP}{kind}{SEP}{exported}{SEP}{default}{SEP}{min:?}{SEP}{max:?}"
                 ));
@@ -353,10 +362,10 @@ fn repoint(conn: &Connection, now: &[Shape], before: &Before) -> Result<HashSet<
 /// The changed files plus every file whose edges may now resolve
 /// differently: files whose edges lost their target (`lost`), files with
 /// names reported missing from a changed or removed file, files with
-/// name-matched edges to a name the changed files define, and, for a file
-/// whose surface changed (or that is new or removed), its importers through
-/// re-export chains, its Java package, and files with unresolved relative
-/// imports it may satisfy.
+/// name-matched edges to a name the edit defines more or less often, and,
+/// for a file whose surface changed (or that is new or removed), its
+/// importers through re-export chains, its Java package, and files with
+/// unresolved relative imports it may satisfy.
 fn dependents(
     conn: &Connection,
     now: &[Shape],
@@ -385,10 +394,16 @@ fn dependents(
     let mut touched: Vec<&str> = Vec::new();
     let mut appeared: Vec<&str> = Vec::new();
     let mut packages: HashSet<&str> = HashSet::new();
-    let mut names: HashSet<&str> = HashSet::new();
+    // How the edit changed the definitions of each name.
+    let mut names: HashMap<&str, [i64; 3]> = HashMap::new();
     for shape in now {
         touched.push(&shape.path);
-        names.extend(shape.names.keys().map(String::as_str));
+        for (name, count) in &shape.names {
+            let delta = names.entry(name).or_default();
+            for (d, c) in delta.iter_mut().zip(count) {
+                *d += c;
+            }
+        }
         let old = previous.get(shape.path.as_str());
         if old.is_none_or(|old| old.surface != shape.surface) {
             follow.push(shape.path.clone());
@@ -400,6 +415,12 @@ fn dependents(
         }
     }
     for (path, old) in &previous {
+        for (name, count) in &old.names {
+            let delta = names.entry(name).or_default();
+            for (d, c) in delta.iter_mut().zip(count) {
+                *d -= c;
+            }
+        }
         if !current.contains(path) {
             touched.push(path);
             follow.push(path.to_string());
@@ -440,14 +461,48 @@ fn dependents(
             &[path],
         )?);
     }
-    for name in &names {
+    let quoted = |kinds: &[&str]| {
+        kinds
+            .iter()
+            .map(|kind| format!("'{kind}'"))
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    let count_sql = format!(
+        "SELECT COALESCE(SUM(NOT member), 0), COALESCE(SUM(NOT member AND kind IN ({types})), 0)
+         FROM (SELECT s.kind AS kind, EXISTS (
+                 SELECT 1 FROM symbols c WHERE c.file_id = s.file_id
+                   AND c.qualified_name = s.container AND c.kind IN ({classes})) AS member
+               FROM symbols s WHERE s.name = ?1 AND s.kind != 'callback')",
+        types = quoted(scope::TYPE_KINDS),
+        classes = quoted(scope::CLASS_KINDS),
+    );
+    let type_refs = quoted(scope::TYPE_REF_KINDS);
+    for (name, delta) in &names {
+        if *delta == [0; 3] {
+            continue;
+        }
         if files.len() > MAX_INCREMENTAL_FILES {
             break;
         }
+        // A name with more definitions than a name match accepts, before
+        // and after the edit, matches nothing either way.
+        let (others, types): (i64, i64) = conn
+            .prepare_cached(&count_sql)?
+            .query_row(params![name], |row| Ok((row.get(0)?, row.get(1)?)))?;
+        let stable = |now: i64, delta: i64| now.min(now - delta) > scope::MAX_AMBIGUOUS as i64;
+        let kinds = match (stable(others, delta[1]), stable(types, delta[2])) {
+            (true, true) => continue,
+            (true, false) => format!("AND r.kind IN ({type_refs})"),
+            (false, true) => format!("AND r.kind NOT IN ({type_refs})"),
+            (false, false) => String::new(),
+        };
         files.extend(ids(
-            "SELECT DISTINCT r.file_id FROM edges e JOIN refs r ON r.id = e.ref_id
-             WHERE e.to_symbol_name = ?1 AND e.confidence IN ('medium', 'low', 'name')
-               AND (e.resolver IS NULL OR e.resolver = 'name')",
+            &format!(
+                "SELECT DISTINCT r.file_id FROM edges e JOIN refs r ON r.id = e.ref_id
+                 WHERE e.to_symbol_name = ?1 AND e.confidence IN ('medium', 'low', 'name')
+                   AND (e.resolver IS NULL OR e.resolver = 'name') {kinds}"
+            ),
             &[name],
         )?);
     }

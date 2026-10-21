@@ -19,9 +19,9 @@ pub(super) const CLASS_KINDS: &[&str] = &[
     "trait",
     "annotation",
 ];
-const TYPE_REF_KINDS: &[&str] = &["extends", "implements", "type"];
+pub(super) const TYPE_REF_KINDS: &[&str] = &["extends", "implements", "type"];
 /// What a type reference can name: anything with members, or a type alias.
-const TYPE_KINDS: &[&str] = &[
+pub(super) const TYPE_KINDS: &[&str] = &[
     "class",
     "interface",
     "enum",
@@ -74,7 +74,7 @@ const JS_GLOBALS: &[&str] = &[
     "URLSearchParams",
 ];
 /// More name-matched candidates than this is noise, not ambiguity.
-const MAX_AMBIGUOUS: usize = 5;
+pub(super) const MAX_AMBIGUOUS: usize = 5;
 /// Bounds every walk over re-exports, inheritance and call chains.
 const MAX_DEPTH: usize = 12;
 /// Loaded files kept in memory; a full pass over a large repository would

@@ -374,6 +374,62 @@ fn a_body_edit_re_resolves_only_the_edited_file() {
 }
 
 #[test]
+fn only_names_an_edit_adds_or_removes_reach_name_matched_callers() {
+    let mut files: Vec<(String, String)> = vec![
+        (
+            "util.ts".into(),
+            "export function helper() {\n  return 1;\n}\n".into(),
+        ),
+        (
+            "other.ts".into(),
+            "export function f() {\n  helper();\n  fresh();\n  return run();\n}\n".into(),
+        ),
+    ];
+    for i in 0..7 {
+        files.push((
+            format!("r{i}.ts"),
+            format!("export function run() {{ return {i}; }}\n"),
+        ));
+    }
+    let files: Vec<(&str, &str)> = files
+        .iter()
+        .map(|(p, c)| (p.as_str(), c.as_str()))
+        .collect();
+    let (_temp, ws) = repo_with(&files);
+    assert_has(
+        &edges(&ws.db_path),
+        &[
+            "f -call-> util.ts:helper [medium/name]",
+            "f -call-> run [name]",
+        ],
+    );
+    // The same names: the name-matched caller keeps its edge as it is.
+    assert_eq!(
+        edit_and_resolve(
+            &ws,
+            "util.ts",
+            "export function helper() {\n  return 2;\n}\n"
+        ),
+        1
+    );
+    // A name with more definitions than are ever matched stays unmatched.
+    assert_eq!(
+        edit_and_resolve(&ws, "r7.ts", "export function run() { return 7; }\n"),
+        1
+    );
+    // A name the edit adds reaches the caller.
+    assert_eq!(
+        edit_and_resolve(
+            &ws,
+            "util.ts",
+            "export function helper() {\n  return 2;\n}\nexport function fresh() { return 8; }\n",
+        ),
+        2
+    );
+    assert_eq!(resolved_state(&ws.db_path), full_state(&ws.root));
+}
+
+#[test]
 fn incremental_edits_match_a_full_index() {
     let (_temp, ws) = repo_with(&[
         (
