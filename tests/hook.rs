@@ -320,6 +320,50 @@ fn stop_blocks_on_problems_at_most_three_times() {
 }
 
 #[test]
+fn problems_the_agent_gave_up_on_do_not_block_later_turns() {
+    let temp = repo();
+    let root = temp.path();
+    start_indexed(root);
+    replace_in(
+        root,
+        "src/users/repo.ts",
+        "repo.findById(id)",
+        "repo.findByIdd(id)",
+    );
+    claude(
+        root,
+        "PostToolUse",
+        edit_payload(
+            root,
+            "src/users/repo.ts",
+            "repo.findById(id)",
+            "repo.findByIdd(id)",
+        ),
+    );
+    for attempt in 0..3 {
+        let stop = claude(root, "Stop", json!({ "stop_hook_active": attempt > 0 }));
+        assert_eq!(stop["decision"], "block", "attempt {attempt}: {stop}");
+    }
+    assert_eq!(
+        claude(root, "Stop", json!({ "stop_hook_active": true })),
+        Value::Null
+    );
+    // The next turn starts with an unrelated edit.
+    let format = fs::read_to_string(root.join("src/util/format.ts")).unwrap();
+    write(root, "src/util/format.ts", &format!("{format}// later\n"));
+    let edit = claude(
+        root,
+        "PostToolUse",
+        edit_payload(root, "src/util/format.ts", "", "// later"),
+    );
+    assert!(edit.get("decision").is_none(), "{edit}");
+    assert_eq!(
+        claude(root, "Stop", json!({ "stop_hook_active": false })),
+        Value::Null
+    );
+}
+
+#[test]
 fn edits_are_found_in_every_payload_shape() {
     let temp = repo();
     let root = temp.path();

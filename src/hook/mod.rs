@@ -425,6 +425,13 @@ impl Hook<'_> {
             session.stop_blocks = 0;
         }
         if session.stop_blocks >= MAX_STOP_BLOCKS {
+            // The agent was held three times and stopped anyway: what is
+            // still open no longer blocks, in this turn or later ones.
+            let baseline = session.baseline_problems.get_or_insert_with(BTreeMap::new);
+            for (key, count) in std::mem::take(&mut session.problems) {
+                let known = baseline.entry(short_hash(&key)).or_insert(0);
+                *known = (*known).max(count);
+            }
             return Ok(None);
         }
         let since = session.baseline.clone().map(Changes::Since);
