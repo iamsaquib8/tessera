@@ -181,3 +181,42 @@ fn binstall_uses_static_linux_binaries() {
         );
     }
 }
+
+/// The image builds from the Dockerfile's copies alone, so every directory
+/// whose files the source embeds (`include_str!`) must be copied in.
+#[test]
+fn the_docker_build_copies_every_embedded_directory() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let dockerfile = std::fs::read_to_string(root.join("Dockerfile")).unwrap();
+    let mut embedded = std::collections::BTreeSet::new();
+    let mut stack = vec![root.join("src")];
+    while let Some(dir) = stack.pop() {
+        for entry in std::fs::read_dir(&dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                stack.push(path);
+                continue;
+            }
+            let text = std::fs::read_to_string(&path).unwrap_or_default();
+            for part in text.split("include_str!(\"").skip(1) {
+                let rel = part.split('"').next().unwrap();
+                let file = path.parent().unwrap().join(rel).canonicalize().unwrap();
+                let top = file.strip_prefix(root.canonicalize().unwrap()).unwrap();
+                embedded.insert(
+                    top.components()
+                        .next()
+                        .unwrap()
+                        .as_os_str()
+                        .to_string_lossy()
+                        .into_owned(),
+                );
+            }
+        }
+    }
+    for top in embedded {
+        assert!(
+            dockerfile.contains(&format!("COPY {top} ./{top}")),
+            "the Dockerfile does not copy {top}/"
+        );
+    }
+}
