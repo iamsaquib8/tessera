@@ -596,11 +596,18 @@ fn javascript(scan: &mut Scan<'_>, node: Node<'_>) {
                 scan.call(property, function.child_by_field_name("object"), None);
             }
         }
-        // `new shopProto.CurrencyService(address, credentials)`.
+        // `new shopProto.CurrencyService(address, credentials)` (proto-loader)
+        // or `new CurrencyServiceClient(address, credentials)` (ts-proto).
         "new_expression" => {
             let Some(constructor) = node.child_by_field_name("constructor") else {
                 return;
             };
+            if constructor.kind() == "identifier" {
+                if let Some(service) = service_of(&CS_CLIENT, scan.text(constructor)) {
+                    scan.client(service, node, "grpc.node.ts_proto_client");
+                }
+                return;
+            }
             if constructor.kind() != "member_expression" {
                 return;
             }

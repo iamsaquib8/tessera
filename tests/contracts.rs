@@ -64,7 +64,7 @@ fn grpc_clients_link_to_servers_in_five_languages() {
     let result = map(temp.path(), &["rpc"]);
     let got = summary(&result);
     for expected in [
-        "CartService/AddItem: cart/CartService.cs -> ",
+        "CartService/AddItem: cart/CartService.cs -> gateway/cart.gateway.ts",
         "CartService/GetCart: cart/CartService.cs -> frontend/rpc.go",
         "CurrencyService/Convert: currency/server.js -> frontend/rpc.go",
         "CurrencyService/GetSupportedCurrencies: currency/server.js -> frontend/rpc.go",
