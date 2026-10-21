@@ -21,37 +21,43 @@ all, so `rows.get()` on a `Map` never shows up under your own `get`.
 argument drop weaker results. `blast` gives each caller the weakest
 confidence on its path.
 
-Resolution is deep for **TypeScript, TSX, and JavaScript** (ESM and
-CommonJS). **Java** resolves imports, packages, fields, parameters, `this`,
-static calls, and overloads by argument count. Other languages use the same
-rules where they apply (scope, unique names) and otherwise stay at name
-level.
+Resolution is deep for **TypeScript, TSX, JavaScript** (ESM and CommonJS),
+and **Java** (imports, packages, fields, parameters, `this`, static calls,
+and overloads by argument count). Other languages use the same rules where
+they apply (scope, unique names) and otherwise stay at name level.
 
 ## Measured precision and recall
 
 From [tessera-bench](https://github.com/iamsaquib8/tessera-bench), run on
-2026-10-21 against scip-typescript ground truth. Precision counts every
-reference Tessera reports for 200 sampled definitions per repository;
-resolved recall counts ground-truth references Tessera found at high or
-medium confidence.
+2026-10-21 against scip-typescript and scip-java ground truth. Precision
+counts every reference Tessera reports for 200 sampled definitions per
+repository; resolved recall counts ground-truth references Tessera found at
+high or medium confidence.
 
 | Repository | high precision | direct calls | typed receivers | type references |
 | --- | --- | --- | --- | --- |
 | excalidraw (TypeScript, React) | 0.999 | 1.000 | 0.914 | 0.990 |
-| nest (TypeScript) | 0.963 | 1.000 | 0.969 | 0.985 |
-| ghost core (JavaScript, TypeScript) | 0.959 | 0.879 | 0.698 | 0.963 |
-| **all** | **0.990** | **0.990** | **0.912** | **0.986** |
+| nest (TypeScript) | 0.994 | 1.000 | 0.969 | 0.985 |
+| ghost core (JavaScript, TypeScript) | 0.990 | 0.879 | 0.698 | 0.963 |
+| **TypeScript/JavaScript** | **0.998** | **0.990** | **0.912** | **0.986** |
+| spring-petclinic (Java) | 0.995 | 0.900 | 0.958 | 1.000 |
+| spring-petclinic-microservices (Java) | 0.995 | 0.778 | 0.800 | 1.000 |
+| **Java** | **0.995** | **0.872** | **0.935** | **1.000** |
 
 The release gate for the deep tier is high-confidence precision of at least
 0.95 and resolved recall of at least 0.85 for direct calls, typed receivers,
-and type references. It passes on the corpus as a whole. Ghost's
-typed-receiver recall (53 sites) is below it: those receivers get their type
-through chained calls (`data.key("x").index(0)`) and getters, which Tessera
-does not follow yet.
+and type references. It passes for TypeScript/JavaScript and for Java.
+Two repositories are below it in one category: Ghost's typed receivers (53
+sites), whose types come through chained calls (`data.key("x").index(0)`) and
+getters that Tessera does not follow yet, and the microservices sample (9
+direct calls, 40 typed receivers). The Java corpus is small, so read its
+numbers with their sample sizes.
 
 ## How it is measured
 
-- **Ground truth:** SCIP indexes built by scip-typescript at pinned commits.
+- **Ground truth:** SCIP indexes built by scip-typescript and scip-java at
+  pinned commits. Both attribute `new X()` to X's constructor, and the
+  scoring does the same.
   Sites the indexer itself could not resolve, and files it did not index,
   are not scored.
 - **Sample:** 40 definitions from each of five fan-in buckets per

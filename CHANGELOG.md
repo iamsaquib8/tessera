@@ -29,7 +29,8 @@ measured against compiler ground truth.
 - `status` shows how many references resolved at each confidence.
 - **tessera-bench** (separate repository): SCIP ground truth on pinned
   public repositories, precision per confidence tier, recall per category.
-  First results are in [docs/accuracy.md](docs/accuracy.md).
+  First results: high-confidence precision 0.998 for TypeScript/JavaScript
+  and 0.995 for Java ([docs/accuracy.md](docs/accuracy.md)).
 
 ### Changed
 

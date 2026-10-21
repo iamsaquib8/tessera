@@ -125,17 +125,16 @@ sourced matrix of hook capabilities is in [docs/agents.md](docs/agents.md).
 TypeScript, TSX/React, JavaScript (ESM and CommonJS), Java, Python, Go, Rust,
 C, C++, C#, Ruby, PHP.
 
-**Deep tier: TypeScript, TSX, and JavaScript.** References resolve through
-imports, re-exports, tsconfig paths, workspace packages, and declared types,
-and every one carries a confidence. Against compiler ground truth on
-excalidraw, nest, and Ghost, high-confidence results are right **99.0%** of
-the time, and Tessera finds 99% of direct calls, 91% of calls on typed
-receivers, and 99% of type references ([accuracy](docs/accuracy.md)).
+**Deep tier: TypeScript, TSX, JavaScript, and Java.** References resolve
+through imports, re-exports, tsconfig paths, workspace packages, Java
+packages, declared types, and overloads, and every one carries a confidence.
+Against compiler ground truth on excalidraw, nest, Ghost, and two Spring
+applications, high-confidence results are right **99.7%** of the time, and
+Tessera finds 99% of direct calls, 91% of calls on typed receivers, and 99%
+of type references in TypeScript/JavaScript ([accuracy](docs/accuracy.md)).
 
-**Java** resolves through imports, packages, fields, `this`, static calls,
-and overloads by argument count; its benchmark run is next. The other
-languages are at the **standard** tier: resolved within a file and by unique
-name, labelled when a match is only possible.
+The other languages are at the **standard** tier: resolved within a file and
+by unique name, labelled when a match is only possible.
 [Current limits](docs/when-not-to-use.md) are listed plainly.
 
 ## FAQ
@@ -152,9 +151,9 @@ repository, and soon across repositories, that any agent can query.
 `.tessera/`, gitignored automatically. Tessera makes no network calls, and
 `blast --diff` runs only a local `git diff`.
 
-**Is it accurate?** Measured, not claimed: on public TypeScript and
-JavaScript repositories, 99.0% of high-confidence references match the
-compiler's ground truth ([accuracy](docs/accuracy.md)). Weaker matches are
+**Is it accurate?** Measured, not claimed: on public TypeScript,
+JavaScript, and Java repositories, 99.7% of high-confidence references match
+the compiler's ground truth ([accuracy](docs/accuracy.md)). Weaker matches are
 labelled, never silent. The benchmark, its ground truth, and adapters for
 other code-graph tools are public, so you can check the numbers yourself.
 

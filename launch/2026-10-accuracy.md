@@ -1,4 +1,4 @@
-# Draft: "99% of Tessera's exact answers match the compiler"
+# Draft: "99.7% of Tessera's exact answers match the compiler"
 
 *Status: draft for Saquib. Publishing, and where, is Saquib's call.*
 
@@ -16,9 +16,10 @@ Tessera reports:
 | | high-confidence precision | direct calls | typed receivers | type references |
 | --- | --- | --- | --- | --- |
 | excalidraw | 0.999 | 1.000 | 0.914 | 0.990 |
-| nest | 0.963 | 1.000 | 0.969 | 0.985 |
-| Ghost core | 0.959 | 0.879 | 0.698 | 0.963 |
-| all | 0.990 | 0.990 | 0.912 | 0.986 |
+| nest | 0.994 | 1.000 | 0.969 | 0.985 |
+| Ghost core | 0.990 | 0.879 | 0.698 | 0.963 |
+| spring-petclinic (Java) | 0.995 | 0.900 | 0.958 | 1.000 |
+| petclinic microservices (Java) | 0.995 | 0.778 | 0.800 | 1.000 |
 
 Ghost's typed-receiver recall is below our own 0.85 bar. Those receivers get
 their type through chained calls and getters, and we publish the number

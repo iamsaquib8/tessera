@@ -57,10 +57,10 @@ conformance tests pass.
 **Gate:** high-confidence precision ≥ 0.95 and recall ≥ 0.85 for TS/JS. The
 milestone grows until that holds; the bar is not lowered.
 
-**Result:** passed on the TypeScript/JavaScript corpus: precision 0.990,
-recall 0.990 (direct calls), 0.912 (typed receivers), 0.986 (type
-references). Per-repository numbers, including the one below the bar, are in
-[docs/accuracy.md](docs/accuracy.md).
+**Result:** passed for TypeScript/JavaScript (precision 0.998; recall 0.990
+direct calls, 0.912 typed receivers, 0.986 type references) and for Java
+(precision 0.995; recall 0.872, 0.935, 1.000). Per-repository numbers,
+including those below the bar, are in [docs/accuracy.md](docs/accuracy.md).
 
 ## v0.12: Edit-safety loop
 

@@ -7,8 +7,7 @@ not the same as complete. These are the current limits, stated plainly.
 
 Every reference has a confidence (see [accuracy](accuracy.md)). High means
 Tessera followed scope, an import, `this`, or a declared type to one
-definition; on the TypeScript/JavaScript benchmark that is right 99% of the
-time. Medium, low, and name-level results are labelled in the output
+definition; on the benchmark that is right 99.7% of the time. Medium, low, and name-level results are labelled in the output
 ("likely", "possible") and are exactly that.
 
 - **Deep tier:** TypeScript, TSX, and JavaScript (ESM and CommonJS) resolve
