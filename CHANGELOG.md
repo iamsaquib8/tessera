@@ -83,6 +83,33 @@ included here.
   `-32601` and `-32602` instead of `-32000` for everything.
 - Silent caps on references (250), impact callers (100), and imports (500)
   are gone.
+- Concurrent writers no longer fail with "database is locked": writers take
+  `<db>.lock`, and a query that finds another process indexing answers from
+  the existing index.
+- `--db` pointed at a SQLite file that is not a Tessera index is refused
+  instead of having its tables dropped.
+- The watcher and explicitly named paths follow the same ignore, hidden-name,
+  and symlink rules as the full walk.
+- The index rebuilds when the Tessera version, `config.toml`, or the excludes
+  change; unreadable files and files with syntax errors are listed in
+  `status`; `--exclude` survives `watch` and git hooks (`--reset-excludes`
+  clears it).
+- `blast --diff <rev>` compares against the working tree, works when the
+  root is a subdirectory of the git repository, and rejects revisions that
+  look like options.
+- Symbol bodies are read lossily, without a BOM, from the current root (a
+  moved repository still works), and never from outside it.
+- `verify` no longer reports false problems on lines with non-ASCII text.
+- Tessera refuses to auto-index the home directory or `/` without `--root`.
+- `init` writes executable git hooks (also in worktrees), a valid Codex
+  `[mcp_servers.tessera]` table, and escaped JSON; `.tessera/.gitignore`
+  keeps `config.toml` committable.
+- npm and cargo-binstall install the static musl build on every Linux, so
+  older glibc distributions work. `install.sh` replaces the binary by rename.
+  The Docker image keeps its index inside the container (`TESSERA_DB`).
+- Release candidates are published as pre-releases (npm `next`, no Homebrew,
+  no crates.io), every release job builds the tag, and the Docker image and
+  install smoke tests run as part of the release.
 
 ### Removed
 

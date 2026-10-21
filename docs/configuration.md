@@ -7,8 +7,11 @@ Tessera works with no configuration. Everything here is optional.
 - **Files:** every file with a supported extension under the repository
   root. The root is the nearest ancestor containing `.tessera/` or `.git`,
   or `--root`.
-- **Ignore files:** `.gitignore`, `.ignore`, and `.tesseraignore` are
-  honoured, even outside a git checkout.
+- **Ignore files:** `.gitignore`, `.ignore`, `.tesseraignore`,
+  `.git/info/exclude`, and your global git excludes file are honoured, even
+  outside a git checkout.
+- **Hidden files and directories** (names starting with `.`) and symlinks
+  are skipped.
 - **Always skipped:** `node_modules`, `.git`, `.tessera`, `__pycache__`,
   virtualenvs, and tool caches. `dist`, `build`, `target`, `out`, `vendor`,
   `coverage`, and `.next` are skipped only at the repository root, so a Java
@@ -44,13 +47,20 @@ extra = ["fixtures"]                # directory or file names to skip anywhere
 tessera index --exclude 'legacy/**' --exclude '**/*.pb.go'
 ```
 
-Excludes passed this way are remembered, so automatic re-indexing keeps
-applying them. Running `tessera index` again without `--exclude` clears them.
-For excludes that should always apply, use `config.toml`.
+Excludes passed this way are remembered, so automatic re-indexing, `watch`,
+and git hooks keep applying them. Passing `--exclude` again replaces the
+list; `tessera index --reset-excludes` clears it. For excludes the whole team
+should share, use `config.toml`.
 
 ## Where the index lives
 
-The default is `<root>/.tessera/tessera.db`, with a `.gitignore` written next
-to it so it is never committed. Override it with `--db <file>`. The index is a
-cache: when a new Tessera version changes the schema, the index rebuilds
-itself.
+The default is `<root>/.tessera/tessera.db`. A `.gitignore` written next to
+it ignores the index but not `config.toml`, so the project config can be
+committed. Override the location with `--db <file>` or the `TESSERA_DB`
+environment variable. Tessera refuses to use a file that is not a Tessera
+index, so a mistyped `--db` cannot overwrite another database.
+
+The index is a cache. It is rebuilt when a new Tessera version, a change to
+`config.toml`, or a new set of excludes could change what gets indexed.
+Writers take a lock on `<db>.lock`; a query that finds another process
+indexing answers from the existing index instead of waiting.

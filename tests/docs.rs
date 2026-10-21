@@ -83,3 +83,17 @@ fn readme_command_table_runs_against_a_fixture() {
         assert!(!output.stdout.is_empty(), "`{command}` printed nothing");
     }
 }
+
+#[test]
+fn readme_mcp_setup_works_without_a_global_install() {
+    let readme = std::fs::read_to_string("README.md").unwrap();
+    let quick_start = readme
+        .split("## Quick start")
+        .nth(1)
+        .and_then(|rest| rest.split("\n## ").next())
+        .unwrap();
+    assert!(
+        quick_start.contains("claude mcp add tessera -- npx -y tessera-codegraph mcp"),
+        "the quick start uses npx, so its MCP command must too"
+    );
+}

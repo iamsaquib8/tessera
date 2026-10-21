@@ -32,7 +32,7 @@ fn first_query_builds_the_index() {
     assert!(temp.path().join(".tessera/tessera.db").exists());
     assert_eq!(
         fs::read_to_string(temp.path().join(".tessera/.gitignore")).unwrap(),
-        "*\n"
+        tessera_codegraph::indexer::INDEX_DIR_GITIGNORE
     );
 }
 
@@ -480,4 +480,86 @@ fn status_counts_files_with_syntax_errors() {
         .arg("status")
         .assert()
         .stdout(predicate::str::contains("1 file has syntax errors"));
+}
+
+#[test]
+fn tessera_db_environment_variable_sets_the_index_path() {
+    let temp = repo("typescript");
+    let elsewhere = TempDir::new().unwrap();
+    let db = elsewhere.path().join("index.db");
+    tessera(temp.path())
+        .env("TESSERA_DB", &db)
+        .args(["find", "findById"])
+        .assert()
+        .success();
+    assert!(db.exists());
+    assert!(!temp.path().join(".tessera").exists());
+}
+
+#[test]
+fn init_snippets_are_valid_for_each_client() {
+    let temp = repo("go");
+    tessera(temp.path())
+        .args(["--db", "we\"ird\\dir/t.db", "init", "--mcp-configs"])
+        .assert()
+        .success();
+    let codex = fs::read_to_string(temp.path().join(".tessera/mcp/codex.toml")).unwrap();
+    assert!(codex.starts_with("[mcp_servers.tessera]"), "{codex}");
+    let claude: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(temp.path().join(".tessera/mcp/claude.json")).unwrap(),
+    )
+    .unwrap();
+    let args = claude["mcpServers"]["tessera"]["args"].as_array().unwrap();
+    assert!(args[2].as_str().unwrap().ends_with("we\"ird\\dir/t.db"));
+}
+
+#[cfg(unix)]
+#[test]
+fn init_git_hooks_are_executable_and_work_in_worktrees() {
+    use std::os::unix::fs::PermissionsExt;
+    let temp = TempDir::new().unwrap();
+    let main = temp.path().join("main");
+    copy_dir(&fixture_dir("go"), &main);
+    git_in(&main, &["init", "-q"]);
+    git_in(&main, &["add", "."]);
+    git_in(&main, &["commit", "-q", "-m", "one"]);
+    git_in(&main, &["worktree", "add", "-q", "../wt"]);
+    for dir in [main.clone(), temp.path().join("wt")] {
+        tessera(&dir)
+            .args(["init", "--git-hooks"])
+            .assert()
+            .success();
+        let hooks = StdCommand::new("git")
+            .args(["rev-parse", "--path-format=absolute", "--git-path", "hooks"])
+            .current_dir(&dir)
+            .output()
+            .unwrap();
+        let hooks = std::path::PathBuf::from(String::from_utf8_lossy(&hooks.stdout).trim());
+        let mode = fs::metadata(hooks.join("post-merge"))
+            .unwrap()
+            .permissions()
+            .mode();
+        assert!(mode & 0o111 != 0, "hook mode {mode:o}");
+    }
+}
+
+#[test]
+fn project_config_can_be_committed() {
+    let temp = repo("typescript");
+    git_in(temp.path(), &["init", "-q"]);
+    tessera(temp.path()).args(["init"]).assert().success();
+    tessera(temp.path())
+        .args(["find", "findById"])
+        .assert()
+        .success();
+    let ignored = |path: &str| {
+        StdCommand::new("git")
+            .args(["check-ignore", "-q", path])
+            .current_dir(temp.path())
+            .status()
+            .unwrap()
+            .success()
+    };
+    assert!(!ignored(".tessera/config.toml"));
+    assert!(ignored(".tessera/tessera.db"));
 }

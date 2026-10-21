@@ -9,6 +9,29 @@ The root has no files in a supported language, or they are all excluded. Check
 that the root is the repository: run from inside it, or pass `--root`. Also
 check `.gitignore` and `.tessera/config.toml` excludes.
 
+## "refusing … home directory or the filesystem root"
+
+Tessera was started outside any project, often by an MCP client that launches
+servers from `~` or `/`. Pass `--root <repo>` in the server command, or start
+it from inside the repository.
+
+## "… is not a Tessera index; refusing to overwrite it"
+
+`--db` or `TESSERA_DB` points at another program's SQLite file. Tessera never
+modifies it. Pick a different path.
+
+## "another tessera process is indexing"
+
+Another CLI run, watcher, or MCP server is updating the same index. The query
+answered from the existing index, which may be a few files behind. Run it
+again in a moment for fresh results.
+
+## "N files could not be read" or "N files have syntax errors"
+
+`tessera status` lists unreadable files (usually permissions) and files that
+parsed with syntax errors. Symbols after a syntax error may be missing until
+the file parses cleanly.
+
 ## An agent runs an old Tessera
 
 `tessera status` warns when the `tessera` on your `PATH` is a different version
@@ -56,6 +79,10 @@ Mount the repository at `/work`; the image uses it as the root:
 ```sh
 docker run --rm -v "$PWD:/work" ghcr.io/iamsaquib8/tessera status
 ```
+
+The image keeps its index in `/tmp` inside the container, so it never writes
+to your checkout and works whatever user owns the files. To keep the index
+between runs, mount a volume and set `-e TESSERA_DB=/index/tessera.db`.
 
 ## Windows
 

@@ -58,8 +58,10 @@ There is no setup step: the first query builds the index in `.tessera/`, and
 every later query refreshes only what changed. Then hand it to your agent:
 
 ```sh
-claude mcp add tessera -- tessera mcp
+claude mcp add tessera -- npx -y tessera-codegraph mcp
 ```
+
+With a global install (below), the server command is just `tessera mcp`.
 
 Setup for Cursor, Codex, Gemini CLI, Antigravity, Copilot, OpenCode, Kiro and 13 more agents is in [docs/integrations.md](docs/integrations.md).
 
@@ -132,9 +134,10 @@ public benchmark. [Current limits](docs/when-not-to-use.md) are listed plainly.
 ## FAQ
 
 **Why not just run `tsc` or use an LSP?** Run them too. Tessera checks only
-the changed code, in milliseconds, so it fits in an agent's edit loop. It is
-the only check available for JavaScript, Python, and Ruby, and in v0.13 it
-covers breaks between services that no compiler sees. An LSP answers one
+the changed code against an index of the whole repository, so it fits in an
+agent's edit loop. It works the same way in all twelve languages, including
+JavaScript, Python, and Ruby projects that have no type checker, and in v0.13
+it covers breaks between services that no compiler sees. An LSP answers one
 editor's questions about one project; Tessera keeps one index for the whole
 repository, and soon across repositories, that any agent can query.
 
@@ -147,10 +150,11 @@ doesn't record yet: see [limits](docs/when-not-to-use.md). v0.11 publishes
 precision and recall against SCIP ground truth on public repositories,
 alongside other code-graph tools, so you can check the numbers yourself.
 
-**Will it slow my agent down?** Queries take milliseconds; perf budgets run in
-CI (freshness check under 100 ms and lookups under 50 ms at p95 on 10,000
-files). Indexing is incremental, and the MCP server re-indexes edited files in
-the background.
+**Will it slow my agent down?** Through the MCP server, lookups take
+milliseconds: the server keeps the index fresh in the background as files
+change. A CLI query first checks that the index is fresh, a stat walk of the
+repository. Perf budgets run in CI: freshness check under 100 ms and lookups
+under 50 ms at p95 on 10,000 files. Indexing is incremental.
 
 ## Roadmap
 

@@ -19,10 +19,16 @@ tessera mcp --http 127.0.0.1:8765   # Streamable HTTP for clients that need a UR
 The server finds the repository root itself, answers at once, indexes in the
 background, and re-indexes files as they change.
 
+Without a global install, use `npx -y tessera-codegraph mcp` wherever a
+config below says `tessera mcp`. In JSON configs that means
+`"command": "npx", "args": ["-y", "tessera-codegraph", "mcp"]`.
+
 ## Claude Code
 
 ```sh
 claude mcp add tessera -- tessera mcp
+# no global install:
+claude mcp add tessera -- npx -y tessera-codegraph mcp
 ```
 
 Or commit a project `.mcp.json`:

@@ -44,6 +44,8 @@ Claude Code:
 
 ```sh
 claude mcp add tessera -- tessera mcp
+# no global install:
+claude mcp add tessera -- npx -y tessera-codegraph mcp
 ```
 
 Every other agent, including Cursor, Codex, Gemini CLI, Antigravity, Copilot,
