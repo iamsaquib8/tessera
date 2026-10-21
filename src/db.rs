@@ -248,6 +248,7 @@ fn create_schema(conn: &Connection) -> Result<()> {
         CREATE INDEX idx_edges_to_id ON edges(to_symbol_id);
         CREATE INDEX idx_edges_from ON edges(from_symbol_id);
         CREATE INDEX idx_edges_ref ON edges(ref_id);
+        CREATE INDEX idx_edges_missing ON edges(missing_in) WHERE missing_in IS NOT NULL;
 
         CREATE TABLE imports (
             id INTEGER PRIMARY KEY,

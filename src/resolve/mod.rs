@@ -166,9 +166,10 @@ pub fn last_report(conn: &Connection) -> Result<Option<ResolveReport>> {
 
 /// `changed` plus every file whose edges may now resolve differently: files
 /// importing a changed or removed file (through re-export chains), files
-/// whose resolved edges lost their target, files with name-matched edges to
-/// a name the changed files define, same-package Java files, and files with
-/// unresolved relative imports that a changed file may now satisfy.
+/// whose resolved edges lost their target, files with names reported missing
+/// from a changed file, files with name-matched edges to a name the changed
+/// files define, same-package Java files, and files with unresolved relative
+/// imports that a changed file may now satisfy.
 fn dependents(conn: &Connection, changed: &[i64], before: &Before) -> Result<Vec<i64>> {
     let mut files: HashSet<i64> = changed.iter().copied().collect();
     let ids = |sql: &str, args: &[&dyn rusqlite::ToSql]| -> Result<Vec<i64>> {
@@ -226,9 +227,17 @@ fn dependents(conn: &Connection, changed: &[i64], before: &Before) -> Result<Vec
 
     files.extend(ids(
         "SELECT DISTINCT r.file_id FROM edges e JOIN refs r ON r.id = e.ref_id
-         WHERE e.to_symbol_id IS NULL AND e.confidence != 'name'",
+         WHERE e.to_symbol_id IS NULL AND e.confidence != 'name' AND e.resolver != 'missing'",
         &[],
     )?);
+    // A name reported missing from a changed file may be there now.
+    for path in &seen_paths {
+        files.extend(ids(
+            "SELECT DISTINCT r.file_id FROM edges e JOIN refs r ON r.id = e.ref_id
+             WHERE e.missing_in = ?1 AND e.resolver = 'missing'",
+            &[path],
+        )?);
+    }
     for name in &names {
         if files.len() > MAX_INCREMENTAL_FILES {
             break;

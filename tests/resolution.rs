@@ -308,6 +308,65 @@ fn deleting_a_module_re_resolves_its_importers() {
     assert_eq!(resolved_state(&ws.db_path), full_state(&ws.root));
 }
 
+/// Re-indexes `path` with `content` and returns how many files the
+/// incremental resolve pass covered.
+fn edit_and_resolve(ws: &Workspace, path: &str, content: &str) -> usize {
+    fs::write(ws.root.join(path), content).unwrap();
+    let report = indexer::index_files(ws, &[path.to_string()]).unwrap();
+    report.resolve.expect("an edit re-resolves").files
+}
+
+#[test]
+fn an_unrelated_edit_does_not_re_resolve_files_with_missing_names() {
+    let (_temp, ws) = repo_with(&[
+        ("b.ts", "export function there() { return 1; }\n"),
+        (
+            "a.ts",
+            "import { nope } from \"./b\";\nexport function run() { return nope(); }\n",
+        ),
+        ("c.ts", "export function other() { return 1; }\n"),
+    ]);
+    assert_has(&edges(&ws.db_path), &["run -call-> nope [high/missing]"]);
+    assert_eq!(
+        edit_and_resolve(&ws, "c.ts", "export function other() { return 2; }\n"),
+        1
+    );
+    // A missing name in the edited file is checked again.
+    assert_eq!(
+        edit_and_resolve(
+            &ws,
+            "b.ts",
+            "export function there() { return 1; }\nexport function nope() { return 2; }\n",
+        ),
+        2
+    );
+    assert_has(
+        &edges(&ws.db_path),
+        &["run -call-> b.ts:nope [high/import]"],
+    );
+}
+
+#[test]
+fn a_property_added_to_a_class_clears_a_missing_member() {
+    let (_temp, ws) = repo_with(&[
+        (
+            "holder.ts",
+            "export class Holder {\n  run() { return 1; }\n}\n",
+        ),
+        (
+            "main.ts",
+            "import { Holder } from \"./holder\";\nexport function go(h: Holder) {\n  return h.handler();\n}\n",
+        ),
+    ]);
+    assert_has(&edges(&ws.db_path), &["go -call-> handler [high/missing]"]);
+    edit_and_resolve(
+        &ws,
+        "holder.ts",
+        "export class Holder {\n  handler = null;\n  run() { return 1; }\n}\n",
+    );
+    assert_eq!(resolved_state(&ws.db_path), full_state(&ws.root));
+}
+
 #[test]
 fn renaming_an_export_re_resolves_its_importers() {
     let (_temp, ws) = repo_with(&[
