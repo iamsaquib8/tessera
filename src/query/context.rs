@@ -5,13 +5,17 @@ use anyhow::Result;
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 
-use super::common::read_body;
-use super::legacy;
-use crate::output::{estimate_tokens, AgentText};
+use super::blast::confidence_mark;
+use super::common::{is_test_path, read_body};
+use super::{graph, legacy};
+use crate::db;
+use crate::output::{estimate_tokens, AgentText, Confidence};
 use crate::types::SymbolRecord;
 
 const DEFAULT_BUDGET: usize = 2_000;
 const MAX_SIBLINGS: usize = 5;
+/// How far up the call graph to look for tests that exercise the symbol.
+const TEST_DEPTH: usize = 4;
 
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -38,8 +42,7 @@ pub fn run(conn: &Connection, root: &Path, args: &ContextArgs) -> Result<Context
     } else {
         args.budget_tokens
     };
-    let pack = legacy::context_pack_conn(conn, &args.symbol, budget)?;
-    let Some(symbol) = pack.symbol else {
+    let Some(symbol) = db::resolve_symbol(conn, &args.symbol)? else {
         return Ok(ContextResult {
             symbol: None,
             signature: String::new(),
@@ -52,18 +55,33 @@ pub fn run(conn: &Connection, root: &Path, args: &ContextArgs) -> Result<Context
         });
     };
     let body = read_body(root, &symbol).ok();
-    let line =
-        |l: &crate::types::SignatureLine| format!("{}  ({}:{})", l.signature, l.path, l.line);
+    let line = |(s, confidence): &(SymbolRecord, Confidence)| {
+        format!(
+            "{}  {}:{}  {}{}",
+            s.qualified_name,
+            s.path,
+            s.start_line,
+            s.signature,
+            confidence_mark(*confidence)
+        )
+    };
+    let tests = graph::blast(conn, &[symbol.id], TEST_DEPTH)?
+        .0
+        .into_iter()
+        .filter(|t| is_test_path(&t.symbol.path))
+        .map(|t| {
+            format!(
+                "{} ({}:{})",
+                t.symbol.qualified_name, t.symbol.path, t.symbol.start_line
+            )
+        })
+        .collect();
     let mut result = ContextResult {
         signature: symbol.signature.clone(),
         body,
-        dependencies: pack.dependency_signatures.iter().map(line).collect(),
-        callers: pack.caller_signatures.iter().map(line).collect(),
-        tests: pack
-            .tests
-            .iter()
-            .map(|t| format!("{} ({}:{})", t.qualified_name, t.path, t.start_line))
-            .collect(),
+        dependencies: graph::callees(conn, symbol.id)?.iter().map(line).collect(),
+        callers: graph::callers(conn, symbol.id)?.iter().map(line).collect(),
+        tests,
         siblings: legacy::siblings_conn(conn, &symbol.qualified_name)?
             .siblings
             .into_iter()

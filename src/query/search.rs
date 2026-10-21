@@ -4,11 +4,12 @@ use anyhow::Result;
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 
-use super::common::{limit_or_default, TYPE_KINDS};
+use super::common::{is_test_path, limit_or_default, TYPE_KINDS};
 use super::find::page_footer;
-use super::legacy;
+use super::{graph, legacy};
+use crate::db;
 use crate::output::{paginate, AgentText, Page};
-use crate::types::{SearchHit, SearchOptions, UnusedOptions};
+use crate::types::{SearchHit, SearchOptions};
 
 const UNUSED_SCAN_LIMIT: usize = 500;
 
@@ -36,45 +37,10 @@ pub struct SearchResults {
 pub fn run(conn: &Connection, args: &SearchArgs) -> Result<SearchResults> {
     let limit = limit_or_default(args.limit);
     let (hits, note) = if args.unused {
-        let kinds = if args.kinds.is_empty() {
-            ["function", "method", "constructor"]
-                .iter()
-                .map(|k| k.to_string())
-                .collect()
-        } else {
-            args.kinds
-                .iter()
-                .filter(|k| !TYPE_KINDS.contains(&k.as_str()))
-                .cloned()
-                .collect()
-        };
-        let unused = legacy::unused_conn(
-            conn,
-            UnusedOptions {
-                kinds,
-                languages: args.languages.clone(),
-                exported: args.exported,
-                path_prefix: args.path.clone(),
-                limit: UNUSED_SCAN_LIMIT,
-            },
-        )?;
-        let hits = unused
-            .symbols
-            .into_iter()
-            .filter(|u| {
-                args.pattern.is_empty()
-                    || args.pattern == "*"
-                    || u.symbol.name.contains(args.pattern.trim_matches('*'))
-            })
-            .map(|u| SearchHit {
-                symbol: u.symbol,
-                score: 0.0,
-            })
-            .collect();
         (
-            hits,
+            unused(conn, args)?,
             Some(
-                "Classes, structs, interfaces and types are not checked for use until type references are indexed (v0.11).".to_string(),
+                "Types are checked through type references in TypeScript, JavaScript and Java; elsewhere only functions and methods are. Interface and abstract members are skipped.".to_string(),
             ),
         )
     } else {
@@ -125,4 +91,58 @@ impl AgentText for SearchResults {
         out.push_str(&page_footer(&self.page));
         out
     }
+}
+
+/// Languages whose type uses are indexed as references, so an unreferenced
+/// type there really is unused.
+const TYPE_REFERENCE_LANGUAGES: &[&str] = &["typescript", "javascript", "java"];
+
+/// Symbols nothing resolves to and no unresolved reference names.
+fn unused(conn: &Connection, args: &SearchArgs) -> Result<Vec<SearchHit>> {
+    let mut stmt = conn.prepare(
+        "SELECT s.id, s.name, s.qualified_name, s.kind, s.file_id, f.path, f.language,
+                s.start_line, s.end_line, s.signature, s.exported, p.kind
+         FROM symbols s JOIN files f ON f.id = s.file_id
+         LEFT JOIN symbols p ON p.file_id = s.file_id AND p.qualified_name = s.container
+         ORDER BY s.qualified_name, s.id",
+    )?;
+    let rows = stmt.query_map([], |row| {
+        Ok((db::map_symbol(row)?, row.get::<_, Option<String>>(11)?))
+    })?;
+    let pattern = args.pattern.trim_matches('*');
+    let mut hits = Vec::new();
+    for row in rows {
+        let (symbol, owner_kind) = row?;
+        let is_type = TYPE_KINDS.contains(&symbol.kind.as_str());
+        let kind_wanted = if args.kinds.is_empty() {
+            matches!(symbol.kind.as_str(), "function" | "method")
+                || (is_type && TYPE_REFERENCE_LANGUAGES.contains(&symbol.language.as_str()))
+        } else {
+            args.kinds.contains(&symbol.kind)
+        };
+        let abstract_member = owner_kind.as_deref() == Some("interface")
+            || symbol.signature.trim_start().starts_with("abstract ");
+        if !kind_wanted
+            || abstract_member
+            || is_test_path(&symbol.path)
+            || (!pattern.is_empty() && !symbol.name.contains(pattern))
+            || (!args.languages.is_empty() && !args.languages.contains(&symbol.language))
+            || args
+                .exported
+                .is_some_and(|exported| symbol.exported != exported)
+            || args
+                .path
+                .as_deref()
+                .is_some_and(|prefix| !symbol.path.starts_with(prefix))
+        {
+            continue;
+        }
+        if !graph::is_referenced(conn, &symbol)? {
+            hits.push(SearchHit { symbol, score: 0.0 });
+            if hits.len() >= UNUSED_SCAN_LIMIT {
+                break;
+            }
+        }
+    }
+    Ok(hits)
 }

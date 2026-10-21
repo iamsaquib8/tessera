@@ -6,11 +6,12 @@ use anyhow::Result;
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 
+use super::blast::{confidence_mark, confidence_note};
 use super::common::{bare_name, is_test_path, limit_or_default};
 use super::find::page_footer;
-use super::legacy;
+use super::graph;
 use crate::extract::truncate_chars;
-use crate::output::{paginate, AgentText, Page};
+use crate::output::{paginate, AgentText, Confidence, Page};
 use crate::types::ReferenceRecord;
 
 const JS_EXTENSIONS: &[&str] = &["ts", "tsx", "js", "jsx", "mjs", "cjs", "mts", "cts"];
@@ -20,15 +21,25 @@ const JS_EXTENSIONS: &[&str] = &["ts", "tsx", "js", "jsx", "mjs", "cjs", "mts", 
 pub struct RefsArgs {
     pub target: String,
     pub tests_only: bool,
+    /// Leave out references below this confidence; `None` keeps everything,
+    /// including unresolved references by the same name.
+    pub min_confidence: Option<Confidence>,
     pub limit: usize,
     pub cursor: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct RefHit {
+    #[serde(flatten)]
+    pub reference: ReferenceRecord,
+    pub confidence: Confidence,
 }
 
 #[derive(Debug, Clone, Serialize)]
 pub struct RefsResult {
     pub target: String,
     pub definitions: usize,
-    pub references: Vec<ReferenceRecord>,
+    pub references: Vec<RefHit>,
     pub importers: Vec<String>,
     pub page: Page,
 }
@@ -52,25 +63,25 @@ pub fn run(conn: &Connection, args: &RefsArgs) -> Result<RefsResult> {
         });
     }
     let name = bare_name(&target).to_string();
-    let definitions: i64 = conn.query_row(
-        "SELECT COUNT(*) FROM symbols WHERE name = ?1 OR qualified_name = ?2",
-        params![name, target],
-        |row| row.get(0),
-    )?;
-    let mut references = legacy::references_for_symbol(conn, &name, usize::MAX >> 1)?;
+    let definitions = graph::definitions(conn, &target)?;
+    let ids: Vec<i64> = definitions.iter().map(|d| d.id).collect();
+    let mut references: Vec<RefHit> = graph::incoming_refs(conn, &ids, &name)?
+        .into_iter()
+        .map(|(reference, confidence)| RefHit {
+            reference,
+            confidence,
+        })
+        .collect();
     if args.tests_only {
-        references.retain(|r| is_test_path(&r.path));
+        references.retain(|r| is_test_path(&r.reference.path));
     }
-    references.sort_by(|a, b| {
-        a.path
-            .cmp(&b.path)
-            .then(a.line.cmp(&b.line))
-            .then(a.column.cmp(&b.column))
-    });
+    if let Some(min) = args.min_confidence {
+        references.retain(|r| r.confidence <= min);
+    }
     let (references, page) = paginate(references, limit, args.cursor.as_deref())?;
     Ok(RefsResult {
         target,
-        definitions: definitions as usize,
+        definitions: definitions.len(),
         references,
         importers: Vec::new(),
         page,
@@ -154,12 +165,16 @@ impl AgentText for RefsResult {
             ));
         } else {
             out.push_str(&format!(
-                "{} references to {} ({} definitions; name-level matching):\n",
-                self.page.total, self.target, self.definitions
+                "{} references to {} ({} definitions{}):\n",
+                self.page.total,
+                self.target,
+                self.definitions,
+                confidence_note(self.references.iter().map(|r| r.confidence))
             ));
-            for r in &self.references {
+            for hit in &self.references {
+                let r = &hit.reference;
                 out.push_str(&format!(
-                    "  {}:{}:{} {}{}\n",
+                    "  {}:{}:{} {}{}{}\n",
                     r.path,
                     r.line,
                     r.column,
@@ -167,7 +182,8 @@ impl AgentText for RefsResult {
                     r.from_symbol
                         .as_deref()
                         .map(|s| format!("  ← {s}"))
-                        .unwrap_or_default()
+                        .unwrap_or_default(),
+                    confidence_mark(hit.confidence)
                 ));
             }
         }

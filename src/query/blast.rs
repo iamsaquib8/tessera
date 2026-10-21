@@ -8,8 +8,8 @@ use serde::{Deserialize, Serialize};
 
 use super::common::{is_test_path, limit_or_default};
 use super::find::page_footer;
-use super::legacy;
-use crate::output::{paginate, AgentText, Page};
+use super::{graph, legacy};
+use crate::output::{paginate, AgentText, Confidence, Page};
 use crate::types::SymbolRecord;
 
 const DEFAULT_DEPTH: usize = 4;
@@ -30,6 +30,8 @@ pub struct BlastCaller {
     pub symbol: SymbolRecord,
     pub depth: usize,
     pub criticality: f32,
+    /// The weakest edge on the path to the target.
+    pub confidence: Confidence,
     pub via: Option<String>,
 }
 
@@ -51,37 +53,41 @@ pub fn run(conn: &Connection, root: &Path, args: &BlastArgs) -> Result<BlastResu
     };
     let limit = limit_or_default(args.limit);
     let (target, changed, callers, partial) = if let Some(symbol) = &args.symbol {
-        let impact = legacy::impact_conn(conn, symbol, depth)?;
-        let callers = impact
-            .callers
+        let seeds: Vec<i64> = graph::definitions(conn, symbol)?
+            .iter()
+            .map(|s| s.id)
+            .collect();
+        let (reached, capped) = graph::blast(conn, &seeds, depth)?;
+        let callers = reached
             .into_iter()
             .map(|c| BlastCaller {
                 symbol: c.symbol,
                 depth: c.depth,
                 criticality: c.criticality,
+                confidence: c.confidence,
                 via: None,
             })
             .collect::<Vec<_>>();
-        (symbol.clone(), Vec::new(), callers, impact.capped)
+        (symbol.clone(), Vec::new(), callers, capped)
     } else if let Some(from) = &args.diff_from {
-        let diff = legacy::diff_impact_conn(conn, root, from, args.diff_to.as_deref(), depth)?;
-        let callers = diff
-            .impacted
+        let changed = legacy::diff_changed_symbols(conn, root, from, args.diff_to.as_deref())?;
+        let seeds: Vec<i64> = changed.1.iter().map(|s| s.id).collect();
+        let (reached, capped) = graph::blast(conn, &seeds, depth)?;
+        let callers = reached
             .into_iter()
             .map(|c| BlastCaller {
+                via: changed
+                    .1
+                    .iter()
+                    .find(|s| s.id == c.via)
+                    .map(|s| s.qualified_name.clone()),
                 symbol: c.symbol,
-                depth: 1,
+                depth: c.depth,
                 criticality: c.criticality,
-                via: Some(c.via),
+                confidence: c.confidence,
             })
             .collect();
-        let changed = diff.changed_symbols.into_iter().map(|c| c.symbol).collect();
-        (
-            format!("{}..{}", diff.from_ref, diff.to_ref),
-            changed,
-            callers,
-            false,
-        )
+        (changed.0, changed.1, callers, capped)
     } else {
         bail!("pass a symbol, or --diff <rev> for changed code");
     };
@@ -123,15 +129,18 @@ impl AgentText for BlastResult {
             out.push_str(&format!("No callers found for {}.\n", self.target));
         } else {
             out.push_str(&format!(
-                "{} callers affected by {} (ranked; name-level matching):\n",
-                self.page.total, self.target
+                "{} callers affected by {} (ranked{}):\n",
+                self.page.total,
+                self.target,
+                confidence_note(self.callers.iter().map(|c| c.confidence))
             ));
             for c in &self.callers {
                 out.push_str(&format!(
-                    "  {:>5.1} d{} {} {}:{}{}\n",
+                    "  {:>5.1} d{} {}{} {}:{}{}\n",
                     c.criticality,
                     c.depth,
                     c.symbol.qualified_name,
+                    confidence_mark(c.confidence),
                     c.symbol.path,
                     c.symbol.start_line,
                     c.via
@@ -149,5 +158,25 @@ impl AgentText for BlastResult {
         }
         out.push_str(&page_footer(&self.page));
         out
+    }
+}
+
+/// Marks a result line that is not an exact (high-confidence) match.
+pub(crate) fn confidence_mark(confidence: Confidence) -> &'static str {
+    match confidence {
+        Confidence::High => "",
+        Confidence::Medium => " (likely)",
+        Confidence::Low | Confidence::Name => " (possible)",
+    }
+}
+
+/// Explains the marks once, and names name-level matching only when it occurred.
+pub(crate) fn confidence_note(confidences: impl Iterator<Item = Confidence>) -> &'static str {
+    let worst = confidences.max().unwrap_or(Confidence::High);
+    match worst {
+        Confidence::High => "; all exact",
+        Confidence::Medium => "; \"likely\" means matched by a unique name",
+        Confidence::Low => "; \"possible\" means one of several same-named symbols",
+        Confidence::Name => "; \"possible\" includes name-level matching",
     }
 }

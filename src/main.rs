@@ -11,6 +11,7 @@ use tessera_codegraph::db;
 use tessera_codegraph::fresh::{self, Freshness, Refresh};
 use tessera_codegraph::indexer::{self, IndexMode, IndexOptions, IndexReport};
 use tessera_codegraph::init::{self, InitOptions};
+use tessera_codegraph::output::Confidence;
 use tessera_codegraph::query::{
     self, BlastArgs, ContextArgs, FindArgs, PathArgs, RefsArgs, SearchArgs, VerifyArgs,
 };
@@ -105,6 +106,9 @@ enum Commands {
         /// Only references from test files.
         #[arg(long)]
         tests: bool,
+        /// Leave out references below this confidence.
+        #[arg(long, value_enum, value_name = "LEVEL")]
+        min_confidence: Option<MinConfidence>,
         #[command(flatten)]
         page: PageArgs,
     },
@@ -289,6 +293,26 @@ impl From<GraphGroupArg> for ExportGroupBy {
     }
 }
 
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum MinConfidence {
+    /// Resolved through scope, an import, `this`, a typed receiver or a static class.
+    High,
+    /// Also unique name matches.
+    Medium,
+    /// Also one of several same-named candidates.
+    Low,
+}
+
+impl From<MinConfidence> for Confidence {
+    fn from(level: MinConfidence) -> Self {
+        match level {
+            MinConfidence::High => Confidence::High,
+            MinConfidence::Medium => Confidence::Medium,
+            MinConfidence::Low => Confidence::Low,
+        }
+    }
+}
+
 #[derive(Debug)]
 struct UsageError(String);
 
@@ -407,6 +431,7 @@ fn run() -> Result<u8> {
         Commands::Refs {
             target,
             tests,
+            min_confidence,
             page,
         } => {
             let Some(index) = open_fresh(&ws, &out)? else {
@@ -415,6 +440,7 @@ fn run() -> Result<u8> {
             out.print(&index.refs(&RefsArgs {
                 target,
                 tests_only: tests,
+                min_confidence: min_confidence.map(Confidence::from),
                 limit: page.limit,
                 cursor: page.cursor,
             })?)?;

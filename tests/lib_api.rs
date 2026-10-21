@@ -3,7 +3,7 @@ mod support;
 use support::{index_fixture, synth_repo};
 use tempfile::TempDir;
 use tessera_codegraph::fresh::Freshness;
-use tessera_codegraph::output::MatchKind;
+use tessera_codegraph::output::{AgentText, Confidence, MatchKind};
 use tessera_codegraph::query::{
     BlastArgs, ContextArgs, FindArgs, PathArgs, RefsArgs, SearchArgs, VerifyArgs,
 };
@@ -83,7 +83,7 @@ fn refs_lists_cross_file_calls_and_tests() {
     assert!(all
         .references
         .iter()
-        .any(|r| r.path == "src/api/handler.ts" && r.line == 4));
+        .any(|r| r.reference.path == "src/api/handler.ts" && r.reference.line == 4));
     let tests = index
         .refs(&RefsArgs {
             target: "loadUser".to_string(),
@@ -95,7 +95,7 @@ fn refs_lists_cross_file_calls_and_tests() {
     assert!(tests
         .references
         .iter()
-        .all(|r| r.path == "test/repo.test.ts"));
+        .all(|r| r.reference.path == "test/repo.test.ts"));
 }
 
 #[test]
@@ -268,4 +268,123 @@ fn blast_rejects_diff_revisions_that_look_like_git_options() {
         .filter(|e| e.file_name().to_string_lossy().starts_with("PWNED"))
         .collect();
     assert!(leaked.is_empty(), "git wrote {leaked:?}");
+}
+
+fn ref_lines(result: &tessera_codegraph::RefsResult) -> Vec<String> {
+    result
+        .references
+        .iter()
+        .map(|r| {
+            format!(
+                "{}:{} {:?}",
+                r.reference.path, r.reference.line, r.confidence
+            )
+        })
+        .collect()
+}
+
+#[test]
+fn refs_follow_resolved_edges_and_report_confidence() {
+    let (_temp, index) = open("ts-resolution");
+    let result = index
+        .refs(&RefsArgs {
+            target: "UserRepo.get".to_string(),
+            ..RefsArgs::default()
+        })
+        .unwrap();
+    let lines = ref_lines(&result);
+    assert_eq!(
+        lines,
+        vec!["src/data/repo.ts:15 High", "src/services/users.ts:17 High"],
+        "`this.rows.get` on a Map is not a reference to UserRepo.get"
+    );
+    assert!(!result.agent_text().contains("name-level matching"));
+
+    let display = index
+        .refs(&RefsArgs {
+            target: "display".to_string(),
+            ..RefsArgs::default()
+        })
+        .unwrap();
+    assert!(display
+        .references
+        .iter()
+        .all(|r| r.confidence == Confidence::Medium));
+    let high_only = index
+        .refs(&RefsArgs {
+            target: "display".to_string(),
+            min_confidence: Some(Confidence::High),
+            ..RefsArgs::default()
+        })
+        .unwrap();
+    assert!(high_only.references.is_empty());
+}
+
+#[test]
+fn blast_walks_resolved_callers_with_the_weakest_confidence_on_the_path() {
+    let (_temp, index) = open("ts-resolution");
+    let blast = index
+        .blast(&BlastArgs {
+            symbol: Some("UserRepo.require".to_string()),
+            ..BlastArgs::default()
+        })
+        .unwrap();
+    let callers: Vec<(String, usize, Confidence)> = blast
+        .callers
+        .iter()
+        .map(|c| (c.symbol.qualified_name.clone(), c.depth, c.confidence))
+        .collect();
+    assert!(callers.contains(&("UserService.name".to_string(), 1, Confidence::High)));
+    // UserService.name is reached by the test only through a name-matched call.
+    assert!(callers.contains(&(
+        "describe(\"UserService\").it(\"names a user\")".to_string(),
+        2,
+        Confidence::Medium
+    )));
+    assert!(!callers.iter().any(|(name, _, _)| name == "Badge"));
+    assert_eq!(blast.tests, vec!["test/users.test.ts".to_string()]);
+}
+
+#[test]
+fn context_lists_resolved_callers_and_callees() {
+    let (_temp, index) = open("ts-resolution");
+    let context = index
+        .context(&ContextArgs {
+            symbol: "UserRepo.require".to_string(),
+            ..ContextArgs::default()
+        })
+        .unwrap();
+    assert!(context
+        .callers
+        .iter()
+        .any(|c| c.contains("UserService.name")));
+    assert!(context
+        .dependencies
+        .iter()
+        .any(|d| d.contains("UserRepo.get") && d.contains("src/data/repo.ts")));
+    assert!(context
+        .dependencies
+        .iter()
+        .any(|d| d.contains("notFound") && d.contains("src/domain/errors.ts")));
+}
+
+#[test]
+fn unused_checks_types_through_type_references() {
+    let (_temp, index) = open("ts-resolution");
+    let result = index
+        .search(&SearchArgs {
+            pattern: "*".to_string(),
+            unused: true,
+            ..SearchArgs::default()
+        })
+        .unwrap();
+    let names: Vec<&str> = result
+        .hits
+        .iter()
+        .map(|h| h.symbol.qualified_name.as_str())
+        .collect();
+    assert!(names.contains(&"isUser"), "{names:?}");
+    for used in ["Entity", "UserRepo", "UserRepo.get", "Repo", "Repo.get"] {
+        assert!(!names.contains(&used), "{used} is used: {names:?}");
+    }
 }

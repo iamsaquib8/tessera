@@ -49,7 +49,7 @@ static REGISTRY: [ToolSpec; 8] = [
     ToolSpec {
         name: "refs",
         title: "Find references",
-        description: "Every reference to a symbol with file:line and the enclosing function, or, when `target` is a repo-relative file path, the files that import it. `tests_only` keeps test files. Use instead of grep for call sites. Matching is by name in this version. Paginated.",
+        description: "Every reference to a symbol with file:line and the enclosing function, or, when `target` is a repo-relative file path, the files that import it. `tests_only` keeps test files. Use instead of grep for call sites. Each reference has a confidence: high (resolved through scope, an import, `this` or a typed receiver), medium (a unique name match), low or name (possible). `min_confidence` drops weaker ones. Paginated.",
         input_schema: refs_schema,
         run: |index, args| run_query(args, true, |a: RefsArgs| index.refs(&a)),
     },
@@ -273,7 +273,8 @@ fn refs_schema() -> Value {
         merge(
             json!({
                 "target": { "type": "string", "description": "Symbol name, or repo-relative file path for importers." },
-                "tests_only": { "type": "boolean", "description": "Only references from test files." }
+                "tests_only": { "type": "boolean", "description": "Only references from test files." },
+                "min_confidence": { "type": "string", "enum": ["high", "medium", "low"], "description": "Leave out references below this confidence." }
             }),
             paging(),
         ),
