@@ -45,6 +45,48 @@ impl Workspace {
     }
 }
 
+/// The file that lists repositories mapped together.
+pub const WORKSPACE_FILE: &str = "tessera.workspace.toml";
+
+/// The nearest `tessera.workspace.toml` at or above `root`: its directory
+/// and the repositories it lists (absolute), `root` among them.
+pub fn workspace_repos(root: &Path) -> Option<(PathBuf, Vec<PathBuf>)> {
+    let file = root
+        .ancestors()
+        .map(|dir| dir.join(WORKSPACE_FILE))
+        .find(|file| file.is_file())?;
+    let dir = file.parent()?.to_path_buf();
+    let content = std::fs::read_to_string(&file).ok()?;
+    let mut repos: Vec<PathBuf> = Vec::new();
+    for line in content.lines() {
+        let line = line.split('#').next().unwrap_or_default().trim();
+        let Some((key, value)) = line.split_once('=') else {
+            continue;
+        };
+        let values: Vec<String> = match key.trim() {
+            "path" => vec![value.trim().trim_matches('"').to_string()],
+            "repos" => value
+                .trim()
+                .trim_matches(['[', ']'])
+                .split(',')
+                .map(|v| v.trim().trim_matches('"').to_string())
+                .filter(|v| !v.is_empty())
+                .collect(),
+            _ => continue,
+        };
+        for value in values {
+            let path = dir.join(&value);
+            repos.push(path.canonicalize().unwrap_or(path));
+        }
+    }
+    let root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+    if !repos.contains(&root) {
+        repos.push(root);
+    }
+    repos.dedup();
+    Some((dir.canonicalize().unwrap_or(dir), repos))
+}
+
 #[cfg(test)]
 mod tests {
     use std::fs;
@@ -106,46 +148,4 @@ mod tests {
         assert_eq!(ws.db_path, cwd.join("x/t.db"));
         assert_eq!(ws.root, cwd);
     }
-}
-
-/// The file that lists repositories mapped together.
-pub const WORKSPACE_FILE: &str = "tessera.workspace.toml";
-
-/// The nearest `tessera.workspace.toml` at or above `root`: its directory
-/// and the repositories it lists (absolute), `root` among them.
-pub fn workspace_repos(root: &Path) -> Option<(PathBuf, Vec<PathBuf>)> {
-    let file = root
-        .ancestors()
-        .map(|dir| dir.join(WORKSPACE_FILE))
-        .find(|file| file.is_file())?;
-    let dir = file.parent()?.to_path_buf();
-    let content = std::fs::read_to_string(&file).ok()?;
-    let mut repos: Vec<PathBuf> = Vec::new();
-    for line in content.lines() {
-        let line = line.split('#').next().unwrap_or_default().trim();
-        let Some((key, value)) = line.split_once('=') else {
-            continue;
-        };
-        let values: Vec<String> = match key.trim() {
-            "path" => vec![value.trim().trim_matches('"').to_string()],
-            "repos" => value
-                .trim()
-                .trim_matches(['[', ']'])
-                .split(',')
-                .map(|v| v.trim().trim_matches('"').to_string())
-                .filter(|v| !v.is_empty())
-                .collect(),
-            _ => continue,
-        };
-        for value in values {
-            let path = dir.join(&value);
-            repos.push(path.canonicalize().unwrap_or(path));
-        }
-    }
-    let root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
-    if !repos.contains(&root) {
-        repos.push(root);
-    }
-    repos.dedup();
-    Some((dir.canonicalize().unwrap_or(dir), repos))
 }
