@@ -274,7 +274,9 @@ async function impact() {
   main.innerHTML = html;
 }
 
-let mapState = { kind: "", selected: null };
+/** Above this many services the map shows one tile per top directory. */
+const AGGREGATE_ABOVE = 60;
+let mapState = { kind: "", selected: null, group: "" };
 async function contractMap() {
   main.innerHTML = '<div class="empty">Reading contracts…</div>';
   let services, contracts;
@@ -292,22 +294,51 @@ async function contractMap() {
     return prefix.slice(0, prefix.lastIndexOf("/") + 1);
   })();
   const short = (name) => (shared && name.startsWith(shared) ? name.slice(shared.length) : name) || name;
+  const groupOf = (name) => {
+    const s = short(name);
+    const at = s.indexOf("/");
+    return at > 0 ? s.slice(0, at) : s;
+  };
+  let display = views;
+  if (mapState.group) {
+    display = views.filter((v) => groupOf(v.name) === mapState.group);
+  } else if (views.length > AGGREGATE_ABOVE) {
+    const groups = new Map();
+    for (const v of views) {
+      const g = groupOf(v.name);
+      if (!groups.has(g)) groups.set(g, []);
+      groups.get(g).push(v);
+    }
+    if (groups.size > 1 && groups.size < views.length) {
+      const regroup = (links, own) => links.map((l) => ({ ...l, services: [...new Set(l.services.map(groupOf))].filter((g) => g !== own) }));
+      display = [...groups].map(([g, members]) => ({
+        name: g,
+        members,
+        serves: regroup(members.flatMap((m) => m.serves), g),
+        calls: regroup(members.flatMap((m) => m.calls), g),
+      }));
+    }
+  }
+  const membersOf = (v) => new Set(v.members ? v.members.map((m) => m.name) : [v.name]);
   const kinds = ["", "route", "rpc", "topic", "table"];
   const label = { "": "All", route: "Routes", rpc: "gRPC", topic: "Topics", table: "Tables" };
   const shown = all.filter((c) => !mapState.kind || c.kind === mapState.kind);
   let html = "<h1>Contract map</h1>" +
     '<p class="lede">Each tile is a service. Lines are the routes, gRPC methods and topics between them. Pick a service to see what it serves and calls.</p>' +
-    '<div class="kinds">' + kinds.map((k) => '<button class="' + (mapState.kind === k ? "" : "quiet") + '" data-kind="' + k + '">' + label[k] + "</button>").join("") + "</div>";
+    '<div class="kinds">' + kinds.map((k) => '<button class="' + (mapState.kind === k ? "" : "quiet") + '" data-kind="' + k + '">' + label[k] + "</button>").join("") +
+    (mapState.group ? '<button class="quiet" data-group="">All of ' + views.length.toLocaleString() + " services</button>" : "") + "</div>" +
+    (display !== views && !mapState.group ? '<p class="note">' + views.length.toLocaleString() + " services, grouped by directory. Pick a group to open it.</p>" : "");
   if (!views.length) {
     html += '<div class="panel empty">No contracts between services were found. Tessera reads Express, Fastify, NestJS, Next.js, Spring, gRPC, Kafka and ORM code; see docs/contracts.md.</div>';
   } else {
     html += '<div class="panel mosaic" id="mosaic"><svg class="links" id="links"></svg><div class="tiles">' +
-      views.map((v, i) => '<button class="tile" data-i="' + i + '" title="' + esc(v.name) + '"><div class="name">' + tileName(short(v.name)) + '</div><div class="n">serves ' +
-        v.serves.length + ", calls " + v.calls.length + "</div></button>").join("") + "</div></div>";
+      display.map((v, i) => '<button class="tile" data-i="' + i + '" title="' + esc(v.name) + '"><div class="name">' + tileName(v.members ? v.name : short(v.name)) + '</div><div class="n">' +
+        (v.members ? v.members.length + " services, " : "") + "serves " + v.serves.length + ", calls " + v.calls.length + "</div></button>").join("") + "</div></div>";
   }
   html += '<h2 id="contracts-title">Contracts</h2><div id="contracts"></div>';
   main.innerHTML = html;
   main.querySelectorAll("[data-kind]").forEach((b) => b.addEventListener("click", () => { mapState.kind = b.dataset.kind; contractMap(); }));
+  main.querySelectorAll("[data-group]").forEach((b) => b.addEventListener("click", () => { mapState.group = ""; mapState.selected = null; contractMap(); }));
   const list = (items) => items.length
     ? '<ul class="panel rows">' + items.map((c) => "<li><span><span class=\"tag info\">" + esc(c.kind) + "</span>" + esc(c.name) +
       '</span><span class="note">' + esc(side(c.providers)) + " → " + esc(side(c.consumers)) + "</span>" +
@@ -320,18 +351,21 @@ async function contractMap() {
   };
   const render = () => {
     const sel = mapState.selected;
-    const view = sel === null ? null : views[sel];
+    const view = sel === null ? null : display[sel];
     const peers = new Set();
     if (view) for (const l of view.serves.concat(view.calls)) for (const s of l.services) peers.add(s);
     main.querySelectorAll(".tile").forEach((t) => {
-      const v = views[Number(t.dataset.i)];
+      const v = display[Number(t.dataset.i)];
       t.classList.toggle("on", view !== null && v === view);
       t.classList.toggle("peer", peers.has(v.name));
       t.classList.toggle("dim", view !== null && v !== view && !peers.has(v.name));
     });
+    const members = view ? membersOf(view) : null;
     const items = view
-      ? shown.filter((c) => c.providers.concat(c.consumers).some((s) => s.service === view.name))
-      : shown;
+      ? shown.filter((c) => c.providers.concat(c.consumers).some((s) => members.has(s.service)))
+      : mapState.group
+        ? shown.filter((c) => c.providers.concat(c.consumers).some((s) => groupOf(s.service) === mapState.group))
+        : shown;
     document.getElementById("contracts-title").textContent = view ? "Contracts of " + view.name : "Contracts";
     document.getElementById("contracts").innerHTML = list(items.slice(0, 200));
     draw(view);
@@ -344,11 +378,11 @@ async function contractMap() {
     const tiles = new Map();
     main.querySelectorAll(".tile").forEach((t) => {
       const r = t.getBoundingClientRect();
-      tiles.set(views[Number(t.dataset.i)].name, { x: r.left - origin.left + r.width / 2, y: r.top - origin.top + r.height / 2 });
+      tiles.set(display[Number(t.dataset.i)].name, { x: r.left - origin.left + r.width / 2, y: r.top - origin.top + r.height / 2 });
     });
     const paths = [];
     const seen = new Set();
-    for (const v of views) {
+    for (const v of display) {
       for (const link of v.calls) {
         if (mapState.kind && link.kind !== mapState.kind) continue;
         for (const other of link.services) {
@@ -366,10 +400,15 @@ async function contractMap() {
   };
   main.querySelectorAll(".tile").forEach((t) => t.addEventListener("click", () => {
     const i = Number(t.dataset.i);
+    if (display[i].members) {
+      mapState.group = display[i].name;
+      mapState.selected = null;
+      return contractMap();
+    }
     mapState.selected = mapState.selected === i ? null : i;
     render();
   }));
-  window.onresize = () => draw(mapState.selected === null ? null : views[mapState.selected]);
+  window.onresize = () => draw(mapState.selected === null ? null : display[mapState.selected]);
   render();
 }
 
