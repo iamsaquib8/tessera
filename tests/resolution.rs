@@ -897,6 +897,45 @@ fn a_java_call_on_a_this_field_uses_the_field_type() {
 }
 
 #[test]
+fn ambient_declarations_are_exports() {
+    let (_temp, ws) = repo_with(&[
+        (
+            "shims/icons.d.ts",
+            "export declare const ArrowIcon: (props: object) => null;\n\
+             export declare function useThing(a: string): number;\n\
+             export declare class Store {\n  get(key: string): string;\n}\n",
+        ),
+        (
+            "overloads.ts",
+            "export class Parser {\n  parse(): string;\n  parse(text: string): string;\n  parse(text?: string): string {\n    return text ?? \"\";\n  }\n}\n\
+             export function format(): string;\nexport function format(x?: string): string {\n  return x ?? \"\";\n}\n",
+        ),
+        (
+            "main.tsx",
+            "import { ArrowIcon, useThing, Store } from \"./shims/icons\";\nimport { Parser, format } from \"./overloads\";\n\
+             export function App(s: Store, p: Parser) {\n  useThing(\"x\");\n  s.get(\"k\");\n  p.parse();\n  format();\n  return <ArrowIcon />;\n}\n",
+        ),
+    ]);
+    assert_eq!(broken_bindings(&ws.db_path), Vec::<String>::new());
+    let all = edges(&ws.db_path);
+    let app: Vec<&String> = all
+        .iter()
+        .filter(|e| e.starts_with("App -call") || e.starts_with("App -jsx"))
+        .collect();
+    assert_eq!(
+        app,
+        vec![
+            "App -call-> overloads.ts:Parser.parse [high/hint]",
+            "App -call-> overloads.ts:format [high/import]",
+            "App -call-> shims/icons.d.ts:Store.get [high/hint]",
+            "App -call-> shims/icons.d.ts:useThing [high/import]",
+            "App -jsx-> shims/icons.d.ts:ArrowIcon [high/import]",
+        ],
+        "{all:#?}"
+    );
+}
+
+#[test]
 fn a_typescript_namespace_is_an_export_with_members() {
     let (_temp, ws) = repo_with(&[
         (

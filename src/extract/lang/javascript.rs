@@ -116,9 +116,25 @@ pub(super) fn js_symbol(cx: &Cx<'_>, node: Node<'_>) -> Option<IndexedSymbol> {
             (cx.text(name), "namespace", None)
         }
         // In a class body a bodiless signature is an overload of the method
-        // that follows; that method's symbol spans it.
-        "method_signature" if node.parent().is_some_and(|p| p.kind() == "class_body") => {
+        // that follows, whose symbol spans it; without one (`declare class`)
+        // it is the method.
+        "method_signature"
+            if node.parent().is_some_and(|p| p.kind() == "class_body")
+                && implemented_later(cx, node, "method_definition") =>
+        {
             return None
+        }
+        // `export declare function f(): T;`, or an overload of the
+        // implementation that follows.
+        "function_signature" => {
+            if implemented_later(cx, node, "function_declaration") {
+                return None;
+            }
+            (
+                cx.text(node.child_by_field_name("name")?),
+                "function",
+                Some(node),
+            )
         }
         "method_definition" | "method_signature" | "abstract_method_signature" => (
             cx.text(node.child_by_field_name("name")?),
@@ -1243,7 +1259,7 @@ fn type_owner(cx: &Cx<'_>, property: Node<'_>) -> Option<String> {
 }
 
 /// A declarator in a `const`/`let`/`var` statement directly in the program,
-/// optionally behind `export`.
+/// optionally behind `export` or `declare`.
 fn is_module_level(declarator: Node<'_>) -> bool {
     let Some(declaration) = declarator.parent() else {
         return false;
@@ -1254,13 +1270,53 @@ fn is_module_level(declarator: Node<'_>) -> bool {
     ) {
         return false;
     }
-    match declaration.parent() {
-        Some(parent) if parent.kind() == "program" => true,
-        Some(parent) if parent.kind() == "export_statement" => parent
-            .parent()
-            .is_some_and(|grandparent| grandparent.kind() == "program"),
-        _ => false,
+    statement_wrapper(declaration)
+        .parent()
+        .is_some_and(|parent| parent.kind() == "program")
+}
+
+/// The outermost `export` / `declare` around a declaration, or the
+/// declaration itself.
+fn statement_wrapper(node: Node<'_>) -> Node<'_> {
+    let mut outer = node;
+    while let Some(parent) = outer
+        .parent()
+        .filter(|p| matches!(p.kind(), "export_statement" | "ambient_declaration"))
+    {
+        outer = parent;
     }
+    outer
+}
+
+/// Whether a bodiless signature is an overload: the same name's
+/// `implementation` follows it, after any further signatures.
+fn implemented_later(cx: &Cx<'_>, signature: Node<'_>, implementation: &str) -> bool {
+    let name = signature
+        .child_by_field_name("name")
+        .map(|n| cx.text(n))
+        .unwrap_or_default();
+    let mut next = statement_wrapper(signature).next_named_sibling();
+    while let Some(sibling) = next {
+        next = sibling.next_named_sibling();
+        if sibling.kind() == "comment" {
+            continue;
+        }
+        let mut inner = sibling;
+        while matches!(inner.kind(), "export_statement" | "ambient_declaration") {
+            match inner.named_child(0) {
+                Some(child) => inner = child,
+                None => return false,
+            }
+        }
+        let same_name = inner
+            .child_by_field_name("name")
+            .is_some_and(|n| cx.text(n) == name);
+        if inner.kind() == signature.kind() && same_name {
+            continue;
+        }
+        return inner.kind() == implementation && same_name;
+    }
+    false
 }
 
 fn has_export_ancestor(node: Node<'_>) -> bool {
