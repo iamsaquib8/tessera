@@ -118,6 +118,7 @@ expression: graph_dump(& db)
     "src/legacy/format.js:1 require_member slug = slug from ./strings",
     "src/legacy/format.js:1 require_member toTitle = title from ./strings",
     "src/legacy/format.js:2 require strings from ./strings",
+    "src/legacy/format.js:8 open_exports default from .",
     "src/legacy/format.js:8 re_export label = label from .",
     "src/legacy/strings.js:13 re_export slug = slug from .",
     "src/legacy/strings.js:14 re_export title = title from .",

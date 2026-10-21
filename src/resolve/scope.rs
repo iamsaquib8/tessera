@@ -987,7 +987,13 @@ impl<'c> Resolver<'c> {
                 Found::Missing | Found::Absent(_) => {}
             }
         }
-        Ok(if external {
+        // A module whose exports the file does not fully show
+        // (`module.exports = makeApi()`) may well have the name.
+        let open = file
+            .bindings
+            .iter()
+            .any(|b| b.kind == "open_exports" && (b.local == "*" || b.local == name));
+        Ok(if external || open {
             Found::External
         } else {
             Found::Missing

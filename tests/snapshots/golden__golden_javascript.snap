@@ -43,13 +43,18 @@ expression: graph_dump(& db)
   ],
   "bindings": [
     "app.js:1 require express from express",
+    "app.js:15 open_exports * from .",
     "app.js:15 re_export default = app from .",
     "app.js:2 require EmailWorker from ./lib/email_worker",
     "lib/email_worker.js:1 require BaseWorker from ./worker",
+    "lib/email_worker.js:10 open_exports * from .",
     "lib/email_worker.js:10 re_export default = EmailWorker from .",
     "lib/email_worker.js:2 require_member slugify = slugify from ./util",
+    "lib/i18n.js:5 open_exports default from .",
     "lib/i18n.js:5 re_export greet = greet from .",
+    "lib/util.js:5 open_exports default from .",
     "lib/util.js:5 re_export slugify = slugify from .",
+    "lib/worker.js:11 open_exports * from .",
     "lib/worker.js:11 re_export default = BaseWorker from .",
     "specs/util.spec.js:1 require_member slugify = slugify from ../lib/util"
   ],

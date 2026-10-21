@@ -158,10 +158,31 @@ pub(super) fn js_symbol(cx: &Cx<'_>, node: Node<'_>) -> Option<IndexedSymbol> {
         }
         "assignment_expression" => {
             let right = node.child_by_field_name("right")?;
+            let left = node.child_by_field_name("left")?;
+            // `module.exports = function () {…}` or `= class Store {…}`: the
+            // module's default export, named after the function if it has one.
+            if cx.text(left) == "module.exports"
+                && (FUNCTION_KINDS.contains(&right.kind()) || right.kind() == "class")
+            {
+                let name = right
+                    .child_by_field_name("name")
+                    .map_or_else(|| "default".to_string(), |n| cx.text(n));
+                let kind = if right.kind() == "class" {
+                    "class"
+                } else {
+                    "function"
+                };
+                let mut symbol = cx.symbol(name, kind, node, true);
+                symbol.default_export = true;
+                if kind == "function" {
+                    symbol.arity = arity(cx, right);
+                }
+                return Some(symbol);
+            }
             if !FUNCTION_KINDS.contains(&right.kind()) {
                 return None;
             }
-            let name = commonjs_export_name(cx, node.child_by_field_name("left")?)?;
+            let name = commonjs_export_name(cx, left)?;
             let mut symbol = cx.symbol(name, "function", node, true);
             symbol.arity = arity(cx, right);
             return Some(symbol);
@@ -365,6 +386,17 @@ pub(super) fn js_bindings(cx: &Cx<'_>, node: Node<'_>, out: &mut Vec<IndexedBind
                 }
             } else if source.is_some() {
                 push("*".into(), None, from, BindingKind::ReExportAll);
+            } else if is_export_assignment(node) {
+                // TypeScript's `export = value`, the CommonJS module object.
+                let mut cursor = node.walk();
+                let value = node
+                    .named_children(&mut cursor)
+                    .find(|child| !child.is_extra());
+                if let Some(value) = value {
+                    for (local, imported, kind) in module_object(cx, value) {
+                        push(local, imported, ".", kind);
+                    }
+                }
             } else if is_default_export_statement(node) {
                 if let Some(value) = node.child_by_field_name("value") {
                     let exported = match value.kind() {
@@ -422,20 +454,16 @@ pub(super) fn js_bindings(cx: &Cx<'_>, node: Node<'_>, out: &mut Vec<IndexedBind
                 return;
             };
             if cx.text(left) == "module.exports" {
-                match right.kind() {
-                    "identifier" => push(
-                        "default".into(),
-                        Some(cx.text(right)),
-                        ".",
-                        BindingKind::ReExport,
-                    ),
-                    "object" => {
-                        for (local, imported) in object_literal(cx, right) {
-                            push(local, Some(imported), ".", BindingKind::ReExport);
-                        }
-                    }
-                    _ => {}
+                for (local, imported, kind) in module_object(cx, right) {
+                    push(local, imported, ".", kind);
                 }
+            } else if left.kind() == "subscript_expression"
+                && left
+                    .child_by_field_name("object")
+                    .is_some_and(|object| is_exports(cx, object))
+            {
+                // `exports[name] = …`: names only known at run time.
+                push("*".into(), None, ".", BindingKind::OpenExports);
             } else if let Some(name) = commonjs_export_name(cx, left) {
                 let imported = if right.kind() == "identifier" {
                     cx.text(right)
@@ -445,8 +473,99 @@ pub(super) fn js_bindings(cx: &Cx<'_>, node: Node<'_>, out: &mut Vec<IndexedBind
                 push(name, Some(imported), ".", BindingKind::ReExport);
             }
         }
+        // `Object.assign(module.exports, …)`, `__exportStar(m, exports)` and
+        // the like add exports the file does not name.
+        "call_expression" => {
+            let Some(args) = node.child_by_field_name("arguments") else {
+                return;
+            };
+            let mut cursor = args.walk();
+            let args: Vec<Node<'_>> = args
+                .named_children(&mut cursor)
+                .filter(|arg| !arg.is_extra())
+                .collect();
+            if !args.iter().any(|arg| is_exports(cx, *arg)) {
+                return;
+            }
+            let callee = node
+                .child_by_field_name("function")
+                .map(|f| cx.text(f))
+                .unwrap_or_default();
+            let named = args
+                .get(1)
+                .filter(|arg| arg.kind() == "string")
+                .map(|arg| strip_quotes(cx.text(*arg)));
+            match named {
+                // Compiled modules mark themselves; that adds no export.
+                Some(name) if callee == "Object.defineProperty" && name == "__esModule" => {}
+                Some(name) if callee == "Object.defineProperty" => {
+                    push(name, None, ".", BindingKind::OpenExports)
+                }
+                _ => push("*".into(), None, ".", BindingKind::OpenExports),
+            }
+        }
         _ => {}
     }
+}
+
+/// The bindings for a whole module object (`module.exports = value` or
+/// `export = value`): what it names, and which names it leaves open.
+fn module_object(cx: &Cx<'_>, value: Node<'_>) -> Vec<(String, Option<String>, BindingKind)> {
+    let open = |name: &str| (name.to_string(), None, BindingKind::OpenExports);
+    match value.kind() {
+        // The value's properties are its named exports, and they are unknown.
+        "identifier" => vec![
+            (
+                "default".into(),
+                Some(cx.text(value)),
+                BindingKind::ReExport,
+            ),
+            open("*"),
+        ],
+        "object" => {
+            let mut out = vec![open("default")];
+            let mut cursor = value.walk();
+            let entries: Vec<Node<'_>> = value
+                .named_children(&mut cursor)
+                .filter(|entry| !entry.is_extra())
+                .collect();
+            for entry in entries {
+                let key = entry
+                    .child_by_field_name("key")
+                    .or_else(|| entry.child_by_field_name("name"))
+                    .filter(|key| matches!(key.kind(), "property_identifier" | "string" | "number"))
+                    .map(|key| strip_quotes(cx.text(key)));
+                match (entry.kind(), key) {
+                    ("shorthand_property_identifier", _) => {
+                        let name = cx.text(entry);
+                        out.push((name.clone(), Some(name), BindingKind::ReExport));
+                    }
+                    ("pair", Some(key)) => match entry.child_by_field_name("value") {
+                        Some(v) if v.kind() == "identifier" => {
+                            out.push((key, Some(cx.text(v)), BindingKind::ReExport))
+                        }
+                        _ => out.push(open(&key)),
+                    },
+                    // A method or accessor is a symbol of its own.
+                    ("method_definition", Some(key)) => {
+                        out.push((key.clone(), Some(key.clone()), BindingKind::ReExport));
+                        out.push(open(&key));
+                    }
+                    // Spreads and computed keys.
+                    _ => out.push(open("*")),
+                }
+            }
+            out
+        }
+        // A function or class is the default export (a symbol); what it
+        // carries as properties is not known.
+        _ => vec![open("*")],
+    }
+}
+
+/// `exports` or `module.exports`.
+fn is_exports(cx: &Cx<'_>, node: Node<'_>) -> bool {
+    matches!(cx.text(node).as_str(), "exports" | "module.exports")
 }
 
 pub(super) fn js_hints(cx: &Cx<'_>, node: Node<'_>, out: &mut Vec<IndexedTypeHint>) {
@@ -792,26 +911,6 @@ fn object_pattern(cx: &Cx<'_>, pattern: Node<'_>) -> Vec<(String, String)> {
         .collect()
 }
 
-fn object_literal(cx: &Cx<'_>, object: Node<'_>) -> Vec<(String, String)> {
-    let mut cursor = object.walk();
-    let nodes: Vec<Node<'_>> = object.named_children(&mut cursor).collect();
-    nodes
-        .into_iter()
-        .filter_map(|n| match n.kind() {
-            "shorthand_property_identifier" => Some((cx.text(n), cx.text(n))),
-            "pair" => {
-                let value = n.child_by_field_name("value")?;
-                if value.kind() == "identifier" {
-                    Some((cx.text(n.child_by_field_name("key")?), cx.text(value)))
-                } else {
-                    None
-                }
-            }
-            _ => None,
-        })
-        .collect()
-}
-
 fn jsx_component_name(cx: &Cx<'_>, name_node: Node<'_>) -> Option<String> {
     match name_node.kind() {
         "identifier" => {
@@ -874,8 +973,14 @@ fn is_default_export_statement(node: Node<'_>) -> bool {
     node.kind() == "export_statement" && has_token(node, "default")
 }
 
+/// TypeScript's `export = value`.
+fn is_export_assignment(node: Node<'_>) -> bool {
+    node.kind() == "export_statement" && has_token(node, "=")
+}
+
 fn is_default_export(node: Node<'_>) -> bool {
-    node.parent().is_some_and(is_default_export_statement)
+    node.parent()
+        .is_some_and(|parent| is_default_export_statement(parent) || is_export_assignment(parent))
 }
 
 fn last_segment(name: &str) -> String {

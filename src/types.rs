@@ -228,6 +228,9 @@ pub enum BindingKind {
     RequireMember,
     ReExport,
     ReExportAll,
+    /// The module's exports are more than the file shows (`module.exports =
+    /// makeApi()`): `local` is `*` for every name, or `default`.
+    OpenExports,
     JavaSingle,
     JavaWildcard,
     JavaStatic,
@@ -243,6 +246,7 @@ impl BindingKind {
             Self::RequireMember => "require_member",
             Self::ReExport => "re_export",
             Self::ReExportAll => "re_export_all",
+            Self::OpenExports => "open_exports",
             Self::JavaSingle => "java_single",
             Self::JavaWildcard => "java_wildcard",
             Self::JavaStatic => "java_static",

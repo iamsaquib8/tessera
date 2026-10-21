@@ -473,3 +473,64 @@ fn a_java_call_on_a_this_field_uses_the_field_type() {
     );
     assert_lacks(&all, &["VetController.list -call-> OwnerRepository.java:"]);
 }
+
+#[test]
+fn commonjs_exports_the_resolver_cannot_list_are_never_missing() {
+    let (_temp, ws) = repo_with(&[
+        ("anon.js", "module.exports = function () { return 1; };\n"),
+        (
+            "named.js",
+            "module.exports = function named(a) { return a; };\n",
+        ),
+        (
+            "klass.js",
+            "module.exports = class Store {\n  get() { return 1; }\n};\n",
+        ),
+        (
+            "inst.js",
+            "class Svc {\n  run() { return 1; }\n}\nmodule.exports = new Svc();\n",
+        ),
+        (
+            "made.js",
+            "function makeThing() { return {}; }\nmodule.exports = makeThing();\n",
+        ),
+        (
+            "getters.js",
+            "module.exports = {\n  get version() { return 1; },\n  helper() { return 2; },\n  plain: 1,\n};\n",
+        ),
+        (
+            "ident.js",
+            "function main() { return 1; }\nmain.extra = 1;\nmodule.exports = main;\n",
+        ),
+        ("legacy.ts", "function legacy() { return 1; }\nexport = legacy;\n"),
+        ("dyn.js", "Object.assign(module.exports, { a: 1 });\n"),
+        ("config.js", "const a = 1;\nmodule.exports = { a };\n"),
+        (
+            "main.js",
+            "const anon = require(\"./anon\");\nconst named = require(\"./named\");\nconst Store = require(\"./klass\");\n\
+             const svc = require(\"./inst\");\nconst made = require(\"./made\");\n\
+             const { version, helper, plain } = require(\"./getters\");\nconst { extra } = require(\"./ident\");\n\
+             const ident = require(\"./ident\");\nconst legacy = require(\"./legacy\");\nconst { a } = require(\"./dyn\");\n\
+             import config from \"./config\";\n\
+             function run() {\n  anon();\n  named(1);\n  new Store().get();\n  svc.run();\n  made.go();\n  helper();\n  ident();\n  legacy();\n  return [version, plain, extra, a, config];\n}\nmodule.exports = { run };\n",
+        ),
+    ]);
+    assert_eq!(broken_bindings(&ws.db_path), Vec::<String>::new());
+    let all = edges(&ws.db_path);
+    let missing: Vec<&String> = all
+        .iter()
+        .filter(|e| e.ends_with("[high/missing]"))
+        .collect();
+    assert!(missing.is_empty(), "{all:#?}");
+    assert_has(
+        &all,
+        &[
+            "run -call-> anon.js:default [high/import]",
+            "run -call-> named.js:named [high/import]",
+            "run -new-> klass.js:Store [high/import]",
+            "run -call-> klass.js:Store.get [high/new]",
+            "run -call-> ident.js:main [high/import]",
+            "run -call-> legacy.ts:legacy [high/import]",
+        ],
+    );
+}
