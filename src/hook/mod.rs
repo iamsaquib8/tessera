@@ -381,7 +381,7 @@ impl Hook<'_> {
         indexer::index_files(self.ws, &paths)?;
         let conn = db::open_ro(&self.ws.db_path)?;
         let scope: HashSet<String> = session.edited.iter().cloned().collect();
-        let result = query::verify_problems(&conn, &scope)?;
+        let result = query::verify_problems(&conn, &self.ws.root, &scope)?;
         let now = open_problems(&result);
         let persisting = now.intersection(&session.open).count();
         let fixed = session.open.difference(&now).count();

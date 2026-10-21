@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 use super::common::{is_test_path, known_global};
 use super::{graph, legacy};
 use crate::extract::parse_file;
+use crate::facts::kind;
 use crate::output::{AgentText, Confidence};
 use crate::types::Receiver;
 use crate::types::{Language, SymbolSuggestion};
@@ -181,7 +182,11 @@ pub fn verify_paths(
     changed: &HashSet<String>,
     changes: &Changes,
 ) -> Result<VerifyResult> {
-    let mut findings = problem_findings(conn, changed)?;
+    let rev = match changes {
+        Changes::Since(rev) => rev.as_str(),
+        _ => "HEAD",
+    };
+    let mut findings = problem_findings(conn, root, changed, rev)?;
     let tests = tests_to_run(conn, root, changed, changes)?;
     for test in &tests {
         findings.push(Finding {
@@ -197,20 +202,214 @@ pub fn verify_paths(
     Ok(VerifyResult::new(findings, tests))
 }
 
-/// V1–V4 only, without the test walk: what hooks run after every edit.
-pub fn verify_problems(conn: &Connection, changed: &HashSet<String>) -> Result<VerifyResult> {
+/// V1–V5 without the test walk: what hooks run after every edit, against
+/// `HEAD`.
+pub fn verify_problems(
+    conn: &Connection,
+    root: &Path,
+    changed: &HashSet<String>,
+) -> Result<VerifyResult> {
     Ok(VerifyResult::new(
-        problem_findings(conn, changed)?,
+        problem_findings(conn, root, changed, "HEAD")?,
         Vec::new(),
     ))
 }
 
-fn problem_findings(conn: &Connection, changed: &HashSet<String>) -> Result<Vec<Finding>> {
+fn problem_findings(
+    conn: &Connection,
+    root: &Path,
+    changed: &HashSet<String>,
+    rev: &str,
+) -> Result<Vec<Finding>> {
     let mut findings = Vec::new();
     missing_names(conn, changed, &mut findings)?;
     arity_mismatches(conn, changed, &mut findings)?;
     broken_imports(conn, changed, &mut findings)?;
+    contract_breaks(conn, root, changed, rev, &mut findings)?;
     Ok(findings)
+}
+
+/// Provider fact kinds: what a server, a handler or a producer offers.
+const PROVIDERS: &[&str] = &[kind::ROUTE, kind::RPC_IMPL, kind::RPC_DEF, kind::PRODUCER];
+
+#[derive(Debug)]
+struct Contracted {
+    key: String,
+    path: String,
+    line: usize,
+    confidence: String,
+}
+
+fn facts_where(
+    conn: &Connection,
+    sql: &str,
+    args: &[&dyn rusqlite::ToSql],
+) -> Result<Vec<Contracted>> {
+    let mut stmt = conn.prepare_cached(&format!(
+        "SELECT f.key, fl.path, f.line, f.confidence FROM facts f
+         JOIN files fl ON fl.id = f.file_id WHERE {sql}"
+    ))?;
+    let rows = stmt.query_map(args, |row| {
+        Ok(Contracted {
+            key: row.get(0)?,
+            path: row.get(1)?,
+            line: row.get::<_, i64>(2)? as usize,
+            confidence: row.get(3)?,
+        })
+    })?;
+    Ok(rows.collect::<rusqlite::Result<_>>()?)
+}
+
+/// V5: the change removed a route, a gRPC method or a topic's producer
+/// (present in a changed file at `rev`, gone from it now, and offered by no
+/// other file) while a client still uses it.
+fn contract_breaks(
+    conn: &Connection,
+    root: &Path,
+    changed: &HashSet<String>,
+    rev: &str,
+    findings: &mut Vec<Finding>,
+) -> Result<()> {
+    let mut removed: Vec<(crate::facts::IndexedFact, String)> = Vec::new();
+    for path in changed {
+        let Some(language) = Language::from_path(Path::new(path)) else {
+            continue;
+        };
+        let Some(before) = file_at(root, rev, path) else {
+            continue;
+        };
+        let Ok(parsed) = crate::extract::parse_file_at(language, path, &before) else {
+            continue;
+        };
+        let old: Vec<crate::facts::IndexedFact> = parsed
+            .facts
+            .into_iter()
+            .filter(|f| PROVIDERS.contains(&f.kind))
+            .collect();
+        if old.is_empty() {
+            continue;
+        }
+        for fact in old {
+            let offered =
+                facts_where(conn, "f.key = ?1 AND f.kind = ?2", &[&fact.key, &fact.kind])?;
+            if offered.is_empty() {
+                removed.push((fact, path.clone()));
+            }
+        }
+    }
+    for (fact, from) in removed {
+        let consumers = consumers_of(conn, &fact)?;
+        let (verb, user) = match fact.kind {
+            kind::PRODUCER => ("produced", "listener"),
+            _ => ("served", "call"),
+        };
+        for consumer in consumers {
+            let high = fact.confidence == "high" && consumer.confidence == "high";
+            let blocking = high && fact.kind != kind::PRODUCER;
+            findings.push(Finding {
+                id: "V5".to_string(),
+                confidence: if high { Confidence::High } else { Confidence::Medium },
+                blocking,
+                message: format!(
+                    "`{}` is no longer {verb}: the change removed it from {from}, and this {user} still uses it",
+                    fact.name
+                ),
+                path: Some(consumer.path),
+                line: Some(consumer.line),
+                suggestions: Vec::new(),
+            });
+        }
+    }
+    Ok(())
+}
+
+/// The clients of a removed provider fact.
+fn consumers_of(conn: &Connection, fact: &crate::facts::IndexedFact) -> Result<Vec<Contracted>> {
+    match fact.kind {
+        kind::ROUTE => {
+            let Some((method, path)) = fact
+                .key
+                .strip_prefix("http ")
+                .and_then(|k| k.split_once(' '))
+            else {
+                return Ok(Vec::new());
+            };
+            let route: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
+            let calls = facts_where(conn, "f.kind = ?1", &[&kind::HTTP_CALL])?;
+            Ok(calls
+                .into_iter()
+                .filter(|call| {
+                    let Some((m, p)) = call
+                        .key
+                        .strip_prefix("http ")
+                        .and_then(|k| k.split_once(' '))
+                    else {
+                        return false;
+                    };
+                    let segments: Vec<&str> = p.split('/').filter(|s| !s.is_empty()).collect();
+                    (m == method || m == "ANY" || method == "ANY")
+                        && super::map::path_match(&route, &segments).is_some()
+                })
+                .collect())
+        }
+        kind::PRODUCER => facts_where(
+            conn,
+            "f.kind = ?1 AND f.key = ?2",
+            &[&kind::CONSUMER, &fact.key],
+        ),
+        _ => {
+            let Some((service, method)) = fact
+                .key
+                .strip_prefix("grpc ")
+                .and_then(|k| k.split_once('/'))
+            else {
+                return Ok(Vec::new());
+            };
+            let services: Vec<String> = if service == "*" {
+                facts_where(
+                    conn,
+                    "f.kind = ?1 AND f.key LIKE '%/' || ?2",
+                    &[&kind::RPC_DEF, &method],
+                )?
+                .into_iter()
+                .filter_map(|d| {
+                    d.key
+                        .strip_prefix("grpc ")?
+                        .split_once('/')
+                        .map(|(s, _)| s.to_string())
+                })
+                .collect()
+            } else {
+                vec![service.to_string()]
+            };
+            let mut out = Vec::new();
+            for service in services {
+                let direct = format!("grpc {service}/{method}");
+                let wildcard = format!("grpc */{method}");
+                let client = format!("grpc {service}");
+                out.extend(facts_where(
+                    conn,
+                    "f.kind = ?1 AND (f.key = ?2 OR (f.key = ?3 AND EXISTS (
+                         SELECT 1 FROM facts c WHERE c.file_id = f.file_id AND c.kind = ?4 AND c.key = ?5)))",
+                    &[&kind::RPC_CALL, &direct, &wildcard, &kind::RPC_CLIENT, &client],
+                )?);
+            }
+            Ok(out)
+        }
+    }
+}
+
+/// `path` as it was at `rev`; `None` when it did not exist.
+fn file_at(root: &Path, rev: &str, path: &str) -> Option<String> {
+    let out = Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args(["show", &format!("{rev}:./{path}")])
+        .output()
+        .ok()?;
+    out.status
+        .success()
+        .then(|| String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
 /// Deep-tier languages, whose high-confidence findings block.
@@ -597,6 +796,10 @@ impl VerifyResult {
             ("V2", "Argument count does not match the target"),
             ("V3", "Reference to a name the change removed"),
             ("V4", "Import of a missing module or export"),
+            (
+                "V5",
+                "Use of a route, gRPC method or topic the change removed",
+            ),
             ("V6", "Test that reaches the changed code"),
         ];
         let results: Vec<serde_json::Value> = self

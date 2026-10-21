@@ -291,3 +291,108 @@ fn a_call_on_a_call_result_has_no_name_of_its_own() {
     let (code, findings, _) = verify_changed(temp.path());
     assert_eq!(code, 0, "{findings:?}");
 }
+
+fn repo_from(fixture: &str) -> TempDir {
+    let temp = TempDir::new().unwrap();
+    copy_dir(&fixture_dir(fixture), temp.path());
+    for args in [
+        &["init", "-q"][..],
+        &["add", "."],
+        &[
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@example.com",
+            "commit",
+            "-q",
+            "-m",
+            "base",
+        ],
+    ] {
+        assert!(StdCommand::new("git")
+            .args(args)
+            .current_dir(temp.path())
+            .status()
+            .unwrap()
+            .success());
+    }
+    temp
+}
+
+#[test]
+fn v5_removing_a_grpc_method_a_client_calls_blocks() {
+    let temp = repo_from("contracts-grpc");
+    let cart = fs::read_to_string(temp.path().join("cart/CartService.cs")).unwrap();
+    let start = cart
+        .find("        public override Task<Cart> GetCart")
+        .unwrap();
+    let end = start + cart[start..].find("        }\n").unwrap() + "        }\n".len();
+    fs::write(
+        temp.path().join("cart/CartService.cs"),
+        format!("{}{}", &cart[..start], &cart[end..]),
+    )
+    .unwrap();
+    let (code, findings, value) = verify_changed(temp.path());
+    assert_eq!(code, 1, "{value}");
+    assert!(
+        findings.contains(&"V5 frontend/rpc.go:10".to_string()),
+        "{findings:?}"
+    );
+    let v5 = value["findings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|f| f["id"] == "V5")
+        .unwrap();
+    assert!(
+        v5["message"]
+            .as_str()
+            .unwrap()
+            .contains("CartService/GetCart"),
+        "{v5}"
+    );
+}
+
+#[test]
+fn v5_a_moved_route_is_reported_for_its_clients() {
+    let temp = repo_from("contracts-http");
+    edit(
+        temp.path(),
+        "api/src/app.js",
+        "app.get('/api/users/:id', getUser);",
+        "app.get('/api/people/:id', getUser);",
+    );
+    let (code, findings, _) = verify_changed(temp.path());
+    // The clients build the path from a variable, so the link is not
+    // certain enough to block.
+    assert_eq!(code, 0, "{findings:?}");
+    assert!(
+        findings.contains(&"V5 web/src/client.ts:8".to_string()),
+        "{findings:?}"
+    );
+    assert!(
+        findings.contains(&"V5 web/src/client.ts:9".to_string()),
+        "{findings:?}"
+    );
+}
+
+#[test]
+fn v5_stays_quiet_when_a_route_moves_to_another_file() {
+    let temp = repo_from("contracts-http");
+    edit(
+        temp.path(),
+        "api/src/app.js",
+        "router.post('/api/users', (req, res) => res.send(create(req.body)));",
+        "",
+    );
+    fs::write(
+        temp.path().join("api/src/users.js"),
+        "const router = require('express').Router();\nrouter.post('/api/users', (req, res) => res.send(req.body));\n",
+    )
+    .unwrap();
+    let (_, findings, _) = verify_changed(temp.path());
+    assert!(
+        !findings.iter().any(|f| f.starts_with("V5")),
+        "{findings:?}"
+    );
+}

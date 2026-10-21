@@ -10,7 +10,7 @@
 //! gives a default. Other captures only serve predicates.
 
 use std::collections::HashMap;
-use std::sync::LazyLock;
+use std::sync::{LazyLock, OnceLock};
 
 use regex::Regex;
 use tree_sitter::{Node, Query, QueryCursor, StreamingIterator, Tree};
@@ -99,22 +99,31 @@ struct Compiled {
     pack: &'static Pack,
     language: Language,
     gate: Regex,
-    query: Query,
+    /// Compiled on first use: a short-lived process (a hook) pays only for
+    /// the packs its files need.
+    query: OnceLock<Query>,
 }
 
-/// One query per pack and language: a file runs only the packs whose
-/// needles it contains, which is cheaper than one query with every pattern.
+impl Compiled {
+    fn query(&self) -> &Query {
+        self.query.get_or_init(|| {
+            Query::new(&support_for(self.language).grammar(), self.pack.query)
+                .unwrap_or_else(|e| panic!("pack {} for {}: {e}", self.pack.id, self.language))
+        })
+    }
+}
+
+/// One query per pack and language: a file runs only the packs whose gate
+/// it matches, which is cheaper than one query with every pattern.
 static COMPILED: LazyLock<Vec<Compiled>> = LazyLock::new(|| {
     let mut out = Vec::new();
     for pack in PACKS {
         for &language in pack.languages {
-            let query = Query::new(&support_for(language).grammar(), pack.query)
-                .unwrap_or_else(|e| panic!("pack {} for {language}: {e}", pack.id));
             out.push(Compiled {
                 pack,
                 language,
                 gate: Regex::new(pack.gate).expect("valid gate"),
-                query,
+                query: OnceLock::new(),
             });
         }
     }
@@ -141,9 +150,10 @@ pub fn run(language: Language, source: &str, tree: &Tree) -> Vec<IndexedFact> {
         if !compiled.gate.is_match(source) {
             continue;
         }
-        let names = compiled.query.capture_names();
+        let query = compiled.query();
+        let names = query.capture_names();
         let mut cursor = QueryCursor::new();
-        let mut matches = cursor.matches(&compiled.query, tree.root_node(), source.as_bytes());
+        let mut matches = cursor.matches(query, tree.root_node(), source.as_bytes());
         while let Some(m) = matches.next() {
             let mut captures: HashMap<&str, Node<'_>> = HashMap::new();
             for capture in m.captures {
@@ -151,8 +161,7 @@ pub fn run(language: Language, source: &str, tree: &Tree) -> Vec<IndexedFact> {
                     .entry(names[capture.index as usize])
                     .or_insert(capture.node);
             }
-            let defaults: HashMap<&str, &str> = compiled
-                .query
+            let defaults: HashMap<&str, &str> = query
                 .property_settings(m.pattern_index)
                 .iter()
                 .filter_map(|p| Some((&*p.key, p.value.as_deref()?)))
@@ -551,9 +560,8 @@ mod tests {
 
     #[test]
     fn every_pack_compiles_for_its_languages() {
-        assert_eq!(
-            COMPILED.len(),
-            PACKS.iter().map(|p| p.languages.len()).sum::<usize>()
-        );
+        for compiled in COMPILED.iter() {
+            assert!(compiled.query().pattern_count() > 0, "{}", compiled.pack.id);
+        }
     }
 }

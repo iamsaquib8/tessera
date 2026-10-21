@@ -625,7 +625,7 @@ fn http_parts(key: &str) -> Option<(&str, Vec<&str>)> {
 /// Whether a request for `call` can reach `route`: the same number of
 /// segments, each equal or a parameter on either side. `Some(true)` when
 /// every segment is equal.
-fn path_match(route: &[&str], call: &[&str]) -> Option<bool> {
+pub(crate) fn path_match(route: &[&str], call: &[&str]) -> Option<bool> {
     if route.len() != call.len() {
         return None;
     }
