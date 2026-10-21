@@ -246,6 +246,9 @@ impl<'a> Cx<'a> {
                 return (Receiver::Name, Some(path));
             }
         }
+        if let Some(class) = self.constructed_class(node) {
+            return (Receiver::Name, Some(format!("new:{class}")));
+        }
         let text = self.text(node);
         match (node.kind(), text.as_str()) {
             (_, "this" | "self" | "$this") => (Receiver::This, None),
@@ -265,6 +268,23 @@ impl<'a> Cx<'a> {
             ),
             _ => (Receiver::Other, None),
         }
+    }
+
+    /// `X` in `new X()` (or `new a.X<T>()`), so a call on it resolves on `X`.
+    fn constructed_class(&self, node: Node<'_>) -> Option<String> {
+        let class = match node.kind() {
+            "new_expression" => node.child_by_field_name("constructor")?,
+            "object_creation_expression" => node.child_by_field_name("type")?,
+            _ => return None,
+        };
+        let text = self.text(class);
+        let name = text.split('<').next().unwrap_or_default().trim();
+        let plain = !name.is_empty()
+            && name.split('.').all(|part| {
+                part.chars()
+                    .all(|c| c.is_alphanumeric() || c == '_' || c == '$')
+            });
+        plain.then(|| name.to_string())
     }
 
     /// `a.b.c` or `this.a.b` as text when every link is a plain name, so the

@@ -9,6 +9,7 @@ use serde::Serialize;
 
 use tessera_codegraph::db;
 use tessera_codegraph::fresh::{self, Freshness, Refresh};
+use tessera_codegraph::hook::{self, HookOptions};
 use tessera_codegraph::indexer::{self, IndexMode, IndexOptions, IndexReport};
 use tessera_codegraph::init::{self, InitOptions};
 use tessera_codegraph::output::Confidence;
@@ -210,6 +211,13 @@ enum Commands {
         #[arg(long)]
         reset_excludes: bool,
     },
+    /// Run as an agent hook: read the event JSON on stdin, answer in the agent's format.
+    Hook {
+        /// Agent whose output format to use: claude, codex, qwen, copilot, cursor.
+        agent: String,
+        /// Event: session-start, pre-edit, post-edit, stop (or the agent's own name).
+        event: String,
+    },
     /// Keep the index fresh while files change.
     Watch {
         /// Wait this long after a change before re-indexing.
@@ -374,6 +382,9 @@ fn main() -> ExitCode {
 
 fn run() -> Result<u8> {
     let cli = Cli::parse();
+    if let Commands::Hook { agent, event } = &cli.command {
+        return Ok(run_hook(agent, event, &cli));
+    }
     let cwd = std::env::current_dir()?;
     let ws = Workspace::resolve(cli.root.as_deref(), cli.db.as_deref(), &cwd);
     let needs_root = !matches!(cli.command, Commands::Completions { .. });
@@ -620,6 +631,7 @@ fn run() -> Result<u8> {
                 &mut std::io::stdout(),
             );
         }
+        Commands::Hook { .. } => unreachable!("hooks run before the workspace is resolved"),
     }
     Ok(0)
 }
@@ -649,6 +661,26 @@ impl Output {
             eprintln!("{message}");
         }
     }
+}
+
+/// Hooks always exit 0: a Tessera failure prints nothing and never stops the agent.
+fn run_hook(agent: &str, event: &str, cli: &Cli) -> u8 {
+    let mut input = String::new();
+    let _ = std::io::stdin().read_to_string(&mut input);
+    let options = HookOptions {
+        root: cli.root.clone(),
+        db: cli.db.clone(),
+        exe: std::env::current_exe().ok(),
+    };
+    let result = std::panic::catch_unwind(|| hook::run(agent, event, &input, &options));
+    match result {
+        Ok(Ok(Some(value))) => println!("{value}"),
+        Ok(Ok(None)) => {}
+        Ok(Err(error)) if !cli.quiet => eprintln!("tessera hook: {error:#}"),
+        Ok(Err(_)) => {}
+        Err(_) => eprintln!("tessera hook: internal error"),
+    }
+    0
 }
 
 fn open_fresh(ws: &Workspace, out: &Output) -> Result<Option<Index>> {

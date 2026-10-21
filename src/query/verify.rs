@@ -181,10 +181,7 @@ pub fn verify_paths(
     changed: &HashSet<String>,
     changes: &Changes,
 ) -> Result<VerifyResult> {
-    let mut findings = Vec::new();
-    missing_names(conn, changed, &mut findings)?;
-    arity_mismatches(conn, changed, &mut findings)?;
-    broken_imports(conn, changed, &mut findings)?;
+    let mut findings = problem_findings(conn, changed)?;
     let tests = tests_to_run(conn, root, changed, changes)?;
     for test in &tests {
         findings.push(Finding {
@@ -198,6 +195,22 @@ pub fn verify_paths(
         });
     }
     Ok(VerifyResult::new(findings, tests))
+}
+
+/// V1–V4 only, without the test walk: what hooks run after every edit.
+pub fn verify_problems(conn: &Connection, changed: &HashSet<String>) -> Result<VerifyResult> {
+    Ok(VerifyResult::new(
+        problem_findings(conn, changed)?,
+        Vec::new(),
+    ))
+}
+
+fn problem_findings(conn: &Connection, changed: &HashSet<String>) -> Result<Vec<Finding>> {
+    let mut findings = Vec::new();
+    missing_names(conn, changed, &mut findings)?;
+    arity_mismatches(conn, changed, &mut findings)?;
+    broken_imports(conn, changed, &mut findings)?;
+    Ok(findings)
 }
 
 /// Deep-tier languages, whose high-confidence findings block.

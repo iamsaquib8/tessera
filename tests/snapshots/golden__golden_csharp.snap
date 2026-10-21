@@ -26,7 +26,7 @@ expression: graph_dump(& db)
     "src/Users/UserService.cs:7:53 new UserRepository/0 <- UserService",
     "src/Util/Strings.cs:5:50 call s.Trim/0 <- Strings.Trim",
     "tests/UserServiceTests.cs:9:13 new UserService/0 <- UserServiceTests.Loads",
-    "tests/UserServiceTests.cs:9:27 call other.Load/1 <- UserServiceTests.Loads"
+    "tests/UserServiceTests.cs:9:27 call new:UserService.Load/1 <- UserServiceTests.Loads"
   ],
   "symbols": [
     "src/Users/UserRepository.cs:3-6 class UserRepository [exported] | public class UserRepository",

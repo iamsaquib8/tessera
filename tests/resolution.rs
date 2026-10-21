@@ -222,3 +222,38 @@ fn renaming_an_export_re_resolves_its_importers() {
     indexer::index_files(&ws, &["a.ts".to_string()]).unwrap();
     assert_has(&edges(&ws.db_path), &["run -call-> a.ts:foo [high/import]"]);
 }
+
+#[test]
+fn a_call_on_a_new_expression_resolves_to_the_class() {
+    let (_temp, ws) = repo_with(&[
+        (
+            "repo.ts",
+            "export class UserRepo {\n  findById(id: string) { return id; }\n}\n",
+        ),
+        (
+            "main.ts",
+            "import { UserRepo } from \"./repo\";\nexport function run() {\n  new UserRepo().findById(\"1\");\n  new UserRepo().findByIdd(\"1\");\n  return new Map().get(\"k\");\n}\n",
+        ),
+        (
+            "Repo.java",
+            "class Repo {\n  String find(String id) { return id; }\n}\n",
+        ),
+        (
+            "Main.java",
+            "class Main {\n  String run() { return new Repo().find(\"1\"); }\n}\n",
+        ),
+    ]);
+    let all = edges(&ws.db_path);
+    assert_has(
+        &all,
+        &[
+            "run -call-> repo.ts:UserRepo.findById [high/new]",
+            "run -call-> findByIdd [high/missing]",
+            "Main.run -call-> Repo.java:Repo.find [high/new]",
+        ],
+    );
+    assert_lacks(
+        &all,
+        &["run -call-> get", "run -call-> repo.ts:UserRepo.get"],
+    );
+}

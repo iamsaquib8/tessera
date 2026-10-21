@@ -34,6 +34,7 @@ pub mod config;
 pub mod db;
 pub mod extract;
 pub mod fresh;
+pub mod hook;
 pub mod indexer;
 pub mod init;
 pub mod mcp;

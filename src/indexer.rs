@@ -551,7 +551,7 @@ fn index_discovered(
 /// Ignores the index but keeps the shareable project config committable.
 pub const INDEX_DIR_GITIGNORE: &str = "*\n!.gitignore\n!config.toml\n";
 
-fn ignore_index_dir(db_path: &Path) -> Result<()> {
+pub fn ignore_index_dir(db_path: &Path) -> Result<()> {
     let Some(dir) = db_path.parent() else {
         return Ok(());
     };

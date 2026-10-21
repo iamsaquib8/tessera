@@ -19,6 +19,15 @@ const SYMBOL_SQL: &str = "SELECT s.id, s.name, s.qualified_name, s.kind, s.file_
     f.language, s.start_line, s.end_line, s.signature, s.exported
     FROM symbols s JOIN files f ON f.id = s.file_id";
 
+/// Every symbol defined in `path`, in source order.
+pub fn symbols_in_file(conn: &Connection, path: &str) -> Result<Vec<SymbolRecord>> {
+    let mut stmt = conn.prepare_cached(&format!(
+        "{SYMBOL_SQL} WHERE f.path = ?1 ORDER BY s.start_line, s.end_line DESC"
+    ))?;
+    let rows = stmt.query_map(params![path], db::map_symbol)?;
+    Ok(rows.collect::<rusqlite::Result<_>>()?)
+}
+
 pub fn confidence(value: &str) -> Confidence {
     match value {
         "high" => Confidence::High,

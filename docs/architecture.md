@@ -79,7 +79,8 @@ After indexing, a resolve pass turns each reference into edges:
    (`import`).
 3. `this`/`super` through the class and its supertypes (`this`).
 4. A receiver's declared type, including field chains such as
-   `this.deps.repo` (`hint`), or a class used as a receiver (`static`).
+   `this.deps.repo` (`hint`), a class used as a receiver (`static`), or a
+   freshly constructed object, `new Repo().find()` (`new`).
 5. Otherwise a repository-wide name match: one candidate is medium, two to
    five are low.
 

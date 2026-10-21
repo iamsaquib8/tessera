@@ -903,6 +903,14 @@ impl<'c> Resolver<'c> {
         if depth > MAX_DEPTH {
             return Ok(Receiver::Unknown);
         }
+        if let Some(class) = receiver.strip_prefix("new:") {
+            let resolution = self.resolve_qualified_type(file, chain, class, depth)?;
+            return Ok(match resolution.confidence {
+                _ if resolution.targets.is_empty() => Receiver::External,
+                "high" => Receiver::Class(resolution.targets, "high", "new"),
+                _ => Receiver::Unknown,
+            });
+        }
         if let Some((type_name, origin)) = self.hint(file, chain, receiver) {
             return self.typed(file, chain, &type_name, &origin, depth);
         }

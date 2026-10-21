@@ -203,3 +203,80 @@ fn editing_a_hub_file_falls_back_to_a_full_resolve_within_budget() {
         "hub edit took {took:?}, full index {full:?}"
     );
 }
+
+#[test]
+#[ignore = "perf budget; run with --release -- --ignored --test-threads=1"]
+fn post_edit_hook_stays_within_budget_on_five_thousand_files() {
+    use std::io::Write;
+    use std::process::{Command, Stdio};
+
+    let temp = TempDir::new().unwrap();
+    let root = temp.path().join("repo");
+    synth_repo(&root, 5_000);
+    for args in [
+        &["init", "-q"][..],
+        &["add", "."],
+        &[
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@example.com",
+            "commit",
+            "-qm",
+            "base",
+        ],
+    ] {
+        assert!(Command::new("git")
+            .args(args)
+            .current_dir(&root)
+            .status()
+            .unwrap()
+            .success());
+    }
+    Index::build(
+        &root,
+        root.join(".tessera/tessera.db"),
+        IndexOptions::default(),
+    )
+    .unwrap();
+    let bin = assert_cmd::cargo::cargo_bin("tessera");
+    let file = root.join("module_00042.ts");
+    let original = std::fs::read_to_string(&file).unwrap();
+    let hook = |event: &str, payload: serde_json::Value| {
+        let started = Instant::now();
+        let mut child = Command::new(&bin)
+            .args(["hook", "claude", event])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()
+            .unwrap();
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(payload.to_string().as_bytes())
+            .unwrap();
+        assert!(child.wait_with_output().unwrap().status.success());
+        started.elapsed()
+    };
+    let cwd = root.to_string_lossy().into_owned();
+    hook(
+        "SessionStart",
+        serde_json::json!({ "session_id": "p", "cwd": cwd }),
+    );
+    let mut samples = Vec::new();
+    for i in 0..20 {
+        std::fs::write(&file, format!("{original}// edit {i}\n")).unwrap();
+        samples.push(hook(
+            "PostToolUse",
+            serde_json::json!({
+                "session_id": "p",
+                "cwd": cwd,
+                "tool_name": "Edit",
+                "tool_input": { "file_path": file.to_string_lossy(), "old_string": "", "new_string": "" },
+            }),
+        ));
+    }
+    let p95 = p95(samples);
+    assert!(p95 <= Duration::from_millis(300), "post-edit p95 {p95:?}");
+}

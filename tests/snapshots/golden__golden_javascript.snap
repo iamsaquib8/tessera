@@ -16,7 +16,7 @@ expression: graph_dump(& db)
     "specs/util.spec.js:1 require_member slugify = slugify from ../lib/util"
   ],
   "edges": [
-    "app.js app.get(\"/send\") -call-> lib/worker.js:BaseWorker.run [medium/name]",
+    "app.js app.get(\"/send\") -call-> lib/worker.js:BaseWorker.run [high/new]",
     "app.js app.get(\"/send\") -call-> send [name]",
     "app.js app.get(\"/send\") -new-> lib/email_worker.js:EmailWorker [high/import]",
     "lib/email_worker.js EmailWorker -extends-> lib/worker.js:BaseWorker [high/import]",
@@ -44,7 +44,7 @@ expression: graph_dump(& db)
     "app.js:2:21 call require/1 <- EmailWorker",
     "app.js:4:13 call express/0 <- app",
     "app.js:6:5 call app.get/2 <- <none>",
-    "app.js:7:21 call other.run/0 <- app.get(\"/send\")",
+    "app.js:7:21 call new:EmailWorker.run/0 <- app.get(\"/send\")",
     "app.js:7:7 new EmailWorker/0 <- app.get(\"/send\")",
     "app.js:8:7 call res.send/1 <- app.get(\"/send\")",
     "lib/email_worker.js:1:20 call require/1 <- BaseWorker",
