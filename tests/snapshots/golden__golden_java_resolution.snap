@@ -15,8 +15,9 @@ expression: graph_dump(& db)
     "src/main/java/com/acme/service/UserService.java:4 java_static * from com.acme.service.Format",
     "src/main/java/com/acme/service/UserService.java:6 java_single User = User from com.acme.domain.User",
     "src/main/java/com/acme/service/UserService.java:7 java_single UserRepository = UserRepository from com.acme.repo.UserRepository",
-    "src/test/java/com/acme/service/UserServiceTest.java:3 java_single UserRepository = UserRepository from com.acme.repo.UserRepository",
-    "src/test/java/com/acme/service/UserServiceTest.java:4 java_single Test = Test from org.junit.jupiter.api.Test"
+    "src/test/java/com/acme/service/UserServiceTest.java:3 java_static * from org.mockito.Mockito",
+    "src/test/java/com/acme/service/UserServiceTest.java:5 java_single UserRepository = UserRepository from com.acme.repo.UserRepository",
+    "src/test/java/com/acme/service/UserServiceTest.java:6 java_single Test = Test from org.junit.jupiter.api.Test"
   ],
   "edges": [
     "src/main/java/com/acme/domain/Errors.java Errors.notFound -new-> IllegalStateException [name]",
@@ -101,8 +102,9 @@ expression: graph_dump(& db)
     "src/main/java/com/acme/service/UserService.java:4 import com.acme.service.Format",
     "src/main/java/com/acme/service/UserService.java:6 import com.acme.domain.User",
     "src/main/java/com/acme/service/UserService.java:7 import com.acme.repo.UserRepository",
-    "src/test/java/com/acme/service/UserServiceTest.java:3 import com.acme.repo.UserRepository",
-    "src/test/java/com/acme/service/UserServiceTest.java:4 import org.junit.jupiter.api.Test"
+    "src/test/java/com/acme/service/UserServiceTest.java:3 import org.mockito.Mockito",
+    "src/test/java/com/acme/service/UserServiceTest.java:5 import com.acme.repo.UserRepository",
+    "src/test/java/com/acme/service/UserServiceTest.java:6 import org.junit.jupiter.api.Test"
   ],
   "modules": [
     "src/main/java/com/acme/domain/Entity.java -> com.acme.domain",
@@ -158,12 +160,12 @@ expression: graph_dump(& db)
     "src/main/java/com/acme/service/UserService.java:22:41 call user.id/0 <- UserService.describe",
     "src/main/java/com/acme/service/UserService.java:25:23 type User <- UserService.keep",
     "src/main/java/com/acme/service/UserService.java:9:1 decorator Service <- UserService",
-    "src/test/java/com/acme/service/UserServiceTest.java:10:17 call service.describe/1 <- UserServiceTest.describesAUser",
-    "src/test/java/com/acme/service/UserServiceTest.java:13:5 decorator org.junit.jupiter.api.Disabled <- UserServiceTest.skipped",
-    "src/test/java/com/acme/service/UserServiceTest.java:7:5 decorator Test <- UserServiceTest.describesAUser",
-    "src/test/java/com/acme/service/UserServiceTest.java:9:31 new UserService/1 <- UserServiceTest.describesAUser",
-    "src/test/java/com/acme/service/UserServiceTest.java:9:47 new UserRepository/0 <- UserServiceTest.describesAUser",
-    "src/test/java/com/acme/service/UserServiceTest.java:9:9 type UserService <- UserServiceTest.describesAUser"
+    "src/test/java/com/acme/service/UserServiceTest.java:11:31 new UserService/1 <- UserServiceTest.describesAUser",
+    "src/test/java/com/acme/service/UserServiceTest.java:11:47 new UserRepository/0 <- UserServiceTest.describesAUser",
+    "src/test/java/com/acme/service/UserServiceTest.java:11:9 type UserService <- UserServiceTest.describesAUser",
+    "src/test/java/com/acme/service/UserServiceTest.java:12:17 call service.describe/1 <- UserServiceTest.describesAUser",
+    "src/test/java/com/acme/service/UserServiceTest.java:15:5 decorator org.junit.jupiter.api.Disabled <- UserServiceTest.skipped",
+    "src/test/java/com/acme/service/UserServiceTest.java:9:5 decorator Test <- UserServiceTest.describesAUser"
   ],
   "symbols": [
     "src/main/java/com/acme/domain/Entity.java:3-5 interface Entity [exported] | public interface Entity {",
@@ -190,8 +192,8 @@ expression: graph_dump(& db)
     "src/main/java/com/acme/service/UserService.java:19-23 method UserService.describe [exported] (1..1) | public String describe(String id) {",
     "src/main/java/com/acme/service/UserService.java:25-27 method UserService.keep [exported] (1..1) | public <T extends User> T keep(T value) {",
     "src/main/java/com/acme/service/UserService.java:9-28 class UserService [exported] | @Service",
-    "src/test/java/com/acme/service/UserServiceTest.java:13-14 method UserServiceTest.skipped (0..0) | @org.junit.jupiter.api.Disabled",
-    "src/test/java/com/acme/service/UserServiceTest.java:6-15 class UserServiceTest | class UserServiceTest {",
-    "src/test/java/com/acme/service/UserServiceTest.java:7-11 method UserServiceTest.describesAUser (0..0) | @Test"
+    "src/test/java/com/acme/service/UserServiceTest.java:15-16 method UserServiceTest.skipped (0..0) | @org.junit.jupiter.api.Disabled",
+    "src/test/java/com/acme/service/UserServiceTest.java:8-17 class UserServiceTest | class UserServiceTest {",
+    "src/test/java/com/acme/service/UserServiceTest.java:9-13 method UserServiceTest.describesAUser (0..0) | @Test"
   ]
 }

@@ -763,6 +763,8 @@ impl<'c> Resolver<'c> {
             };
             match found {
                 Found::Symbols(ids) => return Ok(Found::Symbols(ids)),
+                // A wildcard only says where a name might come from.
+                Found::External if wildcard => {}
                 Found::External => external = true,
                 Found::Absent(path) => absent = Some(path),
                 Found::Missing => {}

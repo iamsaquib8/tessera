@@ -1,5 +1,7 @@
 package com.acme.service;
 
+import static org.mockito.Mockito.*;
+
 import com.acme.repo.UserRepository;
 import org.junit.jupiter.api.Test;
 
