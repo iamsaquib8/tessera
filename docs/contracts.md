@@ -76,9 +76,17 @@ Generated code (protobuf stubs and anything marked generated) is skipped.
 `verify` (and the edit hooks) reads each changed file as it was before the
 change. When the change removes a route, a gRPC method, or a topic's
 producer that no other file offers while a client still uses it, the client
-gets a **V5** finding. It blocks when both sides are high confidence; a
-listener without a producer is reported, not blocked, since the producer
-may live outside the repository.
+gets a **V5** finding. It blocks only when both sides are high confidence
+and the path matches exactly. It is reported, not blocked, for a listener
+without a producer (the producer may live outside the repository), for a
+request that reaches the route only through a path parameter
+(`/users/me` and `/users/{}`), and for a route that may now be served
+under a mounted router (`app.use("/api", users)`). Requests to another
+organisation's API (an absolute URL with a dotted host, such as
+`api.github.com`) are never clients of a local route. A route still served
+for any method (`app.all`) is not removed. V5 looks at this repository
+only: a route removed here while a workspace sibling calls it is not
+reported yet.
 
 ## Accuracy
 

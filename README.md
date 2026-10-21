@@ -141,12 +141,13 @@ tessera ui --open
   <img src="assets/ui-map.png" alt="The contract map of microservices-demo: one tile per service, linked by the gRPC methods between them" width="49%">
 </p>
 
-A local page on `127.0.0.1` shows what your uncommitted work (or any
-revision range) touches: blocking problems, changed symbols, their callers
-ranked by impact, contracts with services on the other side, and the tests
-to run. The contract map draws services and the routes, gRPC methods,
-topics, and tables between them; every symbol links to its definition,
-callers, and tests. Nothing loads from the network. `tessera ui --export
+A local page on `127.0.0.1` shows what your uncommitted work touches:
+blocking problems, changed symbols, their callers ranked by impact,
+contracts with services on the other side, and the tests to run. The
+contract map draws services and the routes, gRPC methods, and topics
+between them, grouped by directory when there are many, and lists every
+contract with its tables; every symbol links to its definition, callers,
+and tests. Nothing loads from the network. `tessera ui --export
 site/` writes the same page as a static site for a demo or an internal wiki.
 
 ## On every pull request

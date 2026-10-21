@@ -13,8 +13,9 @@ for what 1.x keeps stable.
 - **`tessera ui`**: a local page on `127.0.0.1` with the change impact of
   the working tree (problems to fix, changed symbols, callers by impact,
   contracts with services on the other side, tests to run), the contract
-  map of services and the routes, gRPC methods, topics and tables between
-  them, a symbol page and search. Nothing loads from the network.
+  map of services and the routes, gRPC methods and topics between them
+  (grouped by directory above 60 services) with every contract listed, a
+  symbol page and search. Nothing loads from the network.
   `--export DIR` writes the same page as a static site.
 - **`verify --format markdown`**: the pull-request report, one comment with
   blocking problems, advisory findings, contracts touched, callers of the
@@ -133,7 +134,8 @@ measured against compiler ground truth.
   `paths`, workspace packages, Java packages and static imports), `this` and
   `super`, declared types (variables, parameters, fields, interface
   properties, field chains such as `this.deps.repo`), and class names. Java
-  overloads and TypeScript overloads are told apart by argument count.
+  overloads are told apart by argument count; TypeScript overload
+  signatures share one symbol whose arity spans them.
 - **Confidence** on every reference: `high`, `medium` (unique name), `low`
   (two to five candidates, kept as one ambiguous group), or `name`.
   References that resolve outside the repository get no edge.

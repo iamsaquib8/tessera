@@ -58,7 +58,7 @@ Measured, not claimed:
 
 - 99.7% of high-confidence references match compiler ground truth (TS/JS/Java)
 - gRPC in microservices-demo: 15/15 servers, 34/34 clients, no wrong link
-- false-positive hunt: 979 blocking findings down to 15, all real
+- false-positive hunt: a blind find-and-replace leaves 15 blocking findings, all real
 
 The benchmark is public.
 

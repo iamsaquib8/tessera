@@ -53,6 +53,18 @@ getters that Tessera does not follow yet, and the microservices sample (9
 direct calls, 40 typed receivers). The Java corpus is small, so read its
 numbers with their sample sizes.
 
+Precision at every level, with the number of references scored. Only high
+blocks a hook; the other levels are labelled in the output and should be
+read as the hints they are.
+
+| Repository | high | medium | low | name only |
+| --- | --- | --- | --- | --- |
+| excalidraw | 0.999 (5,808) | 1.000 (76) | 0.551 (158) | 0.400 (25) |
+| nest | 0.994 (1,060) | 0.682 (22) | – | 0.033 (123) |
+| ghost core | 0.990 (594) | – | 0.500 (26) | 0.004 (242) |
+| spring-petclinic | 0.995 (415) | 0.985 (65) | 1.000 (3) | 0.429 (7) |
+| spring-petclinic-microservices | 0.995 (182) | 0.750 (4) | 0.258 (31) | 0.885 (26) |
+
 ## How it is measured
 
 - **Ground truth:** SCIP indexes built by scip-typescript and scip-java at
@@ -64,9 +76,9 @@ numbers with their sample sizes.
   repository, fixed seed.
 - **Not measured:** plain identifier reads (`KEYS.A` used as a value), which
   Tessera does not record as references.
-- The same harness has adapters for other tools; their rows are published
-  with versions and raw output, and maintainers can correct their own
-  adapter.
+- The harness is built to take adapters for other code-graph tools, with
+  their versions and raw output published beside Tessera's. None are
+  published yet.
 
 To reproduce, clone tessera-bench and run `scripts/fetch.sh`,
 `scripts/scip.sh`, and `python3 -m bench.run tessera`.

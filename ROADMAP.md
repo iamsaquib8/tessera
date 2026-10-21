@@ -82,9 +82,10 @@ including those below the bar, are in [docs/accuracy.md](docs/accuracy.md).
 **Status:** built. Hooks ship for Claude Code (plugin or `init`), Codex CLI,
 Qwen Code, Gemini CLI, Copilot CLI, Cursor, Augment and Antigravity
 ([docs/hooks.md](docs/hooks.md)). A blind find-and-replace over the corpus
-was used to hunt verify false positives: it first left 979 blocking
-findings, nearly all wrong; after the fixes it leaves 15, all real. The
-agent arms of the refactor eval are ready to run.
+was used to hunt verify false positives; after the fixes it leaves 15
+blocking findings, all real (tessera-bench `results/eval-replace-check.jsonl`).
+The agent arms of the refactor eval are ready to run; the gate they measure
+(missed call sites, false-positive blocks) is not met until they do.
 
 ## v0.13: Contract map
 

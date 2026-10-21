@@ -26,8 +26,8 @@ Hooks (`tessera hook`) always exit 0: a Tessera failure never stops an
 agent.
 
 **`--json` fields.** Every field of every command's JSON output stays, with
-the same name and type. New fields may be added at any level, so parse
-JSON leniently. Values that describe the index (symbol and file `id`s,
+the same name and meaning (the tests pin the names). New fields may be
+added at any level, so parse JSON leniently. Values that describe the index (symbol and file `id`s,
 `elapsed_ms`, counts) are facts about one index, not identifiers to store.
 
 **Check ids.** `V1` to `V6` keep their meaning in every format, including

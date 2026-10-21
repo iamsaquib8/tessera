@@ -159,7 +159,8 @@ contracts with services on the other side, and tests to run.
 ![Change impact for the renamed handler: two V5 problems to fix](https://raw.githubusercontent.com/iamsaquib8/tessera/main/assets/ui-impact.png)
 
 The contract map draws one tile per service, linked by the routes, gRPC
-methods, topics and tables between them.
+methods and topics between them, and lists every contract, tables
+included.
 
 ![The contract map of microservices-demo](https://raw.githubusercontent.com/iamsaquib8/tessera/main/assets/ui-map.png)
 
@@ -192,8 +193,8 @@ excalidraw, nest, Ghost and two Spring applications:
   wrong link. On the held-out opentelemetry-demo, the first measurement
   found 10 of 12 servers and 16 of 26 clients, also with no wrong link. Those
   gaps are closed now, so it no longer counts as held out.
-- To hunt false positives, a blind find-and-replace over the corpus first
-  produced 979 blocking findings. After the fixes it produces 15, all real.
+- To hunt false positives, a blind find-and-replace over the corpus was
+  run until every blocking finding it left was a real break: 15 of 15.
 - Lookups take under 50 ms at p95 on 10,000 files, and a 45,000-file
   repository indexes in under a minute.
 

@@ -70,8 +70,8 @@ Numbers, from a public benchmark (tessera-bench) you can rerun:
   found 10 of 12 servers and 16 of 26 clients, again with no wrong link.
   Those gaps are fixed now, so that repository no longer counts as held out.
 - To hunt false positives I ran a blind find-and-replace over the benchmark
-  corpus. `verify` first reported 979 blocking findings, nearly all wrong.
-  After the fixes it reports 15, all real.
+  corpus and fixed every wrong finding it raised. It now leaves 15 blocking
+  findings, all real breaks.
 - Lookups take under 50 ms at p95 on 10,000 files; a 45,000-file repository
   indexes in under a minute.
 

@@ -78,8 +78,8 @@ at DeepSeek's Anthropic-compatible endpoint, the same hooks apply.
 
 On accuracy: 99.7% of high-confidence references match compiler ground
 truth on public TypeScript, JavaScript and Java repositories. To hunt false
-positives I ran a blind find-and-replace over the benchmark corpus; it
-first produced 979 blocking findings, and after the fixes 15, all real.
+positives I ran a blind find-and-replace over the benchmark corpus; after
+the fixes it leaves 15 blocking findings, all real breaks.
 
 Codex CLI, Gemini CLI, Copilot CLI, Cursor, Qwen Code, Augment and
 Antigravity get the same hooks through `tessera init`.

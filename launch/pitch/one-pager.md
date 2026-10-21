@@ -38,7 +38,7 @@ gives the same answer every time, and nothing leaves the machine.
 | Precision | 99.7% of high-confidence references match compiler ground truth on public TypeScript, JavaScript and Java repositories |
 | Recall | 99% of direct calls, 91% of calls on typed receivers, 99% of type references (TS/JS) |
 | Contracts | Every gRPC server (15/15) and client (34/34) in GoogleCloudPlatform/microservices-demo, across Go, C#, Node, Python and Java, with no wrong link |
-| False positives | A blind find-and-replace over the public benchmark corpus first produced 979 blocking findings; after the fixes, 15, all real |
+| False positives | A blind find-and-replace over the public benchmark corpus leaves 15 blocking findings, all real breaks |
 | Speed | Lookups under 50 ms p95 on 10,000 files; a 45,000-file repository indexes in under a minute |
 | Reach | 21 agents set up by one command; edit-checking hooks in 8 (Claude Code, Codex, Gemini CLI, Copilot CLI, Cursor, Qwen Code, Augment, Antigravity); 12 languages |
 
