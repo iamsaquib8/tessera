@@ -347,6 +347,31 @@ fn a_receiver_typed_by_a_name_match_is_no_stronger_than_the_match() {
 }
 
 #[test]
+fn java_overloads_with_the_same_argument_count_are_ambiguous() {
+    let (_temp, ws) = repo_with(&[
+        (
+            "Repo.java",
+            "class Repo {\n  String findById(String id) { return id; }\n  String findById(Long id) { return null; }\n  String findById(Long id, boolean strict) { return null; }\n}\n",
+        ),
+        (
+            "Main.java",
+            "class Main {\n  Repo repo;\n  String run(Long id) { repo.findById(id, true); return repo.findById(id); }\n}\n",
+        ),
+    ]);
+    let all = edges(&ws.db_path);
+    let run: Vec<&String> = all.iter().filter(|e| e.starts_with("Main.run ")).collect();
+    assert_eq!(
+        run,
+        vec![
+            "Main.run -call-> Repo.java:Repo.findById [high/hint]",
+            "Main.run -call-> Repo.java:Repo.findById [low/hint]",
+            "Main.run -call-> Repo.java:Repo.findById [low/hint]",
+        ],
+        "{all:#?}"
+    );
+}
+
+#[test]
 fn a_java_call_on_a_this_field_uses_the_field_type() {
     let (_temp, ws) = repo_with(&[
         (
