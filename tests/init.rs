@@ -532,10 +532,9 @@ fn a_file_that_changed_after_the_plan_keeps_both_changes() {
     let claude = json(&s.home.join(".claude.json"));
     assert_eq!(claude["numStartups"], 2, "{claude}");
     assert!(claude["tipsHistory"].is_object(), "{claude}");
-    assert_eq!(
-        claude["mcpServers"]["tessera"]["args"][0], "mcp",
-        "{claude}"
-    );
+    // `tessera mcp`, or `npx -y tessera-codegraph@… mcp` without tessera on PATH.
+    let args = claude["mcpServers"]["tessera"]["args"].as_array().unwrap();
+    assert!(args.iter().any(|a| a == "mcp"), "{claude}");
 }
 
 #[cfg(unix)]
