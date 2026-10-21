@@ -295,6 +295,28 @@ fn only_closed_classes_make_a_missing_member() {
 }
 
 #[test]
+fn calls_on_js_globals_never_match_repository_methods_by_name() {
+    let (_temp, ws) = repo_with(&[
+        (
+            "logger.ts",
+            "export class Logger {\n  log(m: string) { return m; }\n  parse(s: string) { return s; }\n}\n",
+        ),
+        (
+            "storage.ts",
+            "export function getItem(key: string) { return key; }\n",
+        ),
+        (
+            "main.ts",
+            "import * as localStorage from \"./storage\";\nexport function run() {\n  console.log(\"x\");\n  JSON.parse(\"{}\");\n  process.env.HOME.trim();\n  return localStorage.getItem(\"k\");\n}\n",
+        ),
+    ]);
+    let all = edges(&ws.db_path);
+    assert_lacks(&all, &["run -call-> logger.ts:"]);
+    // An import of the same name is not the global.
+    assert_has(&all, &["run -call-> storage.ts:getItem [high/import]"]);
+}
+
+#[test]
 fn a_java_call_on_a_this_field_uses_the_field_type() {
     let (_temp, ws) = repo_with(&[
         (

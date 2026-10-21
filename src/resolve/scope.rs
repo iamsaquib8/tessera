@@ -31,6 +31,48 @@ const TYPE_KINDS: &[&str] = &[
     "annotation",
     "type",
 ];
+/// Objects every JavaScript runtime provides; a call on one is never a call
+/// on a repository class unless the file imports or declares the name.
+const JS_GLOBALS: &[&str] = &[
+    "console",
+    "JSON",
+    "Math",
+    "Object",
+    "Array",
+    "Promise",
+    "Number",
+    "String",
+    "Boolean",
+    "Date",
+    "Reflect",
+    "Symbol",
+    "Map",
+    "Set",
+    "WeakMap",
+    "WeakSet",
+    "RegExp",
+    "BigInt",
+    "Atomics",
+    "window",
+    "document",
+    "process",
+    "globalThis",
+    "navigator",
+    "location",
+    "history",
+    "localStorage",
+    "sessionStorage",
+    "performance",
+    "crypto",
+    "Buffer",
+    "require",
+    "module",
+    "exports",
+    "Intl",
+    "Error",
+    "URL",
+    "URLSearchParams",
+];
 /// More name-matched candidates than this is noise, not ambiguity.
 const MAX_AMBIGUOUS: usize = 5;
 /// Bounds every walk over re-exports, inheritance and call chains.
@@ -940,6 +982,13 @@ impl<'c> Resolver<'c> {
         if receiver.contains('.') {
             return self.receiver_path(file, chain, receiver, depth);
         }
+        if is_js(file.language)
+            && JS_GLOBALS.contains(&receiver)
+            && !self.has_binding(file, receiver)
+            && self.local(file, chain, receiver, false).is_empty()
+        {
+            return Ok(Receiver::External);
+        }
         if receiver.starts_with(|c: char| c.is_uppercase()) {
             let resolution = self.resolve_type(file, chain, receiver, false, depth + 1)?;
             if resolution.confidence == "high" {
@@ -1477,6 +1526,13 @@ fn map_sym(row: &rusqlite::Row<'_>) -> rusqlite::Result<Sym> {
         default_export: row.get(7)?,
         arity: min.map(|min| (min, max)),
     })
+}
+
+fn is_js(language: Language) -> bool {
+    matches!(
+        language,
+        Language::JavaScript | Language::TypeScript | Language::Tsx
+    )
 }
 
 /// `public readonly name?: T = …;` and the like: a property declaration of
