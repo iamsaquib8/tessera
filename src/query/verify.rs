@@ -873,7 +873,7 @@ fn lost_imports(
         return Ok(());
     }
     let wanted: Vec<String> = candidates.iter().map(|c| c.0.clone()).collect();
-    let before = blobs_at(root, rev, &wanted);
+    let before = files_at(root, rev, &wanted.iter().collect::<Vec<_>>());
     let mut in_repo = conn.prepare_cached(
         "SELECT EXISTS (SELECT 1 FROM import_bindings WHERE source = ?1 AND target_path IS NOT NULL)",
     )?;
@@ -910,65 +910,6 @@ fn lost_imports(
         }
     }
     Ok(())
-}
-
-/// Each of `paths` as it was at `rev`, read by one git process; paths that
-/// did not exist then are left out.
-fn blobs_at(root: &Path, rev: &str, paths: &[String]) -> HashMap<String, String> {
-    use std::io::Write;
-    use std::process::Stdio;
-
-    let mut out = HashMap::new();
-    let Ok(mut child) = Command::new("git")
-        .arg("-C")
-        .arg(root)
-        .args(["cat-file", "--batch"])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-    else {
-        return out;
-    };
-    let input: String = paths.iter().map(|p| format!("{rev}:./{p}\n")).collect();
-    let Some(mut stdin) = child.stdin.take() else {
-        return out;
-    };
-    let writer = std::thread::spawn(move || stdin.write_all(input.as_bytes()));
-    let Ok(output) = child.wait_with_output() else {
-        return out;
-    };
-    let _ = writer.join();
-    let bytes = output.stdout;
-    let mut at = 0;
-    for path in paths {
-        let Some(end) = bytes[at..].iter().position(|b| *b == b'\n') else {
-            break;
-        };
-        let header = String::from_utf8_lossy(&bytes[at..at + end]).into_owned();
-        at += end + 1;
-        // "<name> missing" (or "ambiguous") carries no content.
-        if header.ends_with(" missing") || header.ends_with(" ambiguous") {
-            continue;
-        }
-        // "<sha> <type> <size>", then the content and a newline.
-        let mut parts = header.rsplitn(3, ' ');
-        let size = parts.next().and_then(|size| size.parse::<usize>().ok());
-        let (Some(size), Some(kind)) = (size, parts.next()) else {
-            break;
-        };
-        if at + size > bytes.len() {
-            break;
-        }
-        if kind == "blob" {
-            out.insert(
-                path.clone(),
-                String::from_utf8_lossy(&bytes[at..at + size]).into_owned(),
-            );
-        }
-        at += size + 1;
-    }
-    out
 }
 
 struct ArityRow {
