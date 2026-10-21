@@ -137,6 +137,107 @@ fn v3_and_v4_a_renamed_export_breaks_its_importers() {
     );
 }
 
+/// Writes `files` into `root` and commits them.
+fn commit(root: &Path, files: &[(&str, &str)]) {
+    for (path, content) in files {
+        let path = root.join(path);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, content).unwrap();
+    }
+    for args in [
+        &["add", "."][..],
+        &[
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@example.com",
+            "commit",
+            "-q",
+            "-m",
+            "more",
+        ],
+    ] {
+        assert!(StdCommand::new("git")
+            .args(args)
+            .current_dir(root)
+            .status()
+            .unwrap()
+            .success());
+    }
+}
+
+#[test]
+fn v3_a_rename_behind_a_barrel_breaks_the_importers() {
+    let temp = repo();
+    let root = temp.path();
+    commit(
+        root,
+        &[
+            (
+                "src/lib/name.ts",
+                "export function shortName(name: string): string {\n  return name.slice(0, 3);\n}\n",
+            ),
+            ("src/lib/index.ts", "export { shortName } from \"./name\";\n"),
+            (
+                "src/app.ts",
+                "import { shortName } from \"./lib\";\n\nexport const a = shortName(\"a\");\n",
+            ),
+            (
+                "src/other.ts",
+                "import { shortName } from \"./lib\";\n\nexport const b = shortName(\"b\");\n",
+            ),
+        ],
+    );
+    edit(root, "src/lib/name.ts", "shortName", "abbreviate");
+    let (code, findings, _) = verify_changed(root);
+    assert_eq!(code, 1, "{findings:?}");
+    for path in ["src/app.ts", "src/other.ts"] {
+        assert!(
+            findings.iter().any(|f| f.contains(&format!(" {path}:"))),
+            "{path}: {findings:?}"
+        );
+    }
+}
+
+#[test]
+fn v3_a_call_left_behind_when_the_import_was_updated() {
+    let temp = repo();
+    let root = temp.path();
+    commit(
+        root,
+        &[(
+            "src/app.ts",
+            "import { formatName } from \"./util/format\";\n\nexport const a = formatName(\"a\");\nexport const b = formatName(\"b\");\n",
+        )],
+    );
+    for path in ["src/util/format.ts", "src/users/repo.ts"] {
+        let content = fs::read_to_string(root.join(path)).unwrap();
+        fs::write(
+            root.join(path),
+            content.replace("formatName", "formatDisplayName"),
+        )
+        .unwrap();
+    }
+    edit(
+        root,
+        "src/app.ts",
+        "import { formatName }",
+        "import { formatDisplayName }",
+    );
+    edit(
+        root,
+        "src/app.ts",
+        "formatName(\"a\")",
+        "formatDisplayName(\"a\")",
+    );
+    let (code, findings, _) = verify_changed(root);
+    assert_eq!(code, 1, "{findings:?}");
+    assert!(
+        findings.contains(&"V3 src/app.ts:4".to_string()),
+        "{findings:?}"
+    );
+}
+
 #[test]
 fn v2_a_new_required_parameter_breaks_existing_callers() {
     let temp = repo();

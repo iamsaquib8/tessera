@@ -1,4 +1,4 @@
-use std::collections::{BTreeSet, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::fmt;
 use std::path::Path;
 use std::process::Command;
@@ -247,10 +247,12 @@ pub fn problems(
         Changes::Since(rev) => rev.as_str(),
         _ => "HEAD",
     };
+    let barrels = barrels_over(conn, changed)?;
     let mut out = Vec::new();
-    missing_names(conn, changed, &mut out)?;
+    missing_names(conn, changed, &barrels, &mut out)?;
+    lost_imports(conn, root, changed, rev, &mut out)?;
     arity_mismatches(conn, changed, &mut out)?;
-    broken_imports(conn, changed, &mut out)?;
+    broken_imports(conn, changed, &barrels, &mut out)?;
     let mut contracts = Vec::new();
     contract_breaks(conn, root, changed, rev, &mut contracts)?;
     out.extend(contracts.into_iter().map(contract_problem));
@@ -297,6 +299,9 @@ pub fn problem_keys(
             keys.push(row.key());
         }
     }
+    let mut lost = Vec::new();
+    lost_imports(conn, root, contract_paths, "HEAD", &mut lost)?;
+    keys.extend(lost.into_iter().map(|p| p.key));
     let mut contracts = Vec::new();
     contract_breaks(conn, root, contract_paths, "HEAD", &mut contracts)?;
     keys.extend(contracts.into_iter().map(|f| contract_problem(f).key));
@@ -504,6 +509,65 @@ fn file_at(root: &Path, rev: &str, path: &str) -> Option<String> {
         .then(|| String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
+/// Each of `paths` as it was at `rev`, read by one git process; paths that
+/// did not exist then are left out.
+fn files_at(root: &Path, rev: &str, paths: &[String]) -> HashMap<String, String> {
+    use std::io::Write;
+    use std::process::Stdio;
+
+    let mut out = HashMap::new();
+    let Ok(mut child) = Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args(["cat-file", "--batch"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+    else {
+        return out;
+    };
+    let input: String = paths.iter().map(|p| format!("{rev}:./{p}\n")).collect();
+    let Some(mut stdin) = child.stdin.take() else {
+        return out;
+    };
+    let writer = std::thread::spawn(move || stdin.write_all(input.as_bytes()));
+    let Ok(output) = child.wait_with_output() else {
+        return out;
+    };
+    let _ = writer.join();
+    let bytes = output.stdout;
+    let mut at = 0;
+    for path in paths {
+        let Some(end) = bytes[at..].iter().position(|b| *b == b'\n') else {
+            break;
+        };
+        let header = String::from_utf8_lossy(&bytes[at..at + end]).into_owned();
+        at += end + 1;
+        // "<name> missing" (or "ambiguous") carries no content.
+        if header.ends_with(" missing") || header.ends_with(" ambiguous") {
+            continue;
+        }
+        // "<sha> <type> <size>", then the content and a newline.
+        let mut parts = header.rsplitn(3, ' ');
+        let size = parts.next().and_then(|size| size.parse::<usize>().ok());
+        let (Some(size), Some(kind)) = (size, parts.next()) else {
+            break;
+        };
+        if at + size > bytes.len() {
+            break;
+        }
+        if kind == "blob" {
+            out.insert(
+                path.clone(),
+                String::from_utf8_lossy(&bytes[at..at + size]).into_owned(),
+            );
+        }
+        at += size + 1;
+    }
+    out
+}
+
 /// Deep-tier languages, whose high-confidence findings block.
 fn blocks(path: &str) -> bool {
     let extension = path.rsplit('.').next().unwrap_or_default();
@@ -569,11 +633,39 @@ fn missing_rows(conn: &Connection) -> Result<Vec<MissingRow>> {
     Ok(rows)
 }
 
-/// V1 (in changed files) and V3 (elsewhere, into a changed file): a name
-/// resolved into a repository module or class that does not have it.
+/// Files that re-export, directly or through other barrels, from a changed
+/// file: a name missing from one of them may be missing because of the
+/// change.
+fn barrels_over(conn: &Connection, changed: &HashSet<String>) -> Result<HashSet<String>> {
+    let mut stmt = conn.prepare(
+        "SELECT DISTINCT f.path, b.target_path FROM import_bindings b
+         JOIN files f ON f.id = b.file_id
+         WHERE b.kind IN ('re_export', 're_export_all') AND b.target_path IS NOT NULL",
+    )?;
+    let mut by_target: HashMap<String, Vec<String>> = HashMap::new();
+    for row in stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))? {
+        let (barrel, target): (String, String) = row?;
+        by_target.entry(target).or_default().push(barrel);
+    }
+    let mut out = HashSet::new();
+    let mut queue: Vec<&String> = changed.iter().collect();
+    while let Some(target) = queue.pop() {
+        for barrel in by_target.get(target).into_iter().flatten() {
+            if !changed.contains(barrel) && out.insert(barrel.clone()) {
+                queue.push(barrel);
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// V1 (in changed files) and V3 (elsewhere, into a changed file or a barrel
+/// over one): a name resolved into a repository module or class that does
+/// not have it.
 fn missing_names(
     conn: &Connection,
     changed: &HashSet<String>,
+    barrels: &HashSet<String>,
     problems: &mut Vec<Problem>,
 ) -> Result<()> {
     for row in missing_rows(conn)? {
@@ -604,10 +696,101 @@ fn missing_names(
                 line,
                 format!("`{name}` no longer exists in {missing_in}, which this change edited"),
             )
+        } else if barrels.contains(&missing_in) {
+            finding(
+                "V3",
+                path,
+                line,
+                format!(
+                    "`{name}` is no longer exported by {missing_in}, which re-exports a file this change edited"
+                ),
+            )
         } else {
             continue;
         };
         problems.push(Problem { finding, key });
+    }
+    Ok(())
+}
+
+/// V3 for a call left behind: a name the file imported from the repository
+/// at `rev` and still calls, which now resolves to nothing (its import was
+/// updated for a rename, this call site was not).
+fn lost_imports(
+    conn: &Connection,
+    root: &Path,
+    changed: &HashSet<String>,
+    rev: &str,
+    problems: &mut Vec<Problem>,
+) -> Result<()> {
+    let mut unbound = conn.prepare_cached(
+        "SELECT r.line, r.symbol_name FROM refs r JOIN files f ON f.id = r.file_id
+         WHERE f.path = ?1 AND r.receiver = 'none'
+           AND NOT EXISTS (SELECT 1 FROM edges e WHERE e.ref_id = r.id
+                           AND (e.confidence != 'name' OR e.resolver = 'missing'))
+           AND NOT EXISTS (SELECT 1 FROM import_bindings b
+                           WHERE b.file_id = r.file_id AND b.local = r.symbol_name)
+           AND NOT EXISTS (SELECT 1 FROM symbols s
+                           WHERE s.file_id = r.file_id AND s.name = r.symbol_name)",
+    )?;
+    let mut paths: Vec<&String> = changed.iter().filter(|p| blocks(p)).collect();
+    paths.sort();
+    let mut candidates = Vec::new();
+    for path in paths {
+        let Some(language) = Language::from_path(Path::new(path)) else {
+            continue;
+        };
+        let refs: Vec<(usize, String)> = unbound
+            .query_map(params![path], |row| {
+                Ok((row.get::<_, i64>(0)? as usize, row.get::<_, String>(1)?))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?
+            .into_iter()
+            .filter(|(_, name)| !known_global(language, name))
+            .collect();
+        if !refs.is_empty() {
+            candidates.push((path.clone(), language, refs));
+        }
+    }
+    if candidates.is_empty() {
+        return Ok(());
+    }
+    let wanted: Vec<String> = candidates.iter().map(|c| c.0.clone()).collect();
+    let before = files_at(root, rev, &wanted);
+    let mut in_repo = conn.prepare_cached(
+        "SELECT EXISTS (SELECT 1 FROM import_bindings WHERE source = ?1 AND target_path IS NOT NULL)",
+    )?;
+    for (path, language, refs) in candidates {
+        let Some(old) = before.get(&path) else {
+            continue;
+        };
+        let Ok(parsed) = parse_file(language, old) else {
+            continue;
+        };
+        let imported: HashMap<String, String> = parsed
+            .bindings
+            .into_iter()
+            .map(|b| (b.local, b.source))
+            .collect();
+        for (line, name) in refs {
+            let Some(source) = imported.get(&name) else {
+                continue;
+            };
+            if !source.starts_with('.') && !in_repo.query_row(params![source], |row| row.get(0))? {
+                continue;
+            }
+            problems.push(Problem {
+                finding: finding(
+                    "V3",
+                    path.clone(),
+                    line,
+                    format!(
+                        "`{name}` was imported from {source} before this change and now resolves to nothing"
+                    ),
+                ),
+                key: format!("lost {path} {name} {source}"),
+            });
+        }
     }
     Ok(())
 }
@@ -739,11 +922,15 @@ fn binding_rows(conn: &Connection) -> Result<Vec<BindingRow>> {
 fn broken_imports(
     conn: &Connection,
     changed: &HashSet<String>,
+    barrels: &HashSet<String>,
     problems: &mut Vec<Problem>,
 ) -> Result<()> {
     let changed_stems: HashSet<String> = changed.iter().map(|p| strip_extension(p)).collect();
     for row in binding_rows(conn)? {
-        let points_at_change = row.target.as_ref().is_some_and(|t| changed.contains(t))
+        let points_at_change = row
+            .target
+            .as_ref()
+            .is_some_and(|t| changed.contains(t) || barrels.contains(t))
             || lexical_target(&row.path, &row.source).is_some_and(|candidate| {
                 changed_stems.contains(&candidate)
                     || changed_stems.contains(&format!("{candidate}/index"))
