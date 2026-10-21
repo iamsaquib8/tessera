@@ -30,8 +30,10 @@ definition; on the benchmark that is right 99.7% of the time. Medium, low, and n
   every read.
 - Dynamic dispatch, reflection, string-based calls, dependency injection by
   name, and code generated at build time.
-- Edges between repositories or services (routes, queues, tables). That is
-  the v0.13 contract map.
+- Contracts outside the frameworks `map` reads. Routes, gRPC, topics and
+  tables are linked across services ([contracts](contracts.md)), but not yet
+  Express routers mounted under a prefix, GraphQL, config keys, Go, Python
+  or Ruby web frameworks, or `path` across repositories.
 
 ## Use the compiler too
 

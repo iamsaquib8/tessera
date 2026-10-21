@@ -4,12 +4,12 @@
 
 Coding agents find call sites with grep. Grep can't tell `repo.save()` from
 `cache.save()`, so an agent either reads too much or misses the caller that
-breaks. Tessera 0.11 resolves references the way a reader does: through
+breaks. Tessera 1.0 resolves references the way a reader does: through
 imports, re-exports, tsconfig paths, `this`, and declared types. It labels
 anything it had to guess.
 
 We measured it instead of claiming it. tessera-bench builds compiler ground
-truth (scip-typescript) for pinned public repositories, samples 200
+truth (scip-typescript and scip-java) for pinned public repositories, samples 200
 definitions per repository across fan-in buckets, and scores every reference
 Tessera reports:
 

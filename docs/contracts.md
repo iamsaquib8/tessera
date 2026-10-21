@@ -17,6 +17,8 @@ tessera map service checkout      # what a service serves and calls
 rpc ShippingService/GetQuote
   defined     microservices-demo   protos/demo.proto:108
   defined     src/adservice        src/adservice/src/main/proto/demo.proto:106
+  defined     src/currencyservice  src/currencyservice/proto/demo.proto:106
+  defined     src/paymentservice   src/paymentservice/proto/demo.proto:106
   served by   src/shippingservice  src/shippingservice/main.go:119  server.GetQuote
   called by   src/checkoutservice  src/checkoutservice/main.go:315  checkoutService.quoteShipping
   called by   src/frontend         src/frontend/rpc.go:88  frontendServer.getShippingQuote

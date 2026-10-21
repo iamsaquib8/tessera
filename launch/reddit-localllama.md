@@ -1,39 +1,77 @@
-# Reddit — r/LocalLLaMA
+# Reddit: r/LocalLLaMA
 
-Audience: local-first, token-cost-obsessed, agent builders. Lead with token math + determinism. No hype.
+Audience: people running models locally, wary of anything that phones home
+or needs a hosted model. Lead with model-agnostic and fully local. No token
+multipliers; say what it checks and how it plugs into the agent you
+already run.
 
 ## Title
-`Tessera: a local, deterministic code graph that cuts "who calls this?" from ~394k tokens to ~6.5k (MCP + CLI, 11 languages)`
+
+`Tessera 1.0: deterministic checks for coding-agent edits. No LLM inside, no network calls, works with whatever model drives your agent`
 
 ## Body
 
-I kept watching my local coding agents burn their whole context window on `grep`
-+ file reads just to answer structural questions ("who calls this function, what
-breaks if I change it"), and occasionally invent symbols that don't exist. So I
-built **Tessera** — a local semantic code graph (Tree-sitter → SQLite +
-mmap snapshot) that answers those deterministically.
+Whatever model writes the code, a coding agent fails the same way: it
+renames a function, updates the file it was looking at, and says done,
+while a caller somewhere else still uses the old name. I built Tessera to
+check for that without adding another model to the loop.
 
-Measured on real repos (the bench ships in the binary, so you can reproduce it):
+**How it works**
 
-- 951-file Java service — "who calls parseFrom?": **~394,140 tokens** raw grep+read vs **~6,530** through Tessera (**60×**)
-- 1,063-file Node service — "who calls BaseWorker?": **~36,311** vs **~41** (**886×**)
-- Incremental re-index: **~38 ms** (runs on every save)
+Tessera indexes the repository with tree-sitter into a SQLite file in
+`.tessera/` (gitignored automatically). The same code gives the same answer
+every time. Tessera never calls a model and makes no network calls, so
+Qwen, DeepSeek, Llama-family models, or anything else you serve locally all
+work. The only thing that matters is the agent harness you run them in.
 
-The design choice that matters for this sub: the graph is **pure AST, not
-LLM-extracted**. No embedding/LLM pass to build it — same input, same graph,
-zero tokens, fully local. Because it's ground truth, it can *catch* the model's
-hallucinations rather than add to them: `tessera validate findByIdd` → "✗ not
-found; maybe findById (0.98)".
+- **Before an edit:** `tessera blast <symbol>` ranks the callers a change
+  can affect and lists the tests to run. `tessera context <symbol>` gives
+  the body, callers, callees and tests in one budgeted read.
+- **After an edit:** `tessera verify --changed` reports calls to names that
+  do not exist, wrong argument counts, references to something the change
+  removed, broken imports, and routes or gRPC methods removed while another
+  service still calls them. Exit 1 on a blocking problem.
 
-Runs as an MCP server (Claude Code / Cursor / Cline / Zed / any MCP client), a
-CLI, or a Rust library. 11 languages: TS/TSX/JS, Python, Go, Rust, Java, C, C++,
-C#, Ruby, PHP. Apache-2.0.
+**Plugging it into your agent**
 
-Install without Rust: `npm i -g tessera-codegraph`, `brew`, `curl | sh`, or Docker.
+- **Hooks that hold the agent at "done" until the break is fixed:** Claude
+  Code, Codex CLI, Gemini CLI, Copilot CLI, Cursor, Qwen Code, Augment and
+  Antigravity.
+- **MCP tools only:** OpenCode, Kilo Code, Goose, Continue, Cline, Zed,
+  Kiro, Amp, Warp and others. Nine read-only tools (`find`, `search`,
+  `refs`, `blast`, `verify`, `context`, `path`, `map`, `status`) that return
+  compact, paginated text, so they cost few tokens.
+- **Aider:** no MCP, but its lint loop can run `tessera verify`.
+- **Everything, including humans:** `tessera init --git-hook` installs a
+  pre-commit hook that refuses a commit that breaks a call site or an
+  import.
 
-Repo + benchmarks: https://github.com/iamsaquib8/tessera
+`tessera init` detects which of 21 agents a project uses, shows the diff of
+every config change, and asks before writing.
 
-It's pre-alpha and I'm solo on it — would genuinely value feedback on the query
-design and where the token accounting is misleading. Also curious: would you want
-an optional embedding layer on top for fuzzy recall, or do you prefer keeping it
-100% deterministic?
+**Numbers** (public benchmark, compiler ground truth from scip-typescript
+and scip-java):
+
+- 99.7% of high-confidence references are correct on excalidraw, nest,
+  Ghost and two Spring applications.
+- Recall in TypeScript/JavaScript: 99% of direct calls, 91% of calls on
+  typed receivers, 99% of type references.
+- Lookups take under 50 ms at p95 on 10,000 files, and a 45,000-file
+  repository indexes in under a minute. No GPU, no model.
+
+**Limits**
+
+- Deep resolution (imports, re-exports, tsconfig paths, declared types,
+  overloads) is TypeScript, JavaScript and Java. Python, Go, Rust, C, C++,
+  C#, Ruby and PHP resolve within a file and by unique name, so common
+  names come back as "possible" matches.
+- Hooks block only on high-confidence TS/JS/Java findings.
+- Dynamic dispatch, reflection, DI by name and build-time codegen are not
+  followed. It does not type-check, so keep the compiler and your tests.
+
+Rust, Apache-2.0, 12 languages: https://github.com/iamsaquib8/tessera
+
+A question for this sub: which agent harness do you drive local models
+with, and does it have a hook system? I would like to add adapters where the
+hook contract allows blocking, and I would rather hear which ones people
+actually use than guess.
