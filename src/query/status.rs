@@ -35,6 +35,9 @@ pub struct StatusResult {
     pub languages: Vec<LanguageCount>,
     pub skipped: usize,
     pub unreadable: Vec<String>,
+    pub parse_errors: usize,
+    #[serde(skip)]
+    parse_error_first: Option<String>,
     pub hints: Vec<String>,
 }
 
@@ -58,6 +61,8 @@ pub fn run(ws: &Workspace) -> Result<StatusResult> {
         languages: Vec::new(),
         skipped: 0,
         unreadable: Vec::new(),
+        parse_errors: 0,
+        parse_error_first: None,
         hints: Vec::new(),
     };
     if let Ok(conn) = db::open_ro(&ws.db_path) {
@@ -80,6 +85,9 @@ fn fill_counts(status: &mut StatusResult, conn: &Connection) -> Result<()> {
         |row| row.get::<_, i64>(0),
     )? as usize;
     status.unreadable = db::unreadable_paths(conn)?;
+    let parse_errors = db::parse_error_paths(conn)?;
+    status.parse_errors = parse_errors.len();
+    status.parse_error_first = parse_errors.into_iter().next();
     Ok(())
 }
 
@@ -107,6 +115,13 @@ fn hints(status: &StatusResult) -> Vec<String> {
         hints.push(format!(
             "{count} file{} could not be read (first: {first}); check its permissions.",
             if count == 1 { "" } else { "s" }
+        ));
+    }
+    if let Some(first) = &status.parse_error_first {
+        let count = status.parse_errors;
+        hints.push(format!(
+            "{count} file{} syntax errors (first: {first}); symbols after an error may be missing.",
+            if count == 1 { " has" } else { "s have" }
         ));
     }
     for shadow in &status.shadowing {

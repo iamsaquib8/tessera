@@ -1,5 +1,6 @@
 use std::collections::BTreeSet;
 use std::fmt;
+use std::path::Path;
 
 use anyhow::{bail, Result};
 use rusqlite::Connection;
@@ -42,7 +43,7 @@ pub struct BlastResult {
     pub page: Page,
 }
 
-pub fn run(conn: &Connection, args: &BlastArgs) -> Result<BlastResult> {
+pub fn run(conn: &Connection, root: &Path, args: &BlastArgs) -> Result<BlastResult> {
     let depth = if args.depth == 0 {
         DEFAULT_DEPTH
     } else {
@@ -63,7 +64,7 @@ pub fn run(conn: &Connection, args: &BlastArgs) -> Result<BlastResult> {
             .collect::<Vec<_>>();
         (symbol.clone(), Vec::new(), callers, impact.capped)
     } else if let Some(from) = &args.diff_from {
-        let diff = legacy::diff_impact_conn(conn, from, args.diff_to.as_deref(), depth)?;
+        let diff = legacy::diff_impact_conn(conn, root, from, args.diff_to.as_deref(), depth)?;
         let callers = diff
             .impacted
             .into_iter()

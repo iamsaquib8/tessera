@@ -612,7 +612,7 @@ fn open_fresh(ws: &Workspace, out: &Output) -> Result<Option<Index>> {
             ),
         }
     }
-    let index = Index::open(&ws.db_path)?;
+    let index = Index::open_workspace(ws)?;
     if db::count_files(index.connection())? == 0 {
         let message = format!(
             "No supported source files found under {}.",

@@ -12,7 +12,7 @@ use crate::types::{
     IndexedImport, IndexedReference, IndexedSymbol, Language, ReferenceRecord, SymbolRecord,
 };
 
-pub const SCHEMA_VERSION: i64 = 4;
+pub const SCHEMA_VERSION: i64 = 5;
 /// `PRAGMA application_id` of every Tessera index ("TSSR").
 pub const APPLICATION_ID: i64 = 0x5453_5352;
 
@@ -166,6 +166,7 @@ fn create_schema(conn: &Connection) -> Result<()> {
             loc INTEGER NOT NULL,
             size_bytes INTEGER NOT NULL,
             mtime_ns INTEGER NOT NULL,
+            parse_errors INTEGER NOT NULL DEFAULT 0,
             indexed_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
         );
 
@@ -380,6 +381,18 @@ pub fn indexed_stats(conn: &Connection) -> Result<HashMap<String, (u64, i64)>> {
         ))
     })?;
     Ok(rows.collect::<rusqlite::Result<HashMap<_, _>>>()?)
+}
+
+pub fn mark_parse_errors(conn: &Connection, file_id: i64) -> Result<()> {
+    conn.prepare_cached("UPDATE files SET parse_errors = 1 WHERE id = ?1")?
+        .execute(params![file_id])?;
+    Ok(())
+}
+
+pub fn parse_error_paths(conn: &Connection) -> Result<Vec<String>> {
+    let mut stmt = conn.prepare("SELECT path FROM files WHERE parse_errors = 1 ORDER BY path")?;
+    let rows = stmt.query_map([], |row| row.get(0))?;
+    Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
 }
 
 pub fn unreadable_paths(conn: &Connection) -> Result<Vec<String>> {

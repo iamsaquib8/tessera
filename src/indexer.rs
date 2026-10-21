@@ -345,6 +345,9 @@ fn index_one(
         file.size,
         file.mtime_ns,
     )?;
+    if parsed.has_errors {
+        db::mark_parse_errors(tx, file_id)?;
+    }
     let symbol_ids = db::insert_symbols(tx, file_id, &parsed.symbols)?;
     let mut ids_by_name: HashMap<String, i64> = HashMap::with_capacity(symbol_ids.len());
     for (symbol, id) in parsed.symbols.iter().zip(&symbol_ids) {

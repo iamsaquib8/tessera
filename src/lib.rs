@@ -80,6 +80,17 @@ impl Index {
         })
     }
 
+    /// Open the index of `ws` read-only, reading files under `ws.root` (which
+    /// stays correct after the repository is moved).
+    pub fn open_workspace(ws: &Workspace) -> Result<Self> {
+        let conn = db::open_ro(&ws.db_path)?;
+        Ok(Self {
+            conn,
+            db_path: ws.db_path.clone(),
+            root: ws.root.clone(),
+        })
+    }
+
     /// Build or refresh an index; the library equivalent of `tessera index <root>`.
     pub fn build(
         root: impl AsRef<Path>,
@@ -121,7 +132,7 @@ impl Index {
     }
 
     pub fn blast(&self, args: &BlastArgs) -> Result<BlastResult> {
-        query::blast(&self.conn, args)
+        query::blast(&self.conn, &self.root, args)
     }
 
     pub fn path(&self, args: &PathArgs) -> Result<ConnectResult> {

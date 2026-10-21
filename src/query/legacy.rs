@@ -724,25 +724,48 @@ pub fn edit_prep_conn(
     })
 }
 
+/// Resolves `rev` to a commit id. Anything git could read as an option is
+/// rejected, so a revision can never make `git diff` write files.
+fn resolve_commit(root: &Path, rev: &str) -> Result<String> {
+    if rev.is_empty() || rev.starts_with('-') {
+        anyhow::bail!("invalid git revision {rev:?}");
+    }
+    let out = std::process::Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args(["rev-parse", "--verify", "--quiet", "--end-of-options"])
+        .arg(format!("{rev}^{{commit}}"))
+        .output()
+        .map_err(|e| anyhow::anyhow!("git rev-parse failed: {e}"))?;
+    if !out.status.success() {
+        anyhow::bail!("{rev:?} is not a commit in {}", root.display());
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
+}
+
+/// Without `to_ref` the diff runs against the working tree, which is what the
+/// index reflects. Paths are relative to `root`, which may sit below the git
+/// top level.
 pub fn diff_impact_conn(
     conn: &Connection,
+    root: &Path,
     from_ref: &str,
     to_ref: Option<&str>,
     depth: usize,
 ) -> Result<DiffImpactResult> {
-    use std::process::Command;
-    let root = db::get_meta(conn, "root")?
-        .map(std::path::PathBuf::from)
-        .unwrap_or_else(|| std::path::PathBuf::from("."));
-    let to = to_ref.unwrap_or("HEAD");
-    let range = format!("{from_ref}..{to}");
-
-    let out = Command::new("git")
+    let from = resolve_commit(root, from_ref)?;
+    let mut command = std::process::Command::new("git");
+    command
         .arg("-C")
-        .arg(&root)
-        .arg("diff")
-        .arg("-U0")
-        .arg(&range)
+        .arg(root)
+        .args(["-c", "core.quotePath=false", "diff", "-U0", "--relative"])
+        .args(["--no-color", "--no-ext-diff"])
+        .arg(&from);
+    if let Some(to) = to_ref {
+        command.arg(resolve_commit(root, to)?);
+    }
+    let to = to_ref.unwrap_or("working tree");
+    let out = command
         .output()
         .map_err(|e| anyhow::anyhow!("git diff failed: {e}"))?;
     if !out.status.success() {
@@ -1564,7 +1587,10 @@ pub fn diff_impact(
     depth: usize,
 ) -> Result<DiffImpactResult> {
     let conn = db::open_ro(db_path)?;
-    diff_impact_conn(&conn, from_ref, to_ref, depth)
+    let root = db::get_meta(&conn, "root")?
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("."));
+    diff_impact_conn(&conn, &root, from_ref, to_ref, depth)
 }
 
 pub fn imports(db_path: &Path, path: &str) -> Result<ImportsResult> {
@@ -1958,17 +1984,10 @@ fn html_escape(value: &str) -> String {
 }
 
 pub(crate) fn read_symbol_body(conn: &Connection, symbol: &SymbolRecord) -> Result<String> {
-    let path = db::get_meta(conn, "root")?
-        .map(|root| PathBuf::from(root).join(&symbol.path))
-        .unwrap_or_else(|| PathBuf::from(&symbol.path));
-    let content = fs::read_to_string(path)?;
-    let body = content
-        .lines()
-        .skip(symbol.start_line.saturating_sub(1))
-        .take(symbol.end_line.saturating_sub(symbol.start_line) + 1)
-        .collect::<Vec<_>>()
-        .join("\n");
-    Ok(body)
+    let root = db::get_meta(conn, "root")?
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("."));
+    super::common::read_body(&root, symbol)
 }
 
 fn symbol_exists(conn: &Connection, symbol: &str) -> Result<bool> {

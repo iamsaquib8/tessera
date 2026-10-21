@@ -51,7 +51,7 @@ pub fn run(conn: &Connection, root: &Path, args: &ContextArgs) -> Result<Context
             tokens: 0,
         });
     };
-    let body = read_body(root, &symbol).ok().or(pack.body);
+    let body = read_body(root, &symbol).ok();
     let line =
         |l: &crate::types::SignatureLine| format!("{}  ({}:{})", l.signature, l.path, l.line);
     let mut result = ContextResult {

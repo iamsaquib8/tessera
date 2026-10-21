@@ -107,12 +107,9 @@ fn unresolved(name: &str, line: Option<usize>, suggestions: Vec<SymbolSuggestion
 
 // The call node starts at the receiver, so the text between it and the callee
 // name tells member calls (`x.f()`, `X::f()`, `x->f()`) from bare calls.
+// `column` is tree-sitter's 1-based byte column.
 fn receiver_of<'a>(line: &'a str, column: usize, name: &str) -> Option<&'a str> {
-    let start = line
-        .char_indices()
-        .nth(column.saturating_sub(1))
-        .map(|(i, _)| i)?;
-    let rest = &line[start..];
+    let rest = line.get(column.saturating_sub(1)..)?;
     let end = rest.find(name)?;
     let prefix = rest[..end].trim_end_matches(['.', ':', '-', '>', '?', '!']);
     if prefix.len() == rest[..end].len() {

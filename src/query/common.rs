@@ -48,6 +48,8 @@ pub fn bare_name(symbol: &str) -> &str {
         .unwrap_or(symbol)
 }
 
+/// Reads a symbol's lines the way the indexer read the file (lossy UTF-8, no
+/// BOM), refusing any path that resolves outside `root`.
 pub fn read_body(root: &Path, symbol: &SymbolRecord) -> Result<String> {
     let rel = Path::new(&symbol.path);
     if rel.is_absolute()
@@ -57,7 +59,14 @@ pub fn read_body(root: &Path, symbol: &SymbolRecord) -> Result<String> {
     {
         bail!("refusing to read {} outside the repository", symbol.path);
     }
-    let content = fs::read_to_string(root.join(rel))?;
+    let root = root.canonicalize()?;
+    let path = root.join(rel).canonicalize()?;
+    if !path.starts_with(&root) {
+        bail!("refusing to read {} outside the repository", symbol.path);
+    }
+    let bytes = fs::read(path)?;
+    let content = String::from_utf8_lossy(&bytes);
+    let content = content.strip_prefix('\u{feff}').unwrap_or(&content);
     let start = symbol.start_line.saturating_sub(1);
     let len = symbol.end_line.saturating_sub(symbol.start_line) + 1;
     Ok(content

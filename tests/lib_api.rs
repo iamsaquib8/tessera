@@ -225,6 +225,47 @@ fn status_reports_a_fresh_index() {
     let (_temp, index) = open("go");
     let status = index.status().unwrap();
     assert_eq!(status.freshness, Freshness::Fresh);
-    assert_eq!(status.schema, 4);
+    assert_eq!(status.schema, tessera_codegraph::db::SCHEMA_VERSION);
     assert!(status.files > 0);
+}
+
+#[test]
+fn blast_rejects_diff_revisions_that_look_like_git_options() {
+    let (temp, db) = index_fixture("typescript");
+    let root = temp.path().join("repo");
+    for args in [
+        vec!["init", "-q"],
+        vec!["add", "."],
+        vec![
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@example.com",
+            "commit",
+            "-q",
+            "-m",
+            "one",
+        ],
+    ] {
+        assert!(std::process::Command::new("git")
+            .args(&args)
+            .current_dir(&root)
+            .status()
+            .unwrap()
+            .success());
+    }
+    let target = root.join("PWNED");
+    let index = Index::open(&db).unwrap();
+    let result = index.blast(&BlastArgs {
+        diff_from: Some(format!("--output={}", target.display())),
+        diff_to: Some("txt".to_string()),
+        ..BlastArgs::default()
+    });
+    assert!(result.is_err());
+    let leaked: Vec<_> = std::fs::read_dir(&root)
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .filter(|e| e.file_name().to_string_lossy().starts_with("PWNED"))
+        .collect();
+    assert!(leaked.is_empty(), "git wrote {leaked:?}");
 }

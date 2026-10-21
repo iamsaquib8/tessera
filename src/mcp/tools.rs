@@ -185,7 +185,7 @@ pub(super) fn call(state: &ServerState, params: &Value) -> Result<Value, RpcErro
             "Index is building ({progress}); retry in a few seconds."
         )));
     }
-    let index = match Index::open(&state.ws.db_path) {
+    let index = match Index::open_workspace(&state.ws) {
         Ok(index) => index,
         Err(error) => return Ok(tool_error(&format!("{error:#}"))),
     };
