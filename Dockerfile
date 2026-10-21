@@ -2,6 +2,7 @@ FROM rust:1-bookworm AS build
 WORKDIR /src
 COPY Cargo.toml Cargo.lock ./
 COPY src ./src
+COPY packs ./packs
 RUN cargo build --release --locked --bin tessera
 
 FROM debian:bookworm-slim
