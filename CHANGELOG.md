@@ -2,7 +2,43 @@
 
 All notable changes to Tessera are documented here.
 
-## 0.13.0 - Unreleased
+## 1.0.0 - Unreleased
+
+The first full release since 0.4.0. It ships everything in 0.10 to 0.13 below,
+plus a way to see a change's impact, a pull-request report, and a contract
+for what 1.x keeps stable.
+
+### Added
+
+- **`tessera ui`**: a local page on `127.0.0.1` with the change impact of
+  the working tree (problems to fix, changed symbols, callers by impact,
+  contracts with services on the other side, tests to run), the contract
+  map of services and the routes, gRPC methods, topics and tables between
+  them, a symbol page and search. Nothing loads from the network.
+  `--export DIR` writes the same page as a static site.
+- **`verify --format markdown`**: the pull-request report, one comment with
+  blocking problems, advisory findings, contracts touched, callers of the
+  changed code and tests to run, kept under GitHub's size limit.
+- **GitHub Action** (`uses: iamsaquib8/tessera/action@v1`): installs the
+  release binary, caches the index, and posts or updates one comment per
+  pull request; forks fall back to the job summary. `fail-on: blocking`
+  fails the job on high-confidence problems ([action/README.md](action/README.md)).
+- **Stability** ([docs/stability.md](docs/stability.md)): commands and flags,
+  exit codes, `--json` fields, MCP tool schemas, hook replies and check ids
+  are stable for 1.x, pinned by `tests/stability.rs`.
+- Translated READMEs (Simplified Chinese, Japanese, Korean, Spanish,
+  Brazilian Portuguese), marked as drafts until a native speaker reviews
+  them, and a pitch kit in `launch/pitch/`.
+
+### Changed
+
+- V5 names a removed gRPC method after the `.proto` service that declares
+  it when the server file registers more than one service
+  (`ShippingService/GetQuote`, not `*/GetQuote`).
+- The README lists every agent `init` sets up, with what each one gets; a
+  test keeps the list in step with the registry.
+
+## 0.13.0 - shipped in 1.0.0
 
 The contract-map release. Tessera sees how services talk to each other.
 
@@ -34,7 +70,7 @@ The contract-map release. Tessera sees how services talk to each other.
 
 - MCP lists nine tools.
 
-## 0.12.0 - Unreleased
+## 0.12.0 - shipped in 1.0.0
 
 The edit-safety release. Tessera checks every edit an agent makes and holds
 it at "done" until the breakage is fixed.
@@ -84,7 +120,7 @@ it at "done" until the breakage is fixed.
   module; default exports of other expressions and destructured exports
   are recognised.
 
-## 0.11.0 - Unreleased
+## 0.11.0 - shipped in 1.0.0
 
 The precision release. References in TypeScript, JavaScript, and Java are
 resolved, not matched by name, and every one carries a confidence that is
@@ -127,7 +163,7 @@ measured against compiler ground truth.
   index per file; a 45,000-file repository indexes with resolution in 54 s.
 - The index schema is v6; existing indexes rebuild automatically.
 
-## 0.10.0 - Unreleased
+## 0.10.0 - shipped in 1.0.0
 
 The foundation release. Tessera is repositioned as deterministic edit safety
 for AI coding agents, and the basics are rebuilt so they can be trusted on

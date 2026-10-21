@@ -11,12 +11,14 @@ demo. Nothing is claimed until it can be reproduced. The full design is in
 
 | | Milestone | Status |
 | --- | --- | --- |
-| v0.10 | Foundation | done, release pending |
-| v0.11 | Precision + public accuracy benchmark | done, release pending |
-| v0.12 | Edit-safety loop (hooks in every agent that supports them) | done, release pending |
-| v0.13 | Cross-repo contract map | done, release pending |
-| v1.0 | Change-impact UI, GitHub Action, stable contracts | planned |
-| v1.x | Team & CI, architecture rules, precise mode, editors, runtime truth, data lineage, plugins, agent memory | planned |
+| v0.10 | Foundation | done, ships in 1.0.0 |
+| v0.11 | Precision + public accuracy benchmark | done, ships in 1.0.0 |
+| v0.12 | Edit-safety loop (hooks in every agent that supports them) | done, ships in 1.0.0 |
+| v0.13 | Cross-repo contract map | done, ships in 1.0.0 |
+| v1.0 | Change-impact UI, GitHub Action, stable contracts | done, release pending |
+| v1.1 | Contract map, completed: mount prefixes, GraphQL, config keys, `path` across repositories | next |
+| v1.2 | Team & CI: test selection, index cache, code scanning | planned |
+| v1.x | Architecture rules, precise mode, editors, runtime truth, data lineage, plugins, agent memory | planned |
 
 ## v0.10: Foundation
 
@@ -117,11 +119,48 @@ corpus.
 - A docs site, translated READMEs, and CLI, MCP, and JSON contracts frozen for
   1.x.
 
-## After 1.0
+**Status:** built. `tessera ui` serves change impact, the contract map, a
+symbol page and search from `127.0.0.1`, and `--export` writes a static
+site. Checked on microservices-demo and on a 45,000-file repository (map
+in about a second, 31 services). `verify --format markdown` is the
+pull-request report, and the Action posts it as one comment, falling back to
+the job summary on forks; it runs on this repository's own pull requests.
+[docs/stability.md](docs/stability.md) lists what 1.x keeps, and
+`tests/stability.rs` pins it. Translated READMEs are drafts until reviewed.
+
+## v1.1: The contract map, completed
+
+What v0.13 left open, each with a fixture and a benchmark row:
+
+- Express routers mounted under a prefix (`app.use("/api", router)`).
+- GraphQL schemas, resolvers and client operations.
+- Config keys: who sets an environment variable or feature flag, and who
+  reads it.
+- `path` across repositories in a workspace.
+- Go (`net/http`, chi, gin, echo), Python (FastAPI, Flask, Django) and Ruby
+  (Rails) routes and clients.
+- HTTP and topic ground truth in tessera-bench, and a third contract corpus
+  nobody has tuned against.
+
+**Gate:** published route and topic precision on two corpora, no wrong link
+on the untouched one.
+
+## v1.2: Team and CI
+
+- `tessera affected <rev>`: the tests a change reaches, as a list a CI job
+  can run, for every language.
+- An index cache keyed by commit, shared between CI runs and teammates.
+- SARIF uploaded to code scanning by the Action, so findings show inline.
+- Exit-code and annotation modes for GitLab, Buildkite and Jenkins.
+
+**Gate:** on three public monorepos, `affected` selects every test that
+fails after a seeded break, and skips at least half of the suite on a
+typical change.
+
+## Later in 1.x
 
 | Theme | What |
 | --- | --- |
-| Team & CI | `tessera affected` for test selection across languages, an index cache keyed by commit, SARIF in code scanning |
 | Architecture rules | Layer, forbidden-call, and cycle rules enforced by `verify`, hooks, and CI |
 | Precise mode | SCIP import for compiler-grade edges, SCIP export, and an optional `tessera lsp` |
 | Editors | VS Code and JetBrains extensions over the local binary |
@@ -129,6 +168,8 @@ corpus.
 | Data lineage | Who reads and writes which tables and columns; PII rules in `verify` |
 | Extension platform | WASM extractor and framework-pack plugins; bring your own grammar |
 | Agent memory | Notes tied to symbols that expire when the code changes |
+| Refactor plans | `plan rename`, `plan move`, `plan signature`: every site an agent must edit for a change, in order, then `verify` checks the result |
+| Ownership | CODEOWNERS and history on impact: who owns the callers and services a change reaches |
 
 **Every release also brings:**
 - Deep-tier languages (Python, Ruby, Go, C#, Kotlin).
