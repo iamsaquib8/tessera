@@ -85,7 +85,12 @@ fn the_comment_lookup_takes_one_comment_across_pages() {
             .spawn()
             .unwrap();
         use std::io::Write;
-        child.stdin.take().unwrap().write_all(page.as_bytes()).unwrap();
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(page.as_bytes())
+            .unwrap();
         ids.push_str(&String::from_utf8(child.wait_with_output().unwrap().stdout).unwrap());
     }
     assert_eq!(ids.trim(), "2");
