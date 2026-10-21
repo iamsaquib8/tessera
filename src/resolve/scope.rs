@@ -1445,11 +1445,11 @@ impl<'c> Resolver<'c> {
         let file = self.file(sym.file_id)?;
         // A type alias, a variable, or a TypeScript interface (index
         // signatures, declaration merging) can carry members it does not
-        // declare, and an enum or a record has members that are not symbols
-        // (`Kind.A`, `valueOf`, a record's accessors); only classes and
-        // Java's interfaces list them all.
+        // declare, and an enum has members that are not symbols (`Kind.A`,
+        // `valueOf`); only classes, records and Java's interfaces list them
+        // all.
         let closable = match sym.kind.as_str() {
-            "class" => true,
+            "class" | "record" => true,
             "interface" | "annotation" => file.language == Language::Java,
             _ => false,
         };

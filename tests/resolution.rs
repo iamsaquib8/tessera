@@ -807,6 +807,33 @@ fn enum_members_and_implicit_members_are_never_missing() {
 }
 
 #[test]
+fn java_record_components_are_accessor_methods() {
+    let (_temp, ws) = repo_with(&[
+        (
+            "PetRequest.java",
+            "record PetRequest(int id, String name, Owner owner) {}\n",
+        ),
+        (
+            "Owner.java",
+            "class Owner {\n  String getName() { return \"\"; }\n}\n",
+        ),
+        (
+            "Main.java",
+            "class Main {\n  void run(PetRequest r) {\n    r.id();\n    r.owner().getName();\n    r.nme();\n  }\n}\n",
+        ),
+    ]);
+    let all = edges(&ws.db_path);
+    assert_has(
+        &all,
+        &[
+            "Main.run -call-> PetRequest.java:PetRequest.id [high/hint]",
+            "Main.run -call-> PetRequest.java:PetRequest.owner [high/hint]",
+            "Main.run -call-> nme [high/missing]",
+        ],
+    );
+}
+
+#[test]
 fn a_java_call_on_a_this_field_uses_the_field_type() {
     let (_temp, ws) = repo_with(&[
         (
