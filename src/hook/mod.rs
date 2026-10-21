@@ -6,7 +6,7 @@
 pub mod payload;
 pub mod session;
 
-use std::collections::{BTreeSet, HashSet};
+use std::collections::{BTreeMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -383,16 +383,15 @@ impl Hook<'_> {
         let scope: HashSet<String> = session.edited.iter().cloned().collect();
         let result = query::verify_problems(&conn, &self.ws.root, &scope)?;
         let now = open_problems(&result);
-        let persisting = now.intersection(&session.open).count();
-        let fixed = session.open.difference(&now).count();
-        session.open = now;
+        let (persisting, fixed) = compare(&session.problems, &now);
+        session.problems = now;
         if result.ok {
             return Ok(None);
         }
         let brief = result.agent_brief();
         Ok(Some(if persisting > 0 && fixed == 0 {
             session.counts.post_blocks += 1;
-            session.blocked.extend(session.open.iter().cloned());
+            session.blocked.extend(session.problems.keys().cloned());
             Reply::Block(format!(
                 "{brief}\nThese were already there after your previous edit. Fix them before you go on."
             ))
@@ -442,13 +441,13 @@ impl Hook<'_> {
         let conn = db::open_ro(&self.ws.db_path)?;
         let scope: HashSet<String> = scope.into_iter().collect();
         let result = query::verify_paths(&conn, &self.ws.root, &scope, &changes)?;
-        session.open = open_problems(&result);
+        session.problems = open_problems(&result);
         if result.ok {
             return Ok(None);
         }
         session.stop_blocks += 1;
         session.counts.stop_blocks += 1;
-        session.blocked.extend(session.open.iter().cloned());
+        session.blocked.extend(session.problems.keys().cloned());
         let mut reason = result.agent_brief();
         if !result.tests.is_empty() {
             let tests: Vec<&str> = result.tests.iter().take(5).map(String::as_str).collect();
@@ -462,20 +461,33 @@ impl Hook<'_> {
     }
 }
 
-fn open_problems(result: &VerifyResult) -> BTreeSet<String> {
-    result
-        .findings
-        .iter()
-        .filter(|f| f.blocking)
-        .map(|f| {
-            format!(
-                "{} {} {}",
-                f.id,
-                f.path.as_deref().unwrap_or("-"),
-                f.message
-            )
-        })
-        .collect()
+/// Blocking findings as `id path message`, counted: several call sites of
+/// one missing name share a key.
+fn open_problems(result: &VerifyResult) -> BTreeMap<String, u32> {
+    let mut out = BTreeMap::new();
+    for f in result.findings.iter().filter(|f| f.blocking) {
+        let key = format!(
+            "{} {} {}",
+            f.id,
+            f.path.as_deref().unwrap_or("-"),
+            f.message
+        );
+        *out.entry(key).or_insert(0) += 1;
+    }
+    out
+}
+
+/// How many problems survived from `before` to `now`, and how many went
+/// away; one fewer call site of a missing name counts as fixed.
+fn compare(before: &BTreeMap<String, u32>, now: &BTreeMap<String, u32>) -> (u32, u32) {
+    let mut persisting = 0;
+    let mut fixed = 0;
+    for (key, &was) in before {
+        let is = now.get(key).copied().unwrap_or(0);
+        persisting += was.min(is);
+        fixed += was.saturating_sub(is);
+    }
+    (persisting, fixed)
 }
 
 /// Line ranges (1-based, inclusive) of every place `old_texts` occurs;

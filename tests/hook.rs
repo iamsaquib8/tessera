@@ -10,8 +10,18 @@ use support::{copy_dir, fixture_dir};
 use tempfile::TempDir;
 
 fn repo() -> TempDir {
+    repo_with(&[])
+}
+
+/// The TypeScript fixture plus `extra` files, committed.
+fn repo_with(extra: &[(&str, &str)]) -> TempDir {
     let temp = TempDir::new().unwrap();
     copy_dir(&fixture_dir("typescript"), temp.path());
+    for (path, content) in extra {
+        let path = temp.path().join(path);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, content).unwrap();
+    }
     for args in [
         &["init", "-q"][..],
         &["add", "."],
@@ -187,6 +197,60 @@ fn a_two_step_rename_ends_clean() {
         edit_payload(root, "src/users/repo.ts", "formatName", "formatDisplayName"),
     );
     assert!(step2.get("decision").is_none(), "{step2}");
+    assert_eq!(
+        claude(root, "Stop", json!({ "stop_hook_active": false })),
+        Value::Null
+    );
+}
+
+/// Indexes `root` before the session starts, so no background index races
+/// the test's edits.
+fn start_indexed(root: &Path) {
+    Command::cargo_bin("tessera")
+        .unwrap()
+        .current_dir(root)
+        .args(["--quiet", "index"])
+        .assert()
+        .success();
+    claude(root, "SessionStart", json!({}));
+}
+
+fn replace_in(root: &Path, path: &str, from: &str, to: &str) {
+    let content = fs::read_to_string(root.join(path)).unwrap();
+    assert!(content.contains(from), "{path} lacks {from:?}");
+    write(root, path, &content.replacen(from, to, 1));
+}
+
+const THREE_CALLS: &str = "import { UserRepo } from \"./users/repo\";\n\nconst repo = new UserRepo();\nexport const a = repo.findById(\"a\");\nexport const b = repo.findById(\"b\");\nexport const c = repo.findById(\"c\");\n";
+
+#[test]
+fn a_rename_fixed_one_call_site_at_a_time_is_never_interrupted() {
+    let temp = repo_with(&[("src/c.ts", THREE_CALLS)]);
+    let root = temp.path();
+    start_indexed(root);
+    let repo_ts = fs::read_to_string(root.join("src/users/repo.ts")).unwrap();
+    write(
+        root,
+        "src/users/repo.ts",
+        &repo_ts.replace("findById", "findUser"),
+    );
+    let rename = claude(
+        root,
+        "PostToolUse",
+        edit_payload(root, "src/users/repo.ts", "findById", "findUser"),
+    );
+    assert!(rename.get("decision").is_none(), "{rename}");
+    for (step, call) in ["\"a\"", "\"b\"", "\"c\""].iter().enumerate() {
+        let from = format!("repo.findById({call})");
+        let to = format!("repo.findUser({call})");
+        replace_in(root, "src/c.ts", &from, &to);
+        let out = claude(
+            root,
+            "PostToolUse",
+            edit_payload(root, "src/c.ts", &from, &to),
+        );
+        assert!(out.get("decision").is_none(), "step {step}: {out}");
+    }
     assert_eq!(
         claude(root, "Stop", json!({ "stop_hook_active": false })),
         Value::Null

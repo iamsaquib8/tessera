@@ -26,8 +26,9 @@ pub struct Session {
     pub edited: BTreeSet<String>,
     /// Symbols the pre-edit note already announced, as `path#qualified name`.
     pub announced: BTreeSet<String>,
-    /// Blocking findings after the last edit, as `id path message`.
-    pub open: BTreeSet<String>,
+    /// Blocking findings after the last edit, as `id path message` with how
+    /// many call sites have each, so fixing one of several counts.
+    pub problems: BTreeMap<String, u32>,
     /// Stop blocks since the turn began.
     pub stop_blocks: u32,
     /// Hash of the last edit event, to answer a duplicate only once.
