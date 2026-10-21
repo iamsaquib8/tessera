@@ -54,6 +54,14 @@ impl LanguageSupport for Java {
     }
 
     fn symbol(&self, cx: &Cx<'_>, node: Node<'_>) -> Option<IndexedSymbol> {
+        // A record component is also its accessor method: `record P(int x)`
+        // has `x()`.
+        if is_record_component(node) {
+            let name = cx.text(node.child_by_field_name("name")?);
+            let mut symbol = cx.symbol(name, "method", node, true);
+            symbol.arity = Some((0, Some(0)));
+            return Some(symbol);
+        }
         let kind = match node.kind() {
             "class_declaration" => "class",
             "interface_declaration" => "interface",
@@ -228,7 +236,20 @@ impl LanguageSupport for Java {
                     .child_by_field_name("type")
                     .and_then(|t| type_name(cx, t));
                 if let (Some(ty), Some(name)) = (ty, node.child_by_field_name("name")) {
-                    push(cx.text(name), ty, HintOrigin::Param);
+                    let name = cx.text(name);
+                    if is_record_component(node) {
+                        // The accessor returns the component, and the
+                        // record's methods see it as a field.
+                        push(name.clone(), ty.clone(), HintOrigin::Return);
+                        out.push(IndexedTypeHint {
+                            scope: cx.scope_around(node).map(ToOwned::to_owned),
+                            name: format!("this.{name}"),
+                            type_name: ty,
+                            origin: HintOrigin::Field,
+                        });
+                    } else {
+                        push(name, ty, HintOrigin::Param);
+                    }
                 }
             }
             "method_declaration" => {
@@ -371,6 +392,16 @@ fn callee_text(cx: &Cx<'_>, invocation: Node<'_>) -> Option<String> {
         }
         Some(_) => None,
     }
+}
+
+/// A parameter in a record header (`record Point(int x, int y)`).
+fn is_record_component(node: Node<'_>) -> bool {
+    node.kind() == "formal_parameter"
+        && node
+            .parent()
+            .filter(|params| params.kind() == "formal_parameters")
+            .and_then(|params| params.parent())
+            .is_some_and(|record| record.kind() == "record_declaration")
 }
 
 fn arity(params: Node<'_>) -> (u16, Option<u16>) {

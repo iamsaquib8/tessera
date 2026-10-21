@@ -31,6 +31,27 @@ for what 1.x keeps stable.
   Brazilian Portuguese), marked as drafts until a native speaker reviews
   them, and a pitch kit in `launch/pitch/`.
 
+### Fixed (from the pre-release review)
+
+- `verify` and the hooks no longer report breaks in code nobody touched:
+  CommonJS `module.exports = …`, `export * as ns`, enum members, imports of
+  JSON/CSS/SVG and generated files, plain-JavaScript argument counts, and
+  calls on JavaScript globals. On Ghost, a comment-only edit used to raise 74
+  blocking findings; it now raises none.
+- Parameters and local variables shadow an import of the same name (schema
+  v9 records them).
+- A body-only edit to a file imported by thousands re-resolves that file
+  alone; a signature change on such a file finishes the rest in the
+  background instead of stalling the hook (25.6 s → 0.3 s on a 45k-file
+  repository).
+- Hooks block only on problems the agent introduced, never interrupt a
+  rename fixed one call site at a time, answer once per event in the shape
+  of the client that sent it, and bound Stop's time.
+- `init` never writes TOML or YAML that no longer parses, re-plans a file
+  that changed after the preview, and writes atomically.
+- V5 no longer blocks on requests to external APIs, parameter-only matches,
+  or routes moved under a mounted router.
+
 ### Changed
 
 - V5 names a removed gRPC method after the `.proto` service that declares

@@ -9,11 +9,11 @@ use rusqlite::{params, Connection, OpenFlags, OptionalExtension};
 
 use crate::extract::truncate_chars;
 use crate::types::{
-    IndexedBinding, IndexedImport, IndexedReference, IndexedSymbol, IndexedTypeHint, Language,
-    ReferenceRecord, SymbolRecord,
+    IndexedBinding, IndexedImport, IndexedLocal, IndexedReference, IndexedSymbol, IndexedTypeHint,
+    Language, ReferenceRecord, SymbolRecord,
 };
 
-pub const SCHEMA_VERSION: i64 = 8;
+pub const SCHEMA_VERSION: i64 = 9;
 /// `PRAGMA application_id` of every Tessera index ("TSSR").
 pub const APPLICATION_ID: i64 = 0x5453_5352;
 
@@ -248,6 +248,7 @@ fn create_schema(conn: &Connection) -> Result<()> {
         CREATE INDEX idx_edges_to_id ON edges(to_symbol_id);
         CREATE INDEX idx_edges_from ON edges(from_symbol_id);
         CREATE INDEX idx_edges_ref ON edges(ref_id);
+        CREATE INDEX idx_edges_missing ON edges(missing_in) WHERE missing_in IS NOT NULL;
 
         CREATE TABLE imports (
             id INTEGER PRIMARY KEY,
@@ -285,6 +286,17 @@ fn create_schema(conn: &Connection) -> Result<()> {
         );
 
         CREATE INDEX idx_hints_file ON type_hints(file_id);
+
+        -- Parameters and local variables a file calls or uses as receivers;
+        -- each shadows imports and symbols of its name in its scope.
+        CREATE TABLE locals (
+            id INTEGER PRIMARY KEY,
+            file_id INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,
+            scope TEXT,
+            name TEXT NOT NULL
+        );
+
+        CREATE INDEX idx_locals_file ON locals(file_id);
 
         -- Contract facts (routes, gRPC methods, topics, tables). Facts with
         -- the same key link at query time.
@@ -324,6 +336,7 @@ pub fn reset(conn: &Connection) -> Result<()> {
         DELETE FROM imports;
         DELETE FROM import_bindings;
         DELETE FROM type_hints;
+        DELETE FROM locals;
         DELETE FROM facts;
         DELETE FROM edges;
         DELETE FROM refs;
@@ -658,6 +671,15 @@ pub fn insert_hints(conn: &Connection, file_id: i64, hints: &[IndexedTypeHint]) 
             h.type_name,
             h.origin.as_str()
         ])?;
+    }
+    Ok(())
+}
+
+pub fn insert_locals(conn: &Connection, file_id: i64, locals: &[IndexedLocal]) -> Result<()> {
+    let mut insert =
+        conn.prepare_cached("INSERT INTO locals(file_id, scope, name) VALUES (?1, ?2, ?3)")?;
+    for local in locals {
+        insert.execute(params![file_id, local.scope, local.name])?;
     }
     Ok(())
 }

@@ -1,9 +1,11 @@
 use anyhow::{anyhow, Result};
 use tree_sitter::{Node, Parser};
 
+use std::collections::HashSet;
+
 use crate::types::{
-    IndexedBinding, IndexedImport, IndexedReference, IndexedSymbol, IndexedTypeHint, Language,
-    Receiver,
+    IndexedBinding, IndexedImport, IndexedLocal, IndexedReference, IndexedSymbol, IndexedTypeHint,
+    Language, Receiver,
 };
 
 mod lang;
@@ -19,6 +21,9 @@ pub struct ParsedFile {
     pub imports: Vec<IndexedImport>,
     pub bindings: Vec<IndexedBinding>,
     pub hints: Vec<IndexedTypeHint>,
+    /// Parameters and local variables whose names the file calls or uses
+    /// as receivers.
+    pub locals: Vec<IndexedLocal>,
     pub module: Option<String>,
     pub has_errors: bool,
     /// Contract facts; empty unless parsed with [`parse_file_at`].
@@ -41,6 +46,7 @@ pub trait LanguageSupport: Sync {
     }
     fn bindings(&self, _cx: &Cx<'_>, _node: Node<'_>, _out: &mut Vec<IndexedBinding>) {}
     fn hints(&self, _cx: &Cx<'_>, _node: Node<'_>, _out: &mut Vec<IndexedTypeHint>) {}
+    fn locals(&self, _cx: &Cx<'_>, _node: Node<'_>, _out: &mut Vec<IndexedLocal>) {}
     fn module(&self, _cx: &Cx<'_>, _node: Node<'_>) -> Option<String> {
         None
     }
@@ -51,17 +57,30 @@ pub fn support_for(language: Language) -> &'static dyn LanguageSupport {
 }
 
 /// The arguments in a call's argument list, comments aside; `None` for a
-/// tagged template, whose "arguments" are a template string.
+/// tagged template, whose "arguments" are a template string, and for a call
+/// that spreads a list into its arguments (`f(...xs)`, `f(*xs)`).
 pub fn argument_count(args: Node<'_>) -> Option<u16> {
+    const SPREADS: &[&str] = &[
+        "spread_element",
+        "list_splat",
+        "dictionary_splat",
+        "splat_argument",
+        "hash_splat_argument",
+        "variadic_argument",
+        "variadic_unpacking",
+    ];
     if args.kind() == "template_string" {
         return None;
     }
     let mut cursor = args.walk();
-    let count = args
+    let args: Vec<Node<'_>> = args
         .named_children(&mut cursor)
         .filter(|arg| !arg.is_extra())
-        .count();
-    Some(count as u16)
+        .collect();
+    if args.iter().any(|arg| SPREADS.contains(&arg.kind())) {
+        return None;
+    }
+    Some(args.len() as u16)
 }
 
 pub fn parse_file(language: Language, content: &str) -> Result<ParsedFile> {
@@ -95,6 +114,7 @@ fn parse(language: Language, content: &str) -> Result<(ParsedFile, tree_sitter::
         imports: Vec::new(),
         bindings: Vec::new(),
         hints: Vec::new(),
+        locals: Vec::new(),
         module: None,
         has_errors: tree.root_node().has_error(),
         facts: Vec::new(),
@@ -126,6 +146,7 @@ fn parse(language: Language, content: &str) -> Result<(ParsedFile, tree_sitter::
         }
         support.bindings(&cx, node, &mut out.bindings);
         support.hints(&cx, node, &mut out.hints);
+        support.locals(&cx, node, &mut out.locals);
         if out.module.is_none() {
             out.module = support.module(&cx, node);
         }
@@ -138,10 +159,34 @@ fn parse(language: Language, content: &str) -> Result<(ParsedFile, tree_sitter::
             }
             if !cursor.goto_parent() {
                 drop(cursor);
+                keep_used_locals(&mut out);
                 return Ok((out, tree));
             }
         }
     }
+}
+
+/// Drops locals whose names no reference uses: only a called name or a
+/// receiver can be shadowed.
+fn keep_used_locals(out: &mut ParsedFile) {
+    let used: HashSet<&str> = out
+        .references
+        .iter()
+        .map(|r| match (r.receiver, r.receiver_name.as_deref()) {
+            (Receiver::Name, Some(receiver)) => {
+                let receiver = receiver.strip_prefix("new:").unwrap_or(receiver);
+                receiver.split('.').next().unwrap_or(receiver)
+            }
+            _ => r.symbol_name.as_str(),
+        })
+        .collect();
+    let mut seen = HashSet::new();
+    let locals = std::mem::take(&mut out.locals);
+    out.locals = locals
+        .into_iter()
+        .filter(|local| used.contains(local.name.as_str()))
+        .filter(|local| seen.insert((local.scope.clone(), local.name.clone())))
+        .collect();
 }
 
 #[derive(Debug, Clone)]
@@ -177,6 +222,14 @@ impl<'a> Cx<'a> {
         {
             self.scope.pop();
         }
+    }
+
+    /// TypeScript does not check this file (`// @ts-nocheck` at its top).
+    pub fn ts_nocheck(&self) -> bool {
+        self.lines
+            .iter()
+            .take(20)
+            .any(|line| line.contains("@ts-nocheck"))
     }
 
     pub fn current_scope(&self) -> Option<&str> {
@@ -277,7 +330,7 @@ impl<'a> Cx<'a> {
     }
 
     pub fn classify_receiver(&self, node: Node<'_>) -> (Receiver, Option<String>) {
-        if node.kind() == "member_expression" {
+        if matches!(node.kind(), "member_expression" | "field_access") {
             if let Some(path) = self.member_path(node) {
                 return (Receiver::Name, Some(path));
             }
@@ -323,14 +376,17 @@ impl<'a> Cx<'a> {
         plain.then(|| name.to_string())
     }
 
-    /// `a.b.c` or `this.a.b` as text when every link is a plain name, so the
-    /// resolver can follow field types; `None` for calls, indexing and the like.
+    /// `a.b.c` or `this.a.b` (a JS member expression or a Java field access)
+    /// as text when every link is a plain name, so the resolver can follow
+    /// field types; `None` for calls, indexing and the like.
     pub fn member_path(&self, node: Node<'_>) -> Option<String> {
         let mut parts = Vec::new();
         let mut current = node;
-        while current.kind() == "member_expression" {
-            let property = current.child_by_field_name("property")?;
-            if property.kind() != "property_identifier" {
+        while matches!(current.kind(), "member_expression" | "field_access") {
+            let property = current
+                .child_by_field_name("property")
+                .or_else(|| current.child_by_field_name("field"))?;
+            if !matches!(property.kind(), "property_identifier" | "identifier") {
                 return None;
             }
             parts.push(self.text(property));

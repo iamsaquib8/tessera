@@ -998,6 +998,7 @@ struct BindingRow {
     source: String,
     status: String,
     target: Option<String>,
+    kind: String,
 }
 
 impl BindingRow {
@@ -1014,7 +1015,7 @@ impl BindingRow {
 
 fn binding_rows(conn: &Connection) -> Result<Vec<BindingRow>> {
     let mut stmt = conn.prepare(
-        "SELECT f.path, b.line, b.local, b.imported, b.source, b.status, b.target_path
+        "SELECT f.path, b.line, b.local, b.imported, b.source, b.status, b.target_path, b.kind
          FROM import_bindings b JOIN files f ON f.id = b.file_id
          WHERE b.status != 'ok'",
     )?;
@@ -1028,6 +1029,7 @@ fn binding_rows(conn: &Connection) -> Result<Vec<BindingRow>> {
                 source: row.get(4)?,
                 status: row.get(5)?,
                 target: row.get(6)?,
+                kind: row.get(7)?,
             })
         })?
         .collect::<rusqlite::Result<_>>()?;
@@ -1058,6 +1060,8 @@ fn broken_imports(
         let key = row.key();
         let message = if row.status == "missing_module" {
             format!("`{}` does not resolve to a file", row.source)
+        } else if row.kind.starts_with("java") {
+            format!("`{}` is not a class in this repository", row.source)
         } else {
             format!(
                 "`{}` is not exported by {}",

@@ -228,6 +228,9 @@ pub enum BindingKind {
     RequireMember,
     ReExport,
     ReExportAll,
+    /// The module's exports are more than the file shows (`module.exports =
+    /// makeApi()`): `local` is `*` for every name, or `default`.
+    OpenExports,
     JavaSingle,
     JavaWildcard,
     JavaStatic,
@@ -243,12 +246,18 @@ impl BindingKind {
             Self::RequireMember => "require_member",
             Self::ReExport => "re_export",
             Self::ReExportAll => "re_export_all",
+            Self::OpenExports => "open_exports",
             Self::JavaSingle => "java_single",
             Self::JavaWildcard => "java_wildcard",
             Self::JavaStatic => "java_static",
         }
     }
 }
+
+/// The `imported` name of a CommonJS re-export of a whole required module
+/// (`exports.mailer = require("./mailer")`): its default export when it has
+/// one, else the module object itself.
+pub const REQUIRED_MODULE: &str = "module.exports";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct IndexedBinding {
@@ -257,6 +266,14 @@ pub struct IndexedBinding {
     pub source: String,
     pub kind: BindingKind,
     pub line: usize,
+}
+
+/// A parameter or local variable: not a symbol, but it shadows imports and
+/// symbols of the same name in its scope.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct IndexedLocal {
+    pub scope: Option<String>,
+    pub name: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

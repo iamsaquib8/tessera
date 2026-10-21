@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs::{self, File, OpenOptions, TryLockError};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -11,7 +11,7 @@ use sha2::{Digest, Sha256};
 
 use crate::config::TesseraConfig;
 use crate::db;
-use crate::resolve::{self, ResolveReport, ResolveScope};
+use crate::resolve::{self, Before, ResolveReport, ResolveScope};
 use crate::walk::{self, FileStatus, SkipReason, SourceFile, WalkOptions};
 use crate::workspace::Workspace;
 
@@ -157,7 +157,8 @@ pub fn index_path_locked(
         .collect();
 
     let mut changed_ids: Vec<i64> = Vec::new();
-    let outcomes = index_discovered(&tx, &discovery.files, full, &mut report)?;
+    let mut before = Before::default();
+    let outcomes = index_discovered(&tx, &discovery.files, full, &mut report, &mut before)?;
     for (file, outcome) in discovery.files.iter().zip(outcomes) {
         match outcome {
             FileOutcome::Indexed(id) => {
@@ -175,6 +176,14 @@ pub fn index_path_locked(
     }
 
     if !full {
+        let visited: HashSet<i64> = visited_ids.iter().copied().collect();
+        let indexed: Vec<i64> = tx
+            .prepare("SELECT id FROM files")?
+            .query_map([], |row| row.get(0))?
+            .collect::<rusqlite::Result<_>>()?;
+        for id in indexed.into_iter().filter(|id| !visited.contains(id)) {
+            before.record(&tx, id)?;
+        }
         report.files_removed = db::delete_files_not_in(&tx, &visited_ids)?;
     }
     report.files_skipped = skipped.len();
@@ -182,10 +191,10 @@ pub fn index_path_locked(
     if full {
         db::fts_rebuild(&tx)?;
     }
-    let scope = if full {
+    let scope = if full || resolve::pending(&tx)? {
         Some(ResolveScope::All)
     } else if !changed_ids.is_empty() || report.files_removed > 0 {
-        Some(ResolveScope::Changed(changed_ids))
+        Some(ResolveScope::Changed(changed_ids, before))
     } else {
         None
     };
@@ -228,11 +237,13 @@ pub fn index_files(ws: &Workspace, rel_paths: &[String]) -> Result<IndexReport> 
     let mut report = IndexReport::new(IndexMode::Incremental);
     let tx = Transaction::new_unchecked(&conn, TransactionBehavior::Immediate)?;
     let mut changed_ids: Vec<i64> = Vec::new();
+    let mut before = Before::default();
     for rel_path in rel_paths {
         let rel_path = rel_path.trim_start_matches("./").replace('\\', "/");
         let status = walk::describe(&root, &rel_path, &config, &options)?;
         let FileStatus::Source(file) = status else {
             if let Some((id, _)) = db::file_sha(&tx, &rel_path)? {
+                before.record(&tx, id)?;
                 db::delete_file_cascade(&tx, id)?;
                 report.files_removed += 1;
             }
@@ -248,9 +259,10 @@ pub fn index_files(ws: &Workspace, rel_paths: &[String]) -> Result<IndexReport> 
         db::delete_skipped(&tx, &rel_path)?;
         let known_sha = db::file_sha(&tx, &rel_path)?.map(|(_, sha)| sha);
         let prepared = prepare(&file, known_sha.as_deref());
-        match store(&tx, &file, prepared, false, &mut report)? {
+        match store(&tx, &file, prepared, false, &mut report, &mut before)? {
             FileOutcome::Skipped(reason) => {
                 if let Some((id, _)) = db::file_sha(&tx, &rel_path)? {
+                    before.record(&tx, id)?;
                     db::delete_file_cascade(&tx, id)?;
                 }
                 db::upsert_skipped(&tx, &rel_path, file.size, file.mtime_ns, reason.as_str())?;
@@ -264,7 +276,7 @@ pub fn index_files(ws: &Workspace, rel_paths: &[String]) -> Result<IndexReport> 
         report.resolve = Some(resolve::resolve(
             &tx,
             &root,
-            ResolveScope::Changed(changed_ids),
+            ResolveScope::Changed(changed_ids, before),
         )?);
     }
     tx.commit()?;
@@ -322,7 +334,7 @@ enum Prepared {
         sha: String,
         loc: usize,
         lossy: bool,
-        parsed: std::result::Result<ParsedFile, String>,
+        parsed: Box<std::result::Result<ParsedFile, String>>,
     },
 }
 
@@ -354,8 +366,10 @@ fn prepare(file: &SourceFile, known_sha: Option<&str>) -> Prepared {
     }
     Prepared::Parsed {
         loc: content.lines().count(),
-        parsed: parse_file_at(file.language, &file.rel_path, &content)
-            .map_err(|error| error.to_string()),
+        parsed: Box::new(
+            parse_file_at(file.language, &file.rel_path, &content)
+                .map_err(|error| error.to_string()),
+        ),
         sha,
         lossy,
     }
@@ -427,13 +441,15 @@ fn prepare_all(
     })
 }
 
-/// Writes one prepared file. `full` means the index was emptied first.
+/// Writes one prepared file. `full` means the index was emptied first;
+/// otherwise the rows it replaces are recorded in `before`.
 fn store(
     tx: &Connection,
     file: &SourceFile,
     prepared: Prepared,
     full: bool,
     report: &mut IndexReport,
+    before: &mut Before,
 ) -> Result<FileOutcome> {
     let rel_path = &file.rel_path;
     let warn = |report: &mut IndexReport, message: String| {
@@ -473,10 +489,11 @@ fn store(
     };
     if !full {
         if let Some((existing_id, _)) = db::file_sha(tx, rel_path)? {
+            before.record(tx, existing_id)?;
             db::delete_file_cascade(tx, existing_id)?;
         }
     }
-    let parsed = match parsed {
+    let parsed = match *parsed {
         Ok(parsed) => parsed,
         Err(error) => {
             warn(
@@ -513,6 +530,7 @@ fn store(
     db::insert_imports(tx, file_id, &parsed.imports)?;
     db::insert_bindings(tx, file_id, &parsed.bindings)?;
     db::insert_hints(tx, file_id, &parsed.hints)?;
+    db::insert_locals(tx, file_id, &parsed.locals)?;
     db::set_file_module(tx, file_id, parsed.module.as_deref())?;
     db::insert_facts(tx, file_id, &parsed.facts, &parsed.symbols, &symbol_ids)?;
     report.files_indexed += 1;
@@ -526,6 +544,7 @@ fn index_discovered(
     files: &[SourceFile],
     full: bool,
     report: &mut IndexReport,
+    before: &mut Before,
 ) -> Result<Vec<FileOutcome>> {
     let mut outcomes: Vec<Option<FileOutcome>> = vec![None; files.len()];
     let mut pending = Vec::new();
@@ -544,7 +563,7 @@ fn index_discovered(
         pending.push((index, known_sha));
     }
     prepare_all(files, &pending, |index, prepared| {
-        outcomes[index] = Some(store(tx, &files[index], prepared, full, report)?);
+        outcomes[index] = Some(store(tx, &files[index], prepared, full, report, before)?);
         Ok(())
     })?;
     Ok(outcomes.into_iter().flatten().collect())

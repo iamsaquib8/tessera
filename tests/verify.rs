@@ -348,6 +348,242 @@ fn comments_typed_arrows_and_tagged_templates_never_make_an_arity_mismatch() {
 }
 
 #[test]
+fn v3_skips_a_function_that_calls_its_own_parameter() {
+    let temp = repo();
+    fs::write(
+        temp.path().join("src/apply.ts"),
+        "import { formatName } from \"./util/format\";\n\n\
+         export function apply(formatName: (s: string) => string): string {\n  return formatName(\"x\");\n}\n\n\
+         export const names = [formatName];\n",
+    )
+    .unwrap();
+    commit_all(temp.path());
+    edit(
+        temp.path(),
+        "src/util/format.ts",
+        "export function formatName(",
+        "export function formatDisplayName(",
+    );
+    edit(
+        temp.path(),
+        "src/util/format.ts",
+        "return formatName(id);",
+        "return formatDisplayName(id);",
+    );
+    let (code, findings, _) = verify_changed(temp.path());
+    assert_eq!(code, 1);
+    assert!(
+        findings.contains(&"V3 src/users/repo.ts:7".to_string()),
+        "{findings:?}"
+    );
+    assert!(
+        !findings.contains(&"V3 src/apply.ts:4".to_string()),
+        "{findings:?}"
+    );
+}
+
+#[test]
+fn v4_a_barrel_re_exporting_a_renamed_name_is_broken() {
+    let temp = repo();
+    fs::write(
+        temp.path().join("src/util/index.ts"),
+        "export { formatName } from \"./format\";\n",
+    )
+    .unwrap();
+    commit_all(temp.path());
+    edit(
+        temp.path(),
+        "src/util/format.ts",
+        "export function formatName(",
+        "export function formatDisplayName(",
+    );
+    edit(
+        temp.path(),
+        "src/util/format.ts",
+        "return formatName(id);",
+        "return formatDisplayName(id);",
+    );
+    let (code, findings, _) = verify_changed(temp.path());
+    assert_eq!(code, 1);
+    assert!(
+        findings.contains(&"V4 src/util/index.ts:1".to_string()),
+        "{findings:?}"
+    );
+}
+
+#[test]
+fn v4_java_imports_of_generated_classes_are_not_broken() {
+    let temp = repo();
+    let root = temp.path();
+    let files = [
+        (".gitignore", "target/\n"),
+        (
+            "svc/src/main/java/com/acme/domain/User.java",
+            "package com.acme.domain;\n\npublic class User {}\n",
+        ),
+        (
+            "svc/target/generated-sources/annotations/com/acme/domain/QUser.java",
+            "package com.acme.domain;\n\npublic class QUser {}\n",
+        ),
+        (
+            "api/pom.xml",
+            "<project><build><plugins><plugin><artifactId>querydsl-apt</artifactId></plugin></plugins></build></project>\n",
+        ),
+        (
+            "api/src/main/java/com/acme/model/Order.java",
+            "package com.acme.model;\n\npublic class Order {}\n",
+        ),
+        (
+            "svc/src/main/java/com/acme/app/App.java",
+            "package com.acme.app;\n\nimport com.acme.domain.User;\nimport com.acme.domain.QUser;\nimport com.acme.domain.Usr;\nimport com.acme.model.QOrder;\n\npublic class App {}\n",
+        ),
+    ];
+    for (path, content) in files {
+        fs::create_dir_all(root.join(path).parent().unwrap()).unwrap();
+        fs::write(root.join(path), content).unwrap();
+    }
+    let (_, findings, value) = verify_changed(root);
+    let v4: Vec<&String> = findings.iter().filter(|f| f.starts_with("V4")).collect();
+    assert_eq!(
+        v4,
+        vec!["V4 svc/src/main/java/com/acme/app/App.java:5"],
+        "{value}"
+    );
+    let message = value["findings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|f| f["id"] == "V4")
+        .unwrap()["message"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert!(
+        message.contains("`com.acme.domain.Usr`")
+            && message.contains("not a class in this repository"),
+        "{message}"
+    );
+}
+
+fn commit_all(root: &Path) {
+    for args in [
+        &["add", "."][..],
+        &[
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@example.com",
+            "commit",
+            "-qm",
+            "more",
+        ],
+    ] {
+        assert!(StdCommand::new("git")
+            .args(args)
+            .current_dir(root)
+            .status()
+            .unwrap()
+            .success());
+    }
+}
+
+#[test]
+fn imports_of_files_the_index_does_not_hold_are_not_broken() {
+    let temp = repo();
+    let root = temp.path();
+    fs::create_dir_all(root.join("src/assets")).unwrap();
+    fs::create_dir_all(root.join("generated/client")).unwrap();
+    fs::write(root.join(".gitignore"), "generated/\n").unwrap();
+    fs::write(root.join("src/data.json"), "{}\n").unwrap();
+    fs::write(root.join("src/notes.txt"), "hi\n").unwrap();
+    fs::write(root.join("src/assets/logo.svg"), "<svg/>\n").unwrap();
+    fs::write(
+        root.join("generated/client/index.ts"),
+        "export function call() { return 1; }\n",
+    )
+    .unwrap();
+    fs::write(
+        root.join("src/big.ts"),
+        format!(
+            "export function big() {{ return 1; }}\n{}",
+            "// padding\n".repeat(120_000)
+        ),
+    )
+    .unwrap();
+    fs::write(
+        root.join("src/view.tsx"),
+        "import data from \"./data.json\";\nimport styles from \"./app.module.css\";\n\
+         import logo from \"./assets/logo.svg\";\nimport Logo from \"./assets/logo.svg?react\";\n\
+         import notes from \"!raw-loader!./notes.txt\";\nimport pkg from \"../package.json\";\n\
+         import { big } from \"./big\";\nimport { call } from \"../generated/client\";\n\n\
+         export function View() {\n  big();\n  call();\n  return [data, styles, logo, Logo, notes, pkg];\n}\n",
+    )
+    .unwrap();
+    let (code, findings, _) = verify_changed(root);
+    assert_eq!(code, 0, "{findings:?}");
+    assert!(
+        !findings.iter().any(|f| f.starts_with("V4")),
+        "{findings:?}"
+    );
+}
+
+#[test]
+fn spread_arguments_and_unchecked_files_never_make_an_arity_mismatch() {
+    let temp = repo();
+    fs::write(
+        temp.path().join("src/point.ts"),
+        "export function clickAt(x: number, y: number) {\n  return x + y;\n}\n\n\
+         export function use(at: [number, number]) {\n  return clickAt(...at);\n}\n",
+    )
+    .unwrap();
+    fs::write(
+        temp.path().join("src/bindings.ts"),
+        "// @ts-nocheck\nfunction check(condition, text) {\n  return condition || text;\n}\n\n\
+         export function run() {\n  return check(true);\n}\n",
+    )
+    .unwrap();
+    let (code, findings, _) = verify_changed(temp.path());
+    assert_eq!(code, 0, "{findings:?}");
+    assert!(findings.iter().all(|f| f.starts_with("V6")), "{findings:?}");
+}
+
+#[test]
+fn overloads_getters_and_aliased_methods_take_their_callable_arity() {
+    let temp = repo();
+    fs::write(
+        temp.path().join("src/app.ts"),
+        "export class Factory {\n  create(): string;\n  create(name: string, port?: number): string;\n  create(name: string | undefined, port?: number): string {\n    return name ?? String(port);\n  }\n}\n\n\
+         export class Stream {\n  get errorHandler(): (err: Error, res: string) => void {\n    return () => {};\n  }\n}\n\n\
+         export class Logger {\n  log(message: string, ...rest: string[]) {\n    return message + rest.length;\n  }\n}\n\n\
+         const noop = () => {};\nexport class SilentLogger extends Logger {\n  log = noop;\n}\n\n\
+         export function use(f: Factory, s: Stream, quiet: SilentLogger) {\n  f.create();\n  s.errorHandler(new Error(\"x\"), \"res\");\n  return quiet.log();\n}\n",
+    )
+    .unwrap();
+    let (code, findings, _) = verify_changed(temp.path());
+    assert_eq!(code, 0, "{findings:?}");
+    assert!(findings.iter().all(|f| f.starts_with("V6")), "{findings:?}");
+}
+
+#[test]
+fn plain_javascript_argument_counts_never_make_an_arity_mismatch() {
+    let temp = repo();
+    fs::write(
+        temp.path().join("src/fmt.js"),
+        "export function fmt(value, options) {\n  return String(value) + (options || \"\");\n}\n\
+         export function sum() {\n  let total = 0;\n  for (const n of arguments) total += n;\n  return total;\n}\n",
+    )
+    .unwrap();
+    fs::write(
+        temp.path().join("src/use.js"),
+        "import { fmt, sum } from \"./fmt\";\n\nexport function use() {\n  fmt(1);\n  return sum(1, 2, 3);\n}\n",
+    )
+    .unwrap();
+    let (code, findings, _) = verify_changed(temp.path());
+    assert_eq!(code, 0, "{findings:?}");
+    assert!(findings.iter().all(|f| f.starts_with("V6")), "{findings:?}");
+}
+
+#[test]
 fn properties_default_expressions_and_destructured_exports_exist() {
     let temp = repo();
     fs::write(

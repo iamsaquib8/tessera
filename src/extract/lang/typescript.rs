@@ -1,9 +1,12 @@
 use tree_sitter::Node;
 
-use super::javascript::{js_bindings, js_hints, js_import, js_references, js_symbol, JS_SKIP};
+use super::javascript::{
+    js_bindings, js_hints, js_import, js_locals, js_references, js_symbol, JS_SKIP,
+};
 use crate::extract::{Cx, LanguageSupport};
 use crate::types::{
-    IndexedBinding, IndexedImport, IndexedReference, IndexedSymbol, IndexedTypeHint, Language,
+    IndexedBinding, IndexedImport, IndexedLocal, IndexedReference, IndexedSymbol, IndexedTypeHint,
+    Language,
 };
 
 pub struct TypeScript;
@@ -38,6 +41,10 @@ macro_rules! js_family {
 
             fn hints(&self, cx: &Cx<'_>, node: Node<'_>, out: &mut Vec<IndexedTypeHint>) {
                 js_hints(cx, node, out)
+            }
+
+            fn locals(&self, cx: &Cx<'_>, node: Node<'_>, out: &mut Vec<IndexedLocal>) {
+                js_locals(cx, node, out)
             }
 
             fn import(&self, cx: &Cx<'_>, node: Node<'_>) -> Option<IndexedImport> {
