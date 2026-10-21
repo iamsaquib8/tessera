@@ -3,13 +3,34 @@ source: tests/golden.rs
 expression: graph_dump(& db)
 ---
 {
-  "bindings": [],
+  "bindings": [
+    "app.js:1 require express from express",
+    "app.js:15 re_export default = app from .",
+    "app.js:2 require EmailWorker from ./lib/email_worker",
+    "lib/email_worker.js:1 require BaseWorker from ./worker",
+    "lib/email_worker.js:10 re_export default = EmailWorker from .",
+    "lib/email_worker.js:2 require_member slugify = slugify from ./util",
+    "lib/i18n.js:5 re_export greet = greet from .",
+    "lib/util.js:5 re_export slugify = slugify from .",
+    "lib/worker.js:11 re_export default = BaseWorker from .",
+    "specs/util.spec.js:1 require_member slugify = slugify from ../lib/util"
+  ],
   "edges": [
+    "app.js app.get(\"/send\") -call-> run [name]",
+    "app.js app.get(\"/send\") -call-> send [name]",
+    "app.js app.get(\"/send\") -new-> EmailWorker [name]",
+    "lib/email_worker.js EmailWorker -extends-> BaseWorker [name]",
     "lib/email_worker.js EmailWorker.perform -call-> slugify [name]",
     "lib/util.js slugify -call-> toLowerCase [name]",
-    "lib/worker.js BaseWorker.run -call-> perform [name]"
+    "lib/worker.js BaseWorker.run -call-> perform [name]",
+    "specs/util.spec.js describe(\"slugify\") -call-> it [name]",
+    "specs/util.spec.js describe(\"slugify\").it(\"lowercases\") -call-> expect [name]",
+    "specs/util.spec.js describe(\"slugify\").it(\"lowercases\") -call-> slugify [name]",
+    "specs/util.spec.js describe(\"slugify\").it(\"lowercases\") -call-> toBe [name]"
   ],
-  "hints": [],
+  "hints": [
+    "app.js app: call:express (return)"
+  ],
   "imports": [
     "app.js:1 require express",
     "app.js:2 require ./lib/email_worker",
@@ -23,28 +44,33 @@ expression: graph_dump(& db)
     "app.js:2:21 call require/1 <- <none>",
     "app.js:4:13 call express/0 <- <none>",
     "app.js:6:1 call app.get/2 <- <none>",
-    "app.js:7:3 call other.run/0 <- <none>",
-    "app.js:8:3 call res.send/1 <- <none>",
+    "app.js:7:3 call other.run/0 <- app.get(\"/send\")",
+    "app.js:7:3 new EmailWorker/0 <- app.get(\"/send\")",
+    "app.js:8:3 call res.send/1 <- app.get(\"/send\")",
     "lib/email_worker.js:1:20 call require/1 <- <none>",
     "lib/email_worker.js:2:21 call require/1 <- <none>",
+    "lib/email_worker.js:4:19 extends BaseWorker <- EmailWorker",
     "lib/email_worker.js:6:12 call slugify/1 <- EmailWorker.perform",
     "lib/util.js:2:10 call s.toLowerCase/0 <- slugify",
     "lib/worker.js:3:12 call this.perform/0 <- BaseWorker.run",
     "specs/util.spec.js:1:21 call require/1 <- <none>",
     "specs/util.spec.js:3:1 call describe/2 <- <none>",
-    "specs/util.spec.js:4:3 call it/2 <- <none>",
-    "specs/util.spec.js:5:12 call slugify/1 <- <none>",
-    "specs/util.spec.js:5:5 call expect/1 <- <none>",
-    "specs/util.spec.js:5:5 call other.toBe/1 <- <none>"
+    "specs/util.spec.js:4:3 call it/2 <- describe(\"slugify\")",
+    "specs/util.spec.js:5:12 call slugify/1 <- describe(\"slugify\").it(\"lowercases\")",
+    "specs/util.spec.js:5:5 call expect/1 <- describe(\"slugify\").it(\"lowercases\")",
+    "specs/util.spec.js:5:5 call other.toBe/1 <- describe(\"slugify\").it(\"lowercases\")"
   ],
   "symbols": [
-    "app.js:11-13 function slugify | function slugify(x) {",
+    "app.js:11-13 function slugify (1..1) | function slugify(x) {",
+    "app.js:6-9 callback app.get(\"/send\") (2..2) | (req, res) => {",
     "lib/email_worker.js:4-8 class EmailWorker | class EmailWorker extends BaseWorker {",
-    "lib/email_worker.js:5-7 method EmailWorker.perform | perform() {",
-    "lib/i18n.js:1-3 function greet | function greet() { //x éééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééé",
-    "lib/util.js:1-3 function slugify | function slugify(s) {",
+    "lib/email_worker.js:5-7 method EmailWorker.perform (0..0) | perform() {",
+    "lib/i18n.js:1-3 function greet (0..0) | function greet() { //x éééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééé",
+    "lib/util.js:1-3 function slugify (1..1) | function slugify(s) {",
     "lib/worker.js:1-9 class BaseWorker | class BaseWorker {",
-    "lib/worker.js:2-4 method BaseWorker.run | run() {",
-    "lib/worker.js:6-8 method BaseWorker.perform | perform() {"
+    "lib/worker.js:2-4 method BaseWorker.run (0..0) | run() {",
+    "lib/worker.js:6-8 method BaseWorker.perform (0..0) | perform() {",
+    "specs/util.spec.js:3-7 callback describe(\"slugify\") (0..0) | () => {",
+    "specs/util.spec.js:4-6 callback describe(\"slugify\").it(\"lowercases\") (0..0) | () => {"
   ]
 }

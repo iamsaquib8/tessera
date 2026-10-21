@@ -1,8 +1,10 @@
 use tree_sitter::Node;
 
-use super::javascript::{js_import, js_reference, js_symbol, JS_SKIP};
+use super::javascript::{js_bindings, js_hints, js_import, js_references, js_symbol, JS_SKIP};
 use crate::extract::{Cx, LanguageSupport};
-use crate::types::{IndexedImport, IndexedReference, IndexedSymbol, Language};
+use crate::types::{
+    IndexedBinding, IndexedImport, IndexedReference, IndexedSymbol, IndexedTypeHint, Language,
+};
 
 pub struct TypeScript;
 pub struct Tsx;
@@ -22,8 +24,20 @@ macro_rules! js_family {
                 js_symbol(cx, node)
             }
 
-            fn reference(&self, cx: &Cx<'_>, node: Node<'_>) -> Option<IndexedReference> {
-                js_reference(cx, node)
+            fn reference(&self, _cx: &Cx<'_>, _node: Node<'_>) -> Option<IndexedReference> {
+                None
+            }
+
+            fn references(&self, cx: &Cx<'_>, node: Node<'_>, out: &mut Vec<IndexedReference>) {
+                js_references(cx, node, out)
+            }
+
+            fn bindings(&self, cx: &Cx<'_>, node: Node<'_>, out: &mut Vec<IndexedBinding>) {
+                js_bindings(cx, node, out)
+            }
+
+            fn hints(&self, cx: &Cx<'_>, node: Node<'_>, out: &mut Vec<IndexedTypeHint>) {
+                js_hints(cx, node, out)
             }
 
             fn import(&self, cx: &Cx<'_>, node: Node<'_>) -> Option<IndexedImport> {

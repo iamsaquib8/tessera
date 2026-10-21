@@ -30,6 +30,11 @@ pub trait LanguageSupport: Sync {
     fn skip_ref_names(&self) -> &'static [&'static str] {
         &[]
     }
+    fn references(&self, cx: &Cx<'_>, node: Node<'_>, out: &mut Vec<IndexedReference>) {
+        if let Some(reference) = self.reference(cx, node) {
+            out.push(reference);
+        }
+    }
     fn bindings(&self, _cx: &Cx<'_>, _node: Node<'_>, _out: &mut Vec<IndexedBinding>) {}
     fn hints(&self, _cx: &Cx<'_>, _node: Node<'_>, _out: &mut Vec<IndexedTypeHint>) {}
     fn module(&self, _cx: &Cx<'_>, _node: Node<'_>) -> Option<String> {
@@ -69,14 +74,14 @@ pub fn parse_file(language: Language, content: &str) -> Result<ParsedFile> {
             });
             out.symbols.push(symbol);
         }
-        if let Some(reference) = support.reference(&cx, node) {
-            if !support
-                .skip_ref_names()
-                .contains(&reference.symbol_name.as_str())
-            {
-                out.references.push(reference);
-            }
-        }
+        let mut found = Vec::new();
+        support.references(&cx, node, &mut found);
+        let skip = support.skip_ref_names();
+        out.references.extend(
+            found
+                .into_iter()
+                .filter(|r| !skip.contains(&r.symbol_name.as_str())),
+        );
         if let Some(import) = support.import(&cx, node) {
             out.imports.push(import);
         }
@@ -219,6 +224,18 @@ impl<'a> Cx<'a> {
     }
 
     pub fn classify_receiver(&self, node: Node<'_>) -> (Receiver, Option<String>) {
+        if node.kind() == "member_expression" {
+            let object = node.child_by_field_name("object");
+            let property = node.child_by_field_name("property");
+            if let (Some(object), Some(property)) = (object, property) {
+                if object.kind() == "this" {
+                    return (
+                        Receiver::Name,
+                        Some(format!("this.{}", self.text(property))),
+                    );
+                }
+            }
+        }
         let text = self.text(node);
         match (node.kind(), text.as_str()) {
             (_, "this" | "self" | "$this") => (Receiver::This, None),

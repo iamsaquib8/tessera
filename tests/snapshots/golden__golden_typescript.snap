@@ -3,17 +3,33 @@ source: tests/golden.rs
 expression: graph_dump(& db)
 ---
 {
-  "bindings": [],
+  "bindings": [
+    "src/api/handler.ts:1 named loadUser = loadUser from ../users/repo",
+    "src/api/handler.ts:2 named Request = Request from ./types",
+    "src/users/repo.ts:1 named formatName = formatName from ../util/format",
+    "test/repo.test.ts:1 named loadUser = loadUser from ../src/users/repo"
+  ],
   "edges": [
     "src/api/handler.ts handler -call-> loadUser [name]",
+    "src/api/handler.ts handler -type-> Request [name]",
+    "src/users/repo.ts UserRepo -new-> Map [name]",
     "src/users/repo.ts UserRepo.findById -call-> formatName [name]",
     "src/users/repo.ts UserRepo.findById -call-> lookup [name]",
     "src/users/repo.ts UserRepo.lookup -call-> get [name]",
     "src/users/repo.ts loadUser -call-> findById [name]",
+    "src/users/repo.ts loadUser -new-> UserRepo [name]",
     "src/util/format.ts formatName -call-> trim [name]",
-    "src/util/format.ts loadUser -call-> formatName [name]"
+    "src/util/format.ts loadUser -call-> formatName [name]",
+    "test/repo.test.ts describe(\"loadUser\") -call-> it [name]",
+    "test/repo.test.ts describe(\"loadUser\").it(\"returns the user\") -call-> expect [name]",
+    "test/repo.test.ts describe(\"loadUser\").it(\"returns the user\") -call-> loadUser [name]",
+    "test/repo.test.ts describe(\"loadUser\").it(\"returns the user\") -call-> toBe [name]"
   ],
-  "hints": [],
+  "hints": [
+    "src/api/handler.ts handler::req: Request (param)",
+    "src/users/repo.ts UserRepo::this.cache: Map (field)",
+    "src/users/repo.ts loadUser::repo: UserRepo (new)"
+  ],
   "imports": [
     "src/api/handler.ts:1 import ../users/repo",
     "src/api/handler.ts:2 import ./types",
@@ -22,27 +38,33 @@ expression: graph_dump(& db)
   ],
   "modules": [],
   "refs": [
+    "src/api/handler.ts:4:30 type Request <- handler",
     "src/api/handler.ts:4:42 call loadUser/1 <- handler",
-    "src/users/repo.ts:11:12 call other.get/1 <- UserRepo.lookup",
+    "src/users/repo.ts:11:12 call this.cache.get/1 <- UserRepo.lookup",
+    "src/users/repo.ts:16:16 new UserRepo/0 <- loadUser",
     "src/users/repo.ts:17:10 call repo.findById/1 <- loadUser",
+    "src/users/repo.ts:4:19 new Map/0 <- UserRepo",
     "src/users/repo.ts:7:12 call formatName/1 <- UserRepo.findById",
     "src/users/repo.ts:7:23 call this.lookup/1 <- UserRepo.findById",
     "src/util/format.ts:2:10 call name.trim/0 <- formatName",
     "src/util/format.ts:6:10 call formatName/1 <- loadUser",
     "test/repo.test.ts:3:1 call describe/2 <- <none>",
-    "test/repo.test.ts:4:3 call it/2 <- <none>",
-    "test/repo.test.ts:5:12 call loadUser/1 <- <none>",
-    "test/repo.test.ts:5:5 call expect/1 <- <none>",
-    "test/repo.test.ts:5:5 call other.toBe/1 <- <none>"
+    "test/repo.test.ts:4:3 call it/2 <- describe(\"loadUser\")",
+    "test/repo.test.ts:5:12 call loadUser/1 <- describe(\"loadUser\").it(\"returns the user\")",
+    "test/repo.test.ts:5:5 call expect/1 <- describe(\"loadUser\").it(\"returns the user\")",
+    "test/repo.test.ts:5:5 call other.toBe/1 <- describe(\"loadUser\").it(\"returns the user\")"
   ],
   "symbols": [
-    "src/api/handler.ts:4-4 function handler [exported] | handler = (req: Request) => loadUser(req.id)",
-    "src/users/repo.ts:10-12 method UserRepo.lookup [exported] | private lookup(id: string): string {",
-    "src/users/repo.ts:15-18 function loadUser [exported] | function loadUser(id: string): string {",
+    "src/api/handler.ts:4-4 function handler [exported] (1..1) | handler = (req: Request) => loadUser(req.id)",
+    "src/api/types.ts:1-3 interface Request [exported] | interface Request {",
+    "src/users/repo.ts:10-12 method UserRepo.lookup [exported] (1..1) | private lookup(id: string): string {",
+    "src/users/repo.ts:15-18 function loadUser [exported] (1..1) | function loadUser(id: string): string {",
     "src/users/repo.ts:3-13 class UserRepo [exported] | class UserRepo {",
-    "src/users/repo.ts:6-8 method UserRepo.findById [exported] | findById(id: string): string {",
-    "src/util/format.ts:1-3 function formatName [exported] | function formatName(name: string): string {",
-    "src/util/format.ts:5-7 function loadUser [exported] | function loadUser(id: string): string {",
-    "src/util/i18n.ts:1-3 function greet [exported] | function greet(): string { //x ééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééé…"
+    "src/users/repo.ts:6-8 method UserRepo.findById [exported] (1..1) | findById(id: string): string {",
+    "src/util/format.ts:1-3 function formatName [exported] (1..1) | function formatName(name: string): string {",
+    "src/util/format.ts:5-7 function loadUser [exported] (1..1) | function loadUser(id: string): string {",
+    "src/util/i18n.ts:1-3 function greet [exported] (0..0) | function greet(): string { //x ééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééé…",
+    "test/repo.test.ts:3-7 callback describe(\"loadUser\") (0..0) | () => {",
+    "test/repo.test.ts:4-6 callback describe(\"loadUser\").it(\"returns the user\") (0..0) | () => {"
   ]
 }
