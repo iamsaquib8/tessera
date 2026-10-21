@@ -7,6 +7,7 @@ mod legacy;
 pub mod map;
 mod path;
 mod refs;
+pub mod report;
 mod search;
 mod status;
 mod verify;

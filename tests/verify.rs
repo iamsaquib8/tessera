@@ -396,3 +396,56 @@ fn v5_stays_quiet_when_a_route_moves_to_another_file() {
         "{findings:?}"
     );
 }
+
+fn markdown(root: &Path, args: &[&str]) -> (i32, String) {
+    let output = Command::cargo_bin("tessera")
+        .unwrap()
+        .current_dir(root)
+        .args(["--quiet", "verify", "--format", "markdown"])
+        .args(args)
+        .output()
+        .unwrap();
+    (
+        output.status.code().unwrap(),
+        String::from_utf8_lossy(&output.stdout).into_owned(),
+    )
+}
+
+#[test]
+fn markdown_report_for_a_pull_request() {
+    let temp = repo();
+    edit(
+        temp.path(),
+        "src/users/repo.ts",
+        "return repo.findById(id);",
+        "return repo.findByIdd(id);",
+    );
+    let (code, text) = markdown(temp.path(), &["--changed"]);
+    assert_eq!(code, 1, "{text}");
+    assert!(text.starts_with("<!-- tessera -->\n"), "{text}");
+    assert!(text.contains("1 problem to fix"), "{text}");
+    assert!(text.contains("| V1 | `src/users/repo.ts:17` |"), "{text}");
+    assert!(text.contains("Callers of the changed code"), "{text}");
+    assert!(text.contains("handler"), "callers are listed: {text}");
+    assert!(text.contains("Tests to run"), "{text}");
+    assert!(text.contains("`test/repo.test.ts`"), "{text}");
+}
+
+#[test]
+fn markdown_report_names_the_services_a_contract_change_reaches() {
+    let temp = repo_from("contracts-grpc");
+    edit(
+        temp.path(),
+        "cart/CartService.cs",
+        "return Task.FromResult(new Cart());",
+        "return Task.FromResult(new Cart { });",
+    );
+    let (code, text) = markdown(temp.path(), &["--changed"]);
+    assert_eq!(code, 0, "{text}");
+    assert!(text.contains("No problems found"), "{text}");
+    assert!(text.contains("Contracts this change touches"), "{text}");
+    assert!(
+        text.contains("`rpc CartService/GetCart`") && text.contains("frontend"),
+        "{text}"
+    );
+}

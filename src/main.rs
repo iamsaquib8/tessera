@@ -157,7 +157,7 @@ enum Commands {
         /// Check the working tree against this git revision.
         #[arg(long, value_name = "REV", conflicts_with_all = ["symbol", "snippet"])]
         diff: Option<String>,
-        /// Output: human (default), agent (one line per blocking problem), json, or sarif.
+        /// Output: human (default), agent (one line per blocking problem), json, sarif, or markdown (a pull-request comment).
         #[arg(long, value_enum, default_value_t = VerifyFormat::Human)]
         format: VerifyFormat,
     },
@@ -335,6 +335,8 @@ enum VerifyFormat {
     Agent,
     Json,
     Sarif,
+    /// A pull-request comment: findings, callers, contracts, tests to run.
+    Markdown,
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
@@ -550,6 +552,27 @@ fn run() -> Result<u8> {
             let Some(index) = open_fresh(&ws, &out)? else {
                 return Ok(0);
             };
+            if matches!(format, VerifyFormat::Markdown) {
+                if !changes {
+                    return Err(usage(
+                        "--format markdown needs --changed, --staged, or --diff",
+                    ));
+                }
+                let changes = if staged {
+                    query::Changes::Staged
+                } else if let Some(rev) = diff {
+                    query::Changes::Since(rev)
+                } else {
+                    query::Changes::WorkingTree
+                };
+                let report = index.report(&changes)?;
+                if out.json {
+                    out.print_json(&report)?;
+                } else {
+                    print!("{}", report.markdown());
+                }
+                return Ok(if report.verify.ok { 0 } else { EXIT_FINDINGS });
+            }
             let result = index.verify(&VerifyArgs {
                 symbol,
                 snippet,
@@ -566,6 +589,7 @@ fn run() -> Result<u8> {
                 VerifyFormat::Sarif => {
                     println!("{}", serde_json::to_string_pretty(&result.sarif())?)
                 }
+                VerifyFormat::Markdown => unreachable!("handled above"),
             }
             if !result.ok {
                 return Ok(EXIT_FINDINGS);

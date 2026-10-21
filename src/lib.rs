@@ -151,6 +151,12 @@ impl Index {
         query::verify(&self.conn, &self.root, args)
     }
 
+    /// The pull-request report for a change: findings, callers, contracts
+    /// touched, tests to run.
+    pub fn report(&self, changes: &query::Changes) -> Result<query::report::Report> {
+        query::report::run(&self.conn, &self.root, changes)
+    }
+
     pub fn map(&self, args: &query::MapArgs) -> Result<query::MapResult> {
         query::map(&self.conn, &self.root, args)
     }
