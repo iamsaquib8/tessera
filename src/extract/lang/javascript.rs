@@ -3,7 +3,7 @@ use tree_sitter::Node;
 use crate::extract::{first_child_with_kinds, strip_quotes, Cx, LanguageSupport};
 use crate::types::{
     BindingKind, HintOrigin, IndexedBinding, IndexedImport, IndexedReference, IndexedSymbol,
-    IndexedTypeHint, Language,
+    IndexedTypeHint, Language, Receiver,
 };
 
 pub struct JavaScript;
@@ -137,6 +137,9 @@ pub(super) fn js_symbol(cx: &Cx<'_>, node: Node<'_>) -> Option<IndexedSymbol> {
     };
     let mut symbol = cx.symbol(name, kind, node, has_export_ancestor(node));
     symbol.default_export = is_default_export(node);
+    if node.kind() == "function_declaration" {
+        symbol.start_line = overload_start(cx, node, &symbol.name) + 1;
+    }
     symbol.arity = params.and_then(|p| arity(cx, p));
     Some(symbol)
 }
@@ -150,7 +153,18 @@ pub(super) fn js_references(cx: &Cx<'_>, node: Node<'_>, out: &mut Vec<IndexedRe
                 return;
             };
             if let Some(name) = jsx_component_name(cx, name_node) {
-                out.push(cx.reference(name, "jsx", node));
+                let mut reference = cx.reference(name, "jsx", node);
+                // `<Menu.Item>` uses `Item` through `Menu`, and `Menu` itself.
+                if matches!(name_node.kind(), "nested_identifier" | "member_expression") {
+                    let text = cx.text(name_node);
+                    if let Some((object, _)) = text.rsplit_once('.') {
+                        reference.receiver = Receiver::Name;
+                        reference.receiver_name = Some(object.to_string());
+                        let root = object.split('.').next().unwrap_or(object);
+                        out.push(cx.reference(root.to_string(), "jsx", node));
+                    }
+                }
+                out.push(reference);
             }
         }
         // A decorator call is recorded once, as the decorator.
@@ -718,6 +732,40 @@ fn is_default_export(node: Node<'_>) -> bool {
 
 fn last_segment(name: &str) -> String {
     name.rsplit('.').next().unwrap_or(name).to_string()
+}
+
+/// The first row of the TypeScript overload signatures (`function f(a: A);`)
+/// directly before an implementation, so the symbol spans every declaration.
+fn overload_start(cx: &Cx<'_>, function: Node<'_>, name: &str) -> usize {
+    let anchor = match function.parent() {
+        Some(parent) if parent.kind() == "export_statement" => parent,
+        _ => function,
+    };
+    let mut start = anchor.start_position().row;
+    let mut previous = anchor.prev_named_sibling();
+    while let Some(sibling) = previous {
+        if sibling.kind() == "comment" {
+            previous = sibling.prev_named_sibling();
+            continue;
+        }
+        let signature = if sibling.kind() == "export_statement" {
+            sibling.named_child(0)
+        } else {
+            Some(sibling)
+        };
+        let is_overload = signature.is_some_and(|sig| {
+            sig.kind() == "function_signature"
+                && sig
+                    .child_by_field_name("name")
+                    .is_some_and(|n| cx.text(n) == name)
+        });
+        if !is_overload {
+            break;
+        }
+        start = sibling.start_position().row;
+        previous = sibling.prev_named_sibling();
+    }
+    start
 }
 
 /// A declarator in a `const`/`let`/`var` statement directly in the program,

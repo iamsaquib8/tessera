@@ -9,3 +9,9 @@ export class User implements Entity {
     return this.name;
   }
 }
+
+export function point(x: number): number;
+export function point(x: number, y: number): number;
+export function point(x: number, y = 0): number {
+  return x + y;
+}
