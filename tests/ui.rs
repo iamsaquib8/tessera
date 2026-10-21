@@ -53,10 +53,13 @@ fn api_answers_each_view() {
     assert!(get("/api/status")["files"].as_u64().unwrap() > 0);
     let impact = get("/api/impact");
     assert_eq!(impact["verify"]["findings"][0]["id"], "V1", "{impact}");
-    assert!(get("/api/search?q=find*")["hits"].as_array().unwrap().len() >= 1);
+    assert!(!get("/api/search?q=find*")["hits"]
+        .as_array()
+        .unwrap()
+        .is_empty());
     let symbol = get("/api/symbol?name=formatName");
     assert_eq!(symbol["find"]["matches"][0]["symbol"]["name"], "formatName");
-    assert!(symbol["refs"]["references"].as_array().unwrap().len() >= 1);
+    assert!(!symbol["refs"]["references"].as_array().unwrap().is_empty());
     assert!(get("/api/path?from=handler&to=loadUser")["found"]
         .as_bool()
         .unwrap());
