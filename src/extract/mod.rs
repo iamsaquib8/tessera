@@ -277,7 +277,7 @@ impl<'a> Cx<'a> {
     }
 
     pub fn classify_receiver(&self, node: Node<'_>) -> (Receiver, Option<String>) {
-        if node.kind() == "member_expression" {
+        if matches!(node.kind(), "member_expression" | "field_access") {
             if let Some(path) = self.member_path(node) {
                 return (Receiver::Name, Some(path));
             }
@@ -323,14 +323,17 @@ impl<'a> Cx<'a> {
         plain.then(|| name.to_string())
     }
 
-    /// `a.b.c` or `this.a.b` as text when every link is a plain name, so the
-    /// resolver can follow field types; `None` for calls, indexing and the like.
+    /// `a.b.c` or `this.a.b` (a JS member expression or a Java field access)
+    /// as text when every link is a plain name, so the resolver can follow
+    /// field types; `None` for calls, indexing and the like.
     pub fn member_path(&self, node: Node<'_>) -> Option<String> {
         let mut parts = Vec::new();
         let mut current = node;
-        while current.kind() == "member_expression" {
-            let property = current.child_by_field_name("property")?;
-            if property.kind() != "property_identifier" {
+        while matches!(current.kind(), "member_expression" | "field_access") {
+            let property = current
+                .child_by_field_name("property")
+                .or_else(|| current.child_by_field_name("field"))?;
+            if !matches!(property.kind(), "property_identifier" | "identifier") {
                 return None;
             }
             parts.push(self.text(property));

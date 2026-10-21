@@ -293,3 +293,27 @@ fn only_closed_classes_make_a_missing_member() {
         .collect();
     assert!(missing.is_empty(), "{missing:#?}");
 }
+
+#[test]
+fn a_java_call_on_a_this_field_uses_the_field_type() {
+    let (_temp, ws) = repo_with(&[
+        (
+            "VetRepository.java",
+            "interface VetRepository {\n  java.util.List<String> findAll();\n}\n",
+        ),
+        (
+            "OwnerRepository.java",
+            "interface OwnerRepository {\n  java.util.List<String> findAll();\n}\n",
+        ),
+        (
+            "VetController.java",
+            "class VetController {\n  private final VetRepository vetRepository;\n  VetController(VetRepository vetRepository) { this.vetRepository = vetRepository; }\n  Object list() { return this.vetRepository.findAll(); }\n}\n",
+        ),
+    ]);
+    let all = edges(&ws.db_path);
+    assert_has(
+        &all,
+        &["VetController.list -call-> VetRepository.java:VetRepository.findAll [high/hint]"],
+    );
+    assert_lacks(&all, &["VetController.list -call-> OwnerRepository.java:"]);
+}
