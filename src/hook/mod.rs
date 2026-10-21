@@ -42,6 +42,10 @@ const MAX_STOP_BLOCKS: u32 = 3;
 const NOTE_SYMBOLS: usize = 3;
 const NOTE_SITES: usize = 3;
 const NOTE_TESTS: usize = 2;
+/// The note's length limit in bytes, about 150 tokens.
+const NOTE_BUDGET: usize = 600;
+/// Longer symbol names are cut when the note runs over.
+const NOTE_NAME: usize = 48;
 const TEST_DEPTH: usize = 4;
 const TEST_SCAN_CAP: usize = 2_000;
 /// The baseline checks contracts (V5) in at most this many files that were
@@ -416,7 +420,7 @@ impl Hook<'_> {
         } else {
             &[]
         };
-        let mut notes = Vec::new();
+        let mut found = Vec::new();
         for path in &paths {
             let source = fs::read_to_string(self.ws.root.join(path)).unwrap_or_default();
             let spans = edit_spans(&source, old_texts);
@@ -425,24 +429,20 @@ impl Hook<'_> {
                 if session.announced.contains(&key) {
                     continue;
                 }
-                if let Some(note) = note(&conn, &symbol)? {
-                    notes.push((key, note));
+                if let Some(uses) = uses(&conn, &symbol)? {
+                    found.push((key, uses));
                 }
             }
         }
-        notes.sort_by_key(|n| std::cmp::Reverse(n.1 .0));
-        notes.truncate(NOTE_SYMBOLS);
-        if notes.is_empty() {
+        found.sort_by_key(|(_, uses)| std::cmp::Reverse(uses.sites.len()));
+        found.truncate(NOTE_SYMBOLS);
+        if found.is_empty() {
             return Ok(None);
         }
         session.counts.notes += 1;
-        let mut text = "Tessera: this edit touches code used from other files.".to_string();
-        for (key, (_, line)) in notes {
-            session.announced.insert(key);
-            text.push_str("\n- ");
-            text.push_str(&line);
-        }
-        text.push_str("\nKeep those call sites working, or update them in the same change.");
+        let (keys, uses): (Vec<String>, Vec<Uses>) = found.into_iter().unzip();
+        let (text, shown) = note_text(&uses);
+        session.announced.extend(keys.into_iter().take(shown));
         Ok(Some(Reply::Context(text)))
     }
 
@@ -717,8 +717,16 @@ fn touched(symbols: Vec<SymbolRecord>, spans: Option<&[(usize, usize)]>) -> Vec<
         .collect()
 }
 
-/// One line about `symbol`'s uses in other files, with how many there are.
-fn note(conn: &Connection, symbol: &SymbolRecord) -> Result<Option<(usize, String)>> {
+/// A symbol's uses in other files, for the pre-edit note.
+struct Uses {
+    name: String,
+    at: String,
+    /// Call sites as `path:line`.
+    sites: Vec<String>,
+    tests: Vec<String>,
+}
+
+fn uses(conn: &Connection, symbol: &SymbolRecord) -> Result<Option<Uses>> {
     let sites: Vec<String> = graph::incoming_refs(conn, &[symbol.id], &symbol.name)?
         .into_iter()
         .filter(|(reference, confidence, _)| {
@@ -729,28 +737,98 @@ fn note(conn: &Connection, symbol: &SymbolRecord) -> Result<Option<(usize, Strin
     if sites.is_empty() {
         return Ok(None);
     }
-    let mut line = format!(
-        "`{}` ({}:{}) has {} use(s) in other files: {}",
-        symbol.qualified_name,
-        symbol.path,
-        symbol.start_line,
-        sites.len(),
-        sites[..sites.len().min(NOTE_SITES)].join(", ")
-    );
-    if sites.len() > NOTE_SITES {
-        line.push_str(&format!(" and {} more", sites.len() - NOTE_SITES));
-    }
     let mut tests: Vec<String> = graph::tests_reaching(conn, symbol.id, TEST_DEPTH, TEST_SCAN_CAP)?
         .into_iter()
         .map(|t| t.path)
         .collect();
     tests.dedup();
+    tests.truncate(NOTE_TESTS);
+    Ok(Some(Uses {
+        name: symbol.qualified_name.clone(),
+        at: format!("{}:{}", symbol.path, symbol.start_line),
+        sites,
+        tests,
+    }))
+}
+
+/// The most this many symbols, call sites and tests each, with shortened
+/// paths and names or not, in the order they are tried.
+const NOTE_LEVELS: &[(usize, usize, usize, bool)] = &[
+    (NOTE_SYMBOLS, NOTE_SITES, NOTE_TESTS, false),
+    (NOTE_SYMBOLS, 2, 1, false),
+    (NOTE_SYMBOLS, 1, 0, false),
+    (NOTE_SYMBOLS, 2, 1, true),
+    (NOTE_SYMBOLS, 1, 0, true),
+    (2, 1, 0, true),
+    (1, 1, 0, true),
+    (1, 0, 0, true),
+];
+
+/// The pre-edit note, trimmed until it fits `NOTE_BUDGET`: fewer call sites
+/// and tests, then shorter paths and names, then fewer symbols. Returns the
+/// text and how many of `uses` it names.
+fn note_text(uses: &[Uses]) -> (String, usize) {
+    let mut last = (String::new(), 0);
+    for &(symbols, sites, tests, short) in NOTE_LEVELS {
+        let shown = uses.len().min(symbols);
+        let mut text = "Tessera: this edit touches code used from other files.".to_string();
+        for item in &uses[..shown] {
+            text.push_str("\n- ");
+            text.push_str(&use_line(item, sites, tests, short));
+        }
+        text.push_str("\nKeep those call sites working, or update them in the same change.");
+        if text.len() <= NOTE_BUDGET {
+            return (text, shown);
+        }
+        last = (text, shown);
+    }
+    let (mut text, shown) = last;
+    let mut end = NOTE_BUDGET - '…'.len_utf8();
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    text.truncate(end);
+    text.push('…');
+    (text, shown)
+}
+
+/// One line of the note.
+fn use_line(uses: &Uses, sites: usize, tests: usize, short: bool) -> String {
+    let path = |p: &str| if short { short_path(p) } else { p.to_string() };
+    let name = if short && uses.name.chars().count() > NOTE_NAME {
+        let mut name: String = uses.name.chars().take(NOTE_NAME - 1).collect();
+        name.push('…');
+        name
+    } else {
+        uses.name.clone()
+    };
+    let mut line = format!(
+        "`{name}` ({}) has {} use(s) in other files",
+        path(&uses.at),
+        uses.sites.len()
+    );
+    let listed: Vec<String> = uses.sites.iter().take(sites).map(|s| path(s)).collect();
+    if !listed.is_empty() {
+        line.push_str(&format!(": {}", listed.join(", ")));
+        if uses.sites.len() > listed.len() {
+            line.push_str(&format!(" and {} more", uses.sites.len() - listed.len()));
+        }
+    }
+    let tests: Vec<String> = uses.tests.iter().take(tests).map(|t| path(t)).collect();
     if !tests.is_empty() {
-        tests.truncate(NOTE_TESTS);
         line.push_str(&format!("; tests: {}", tests.join(", ")));
     }
     line.push('.');
-    Ok(Some((sites.len(), line)))
+    line
+}
+
+/// `a/b/c/d.ts:3` as `…/c/d.ts:3`.
+fn short_path(path: &str) -> String {
+    let parts: Vec<&str> = path.split('/').collect();
+    if parts.len() <= 2 {
+        return path.to_string();
+    }
+    format!("…/{}", parts[parts.len() - 2..].join("/"))
 }
 
 fn git(root: &Path, args: &[&str]) -> Option<String> {
@@ -796,6 +874,34 @@ mod tests {
             Some(vec![(2, 2), (4, 4)])
         );
         assert_eq!(edit_spans(source, &[]), None);
+    }
+
+    #[test]
+    fn the_note_trims_detail_before_symbols_and_fits_its_budget() {
+        let small = Uses {
+            name: "formatName".into(),
+            at: "src/util/format.ts:1".into(),
+            sites: vec!["src/users/repo.ts:7".into(), "src/api/x.ts:2".into()],
+            tests: vec!["test/repo.test.ts".into()],
+        };
+        let (text, shown) = note_text(std::slice::from_ref(&small));
+        assert_eq!(shown, 1);
+        assert!(text.contains("src/users/repo.ts:7, src/api/x.ts:2; tests: test/repo.test.ts"));
+
+        let dir = "src/a_rather_deeply/nested_directory_structure/for_the_purposes_of";
+        let long = |n: usize| Uses {
+            name: format!("computeTheExtraordinarilyLongAndDescriptiveFunctionName{n}"),
+            at: format!("{dir}/module_with_a_long_file_name.ts:{n}"),
+            sites: (0..9)
+                .map(|i| format!("{dir}/consumer_number_{i}_with_a_long_name.ts:{n}"))
+                .collect(),
+            tests: vec![format!("{dir}/consumer.test.ts")],
+        };
+        let (text, shown) = note_text(&[long(1), long(2), long(3)]);
+        assert!(text.len() <= NOTE_BUDGET, "{} bytes: {text}", text.len());
+        assert!(shown >= 1);
+        assert!(text.contains("has 9 use(s)"), "{text}");
+        assert!(text.ends_with("in the same change."), "{text}");
     }
 
     #[test]

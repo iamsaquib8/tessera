@@ -122,6 +122,61 @@ fn pre_edit_announces_cross_file_callers_once() {
 }
 
 #[test]
+fn the_pre_edit_note_stays_within_its_budget() {
+    let dir = "src/a_rather_deeply/nested_directory_structure/for_the_purposes_of/testing_notes";
+    let names = [
+        "computeTheExtraordinarilyLongAndDescriptiveFunctionNameNumberOne",
+        "computeTheExtraordinarilyLongAndDescriptiveFunctionNameNumberTwo",
+        "computeTheExtraordinarilyLongAndDescriptiveFunctionNameNumberThree",
+    ];
+    let module: String = names
+        .iter()
+        .map(|name| {
+            format!("export function {name}(value: string): string {{\n  return value;\n}}\n\n")
+        })
+        .collect();
+    let mut files = vec![(format!("{dir}/module_with_a_long_file_name.ts"), module)];
+    for i in 0..5 {
+        let calls: String = names
+            .iter()
+            .map(|name| format!("export const use_{name} = {name}(\"{i}\");\n"))
+            .collect();
+        let import = format!(
+            "import {{ {} }} from \"./module_with_a_long_file_name\";\n",
+            names.join(", ")
+        );
+        files.push((
+            format!("{dir}/consumer_number_{i}_with_a_long_name.ts"),
+            format!("{import}{calls}"),
+        ));
+        files.push((
+            format!("{dir}/consumer_number_{i}_with_a_long_name.test.ts"),
+            format!("import {{ use_{} }} from \"./consumer_number_{i}_with_a_long_name\";\ntest(\"x\", () => use_{});\n", names[0], names[0]),
+        ));
+    }
+    let extra: Vec<(&str, &str)> = files
+        .iter()
+        .map(|(p, c)| (p.as_str(), c.as_str()))
+        .collect();
+    let temp = repo_with(&extra);
+    let root = temp.path();
+    start_indexed(root);
+    let pre = claude(
+        root,
+        "PreToolUse",
+        json!({
+            "tool_name": "Write",
+            "tool_input": { "file_path": path_of(root, &format!("{dir}/module_with_a_long_file_name.ts")), "content": "" }
+        }),
+    );
+    let note = pre["hookSpecificOutput"]["additionalContext"]
+        .as_str()
+        .unwrap_or_default();
+    assert!(note.contains("computeTheExtraordinarily"), "{pre}");
+    assert!(note.len() <= 600, "{} chars:\n{note}", note.len());
+}
+
+#[test]
 fn post_edit_reports_first_and_blocks_when_the_problem_persists() {
     let temp = repo();
     let root = temp.path();

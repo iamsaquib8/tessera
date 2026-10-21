@@ -33,7 +33,7 @@ turn once.
 | Moment | What Tessera does | When it stops the agent |
 | --- | --- | --- |
 | Session start | Records what was already changed, and refreshes the index in the background | Never |
-| Before an edit | If the edit touches a function with callers in other files, adds a short note: the callers, and the tests that reach it. Once per function per session | Never |
+| Before an edit | If the edit touches a function with callers in other files, adds a short note (at most 600 characters, about 150 tokens): the callers, and the tests that reach it. Once per function per session | Never |
 | After an edit | Re-indexes the edited files and runs `verify` over every file edited so far: calls to names that do not exist, wrong argument counts, broken imports, call sites a rename left behind | Only when a problem is still there after an edit that fixed nothing; a rename done over several edits is never interrupted |
 | End of turn | Runs `verify` over everything changed since the session started | While high-confidence problems remain, at most three times per turn; problems the agent stops with after that never block it again in the session |
 
