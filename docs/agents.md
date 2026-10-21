@@ -51,7 +51,7 @@ Every tier also gets the git backstop (`tessera init --git-hook`).
 | Factory Droid | **unverified** | Claude-shaped, `.factory/hooks.json` | **unverified** | `.factory-plugin/plugin.json` | docs.factory.com/reference/hooks-reference |
 | Warp | `.warp/.mcp.json`; also reads `.mcp.json` | none documented | `AGENTS.md` | — | docs.warp.dev/agents/capabilities/mcp |
 | JetBrains Junie | `.junie/mcp/mcp.json`, `mcpServers` | CLI: `PreToolUse`, `Stop` (no PostToolUse); project hooks ignored by default | `.junie/AGENTS.md`, `AGENTS.md` | Extensions | junie.jetbrains.com/docs/junie-cli-hooks.html |
-| Augment (Auggie) | `~/.augment/settings.json`, `mcpServers`; `auggie mcp add` | `PreToolUse`, `PostToolUse` (gets `file_changes`), `Stop`; exit 2 / `permissionDecision: deny`; project hooks CLI-only | **unverified** | **unverified** | docs.augmentcode.com/cli/hooks |
+| Augment (Auggie) | `~/.augment/settings.json`, `mcpServers`; `auggie mcp add` | `PreToolUse`, `PostToolUse` (gets `file_changes`), `Stop`; exit 2 / `permissionDecision: deny`; project hooks CLI-only. A hook `command` is the path to a script (`.sh`, `.ps1`, `.cmd` or `.bat`), so `init` writes `.augment/hooks/tessera-<event>.sh` wrappers that run `tessera hook augment <event>` | **unverified** | **unverified** | docs.augmentcode.com/cli/hooks |
 | Trae | `.trae/mcp.json` (third-party sources) | hooks shipped v3.5.66; schema **unverified** | `AGENTS.md`, `CLAUDE.md` | **unverified** | docs.trae.ai/ide/changelog |
 | Continue | `.continue/mcpServers/*.yaml` | none | `.continue/rules/` | Hub | docs.continue.dev |
 | Roo Code | — | — | — | **Shut down 2026-05-15** | — |

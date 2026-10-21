@@ -8,6 +8,7 @@ use assert_cmd::Command;
 use serde_json::Value;
 use support::{copy_dir, fixture_dir};
 use tempfile::TempDir;
+use tessera_codegraph::init::{self, InitOptions};
 
 /// A project and an empty home directory, so detection sees only what a test
 /// puts there.
@@ -275,6 +276,38 @@ fn files_it_cannot_parse_are_left_alone_with_a_snippet() {
 }
 
 #[test]
+fn toml_and_yaml_configs_stay_valid() {
+    let s = setup();
+    let codex = "[mcp_servers]\ntessera = { command = \"tessera\", args = [\"mcp\"] }\n";
+    touch(&s.root, ".codex/config.toml", codex);
+    let inline = "mcp_servers = { other = { command = \"o\" } }\n";
+    touch(&s.root, ".grok/config.toml", inline);
+    let goose = "extensions:  # mine\n  developer:\n    enabled: true\n";
+    touch(&s.home, ".config/goose/config.yaml", goose);
+    let (out, ok) = init(
+        &s,
+        &[
+            "--yes", "--global", "--agent", "codex", "--agent", "grok", "--agent", "goose",
+        ],
+    );
+    assert!(ok, "{out}");
+    assert_eq!(
+        fs::read_to_string(s.root.join(".codex/config.toml")).unwrap(),
+        codex
+    );
+    assert_eq!(
+        fs::read_to_string(s.root.join(".grok/config.toml")).unwrap(),
+        inline
+    );
+    assert!(out.contains(".grok/config.toml"), "{out}");
+    let goose = fs::read_to_string(s.home.join(".config/goose/config.yaml")).unwrap();
+    assert_eq!(goose.matches("extensions:").count(), 1, "{goose}");
+    let docs = yaml_rust2::YamlLoader::load_from_str(&goose).unwrap();
+    assert!(!docs[0]["extensions"]["developer"].is_badvalue(), "{goose}");
+    assert!(!docs[0]["extensions"]["tessera"].is_badvalue(), "{goose}");
+}
+
+#[test]
 fn no_agents_found_still_explains_what_to_do() {
     let s = setup();
     let (out, ok) = init(&s, &["--yes"]);
@@ -369,6 +402,28 @@ fn commands(value: &Value, out: &mut Vec<String>) {
     }
 }
 
+/// A hook's command, or for a wrapper script the command it runs.
+fn hook_command(command: &str) -> String {
+    let path = Path::new(command);
+    if !path.is_absolute() || !command.ends_with(".sh") {
+        return command.to_string();
+    }
+    let script = fs::read_to_string(path).unwrap();
+    assert!(script.starts_with("#!/bin/sh\n"), "{script}");
+    assert!(!script.contains('\r'), "LF only: {script:?}");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = fs::metadata(path).unwrap().permissions().mode();
+        assert!(mode & 0o111 != 0, "{command} mode {mode:o}");
+    }
+    script
+        .lines()
+        .find_map(|line| line.strip_prefix("exec "))
+        .unwrap_or_else(|| panic!("{script}"))
+        .to_string()
+}
+
 #[test]
 fn every_hook_adapter_is_wired_in_its_documented_shape() {
     use tessera_codegraph::hook::{Agent, Event};
@@ -404,6 +459,17 @@ fn every_hook_adapter_is_wired_in_its_documented_shape() {
         let value = json(&s.root.join(path));
         let mut found = Vec::new();
         commands(&value, &mut found);
+        if agent == "augment" {
+            // Augment's `command` must be a script; Tessera writes one per event.
+            let scripts = s.root.canonicalize().unwrap().join(".augment/hooks");
+            for command in &found {
+                assert!(
+                    Path::new(command).starts_with(&scripts) && command.ends_with(".sh"),
+                    "{command}"
+                );
+            }
+        }
+        let found: Vec<String> = found.iter().map(|c| hook_command(c)).collect();
         let hooks: Vec<&String> = found.iter().filter(|c| c.contains(" hook ")).collect();
         assert_eq!(hooks.len(), count, "{path}: {found:?}");
         for command in hooks {
@@ -434,6 +500,77 @@ fn every_hook_adapter_is_wired_in_its_documented_shape() {
 
     let (out, _) = init(&s, &args);
     assert!(out.contains("Nothing to change"), "{out}");
+}
+
+fn library_options(s: &Setup, agents: &[&str], global: bool) -> InitOptions {
+    InitOptions {
+        root: s.root.clone(),
+        db_path: s.root.join(".tessera/tessera.db"),
+        agents: agents.iter().map(|a| a.to_string()).collect(),
+        global,
+        with_instructions: false,
+        git_hook: false,
+        home: Some(s.home.clone()),
+    }
+}
+
+/// Claude Code rewrites ~/.claude.json all the time, so it may change
+/// between the diff `init` shows and the write.
+#[test]
+fn a_file_that_changed_after_the_plan_keeps_both_changes() {
+    let s = setup();
+    let original = "{\n  \"numStartups\": 1,\n  \"mcpServers\": {}\n}\n";
+    touch(&s.home, ".claude.json", original);
+    let plan = init::plan(&library_options(&s, &["claude"], true)).unwrap();
+    assert!(plan.changes.iter().any(|c| c.path == "~/.claude.json"));
+    touch(
+        &s.home,
+        ".claude.json",
+        "{\n  \"numStartups\": 2,\n  \"tipsHistory\": {},\n  \"mcpServers\": {}\n}\n",
+    );
+    init::apply(&plan).unwrap();
+    let claude = json(&s.home.join(".claude.json"));
+    assert_eq!(claude["numStartups"], 2, "{claude}");
+    assert!(claude["tipsHistory"].is_object(), "{claude}");
+    assert_eq!(
+        claude["mcpServers"]["tessera"]["args"][0], "mcp",
+        "{claude}"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn apply_replaces_files_whole_and_keeps_their_mode_and_links() {
+    use std::os::unix::fs::PermissionsExt;
+    let s = setup();
+    touch(&s.home, ".claude.json", "{}\n");
+    fs::set_permissions(
+        s.home.join(".claude.json"),
+        fs::Permissions::from_mode(0o600),
+    )
+    .unwrap();
+    touch(&s.root, "shared/mcp.json", "{}\n");
+    std::os::unix::fs::symlink("shared/mcp.json", s.root.join(".mcp.json")).unwrap();
+    let plan = init::plan(&library_options(&s, &["claude"], true)).unwrap();
+    init::apply(&plan).unwrap();
+    let mode = fs::metadata(s.home.join(".claude.json"))
+        .unwrap()
+        .permissions()
+        .mode();
+    assert_eq!(mode & 0o777, 0o600);
+    assert!(fs::symlink_metadata(s.root.join(".mcp.json"))
+        .unwrap()
+        .file_type()
+        .is_symlink());
+    assert!(json(&s.root.join("shared/mcp.json"))["mcpServers"]["tessera"].is_object());
+    for dir in [&s.home, &s.root] {
+        let leftovers: Vec<String> = fs::read_dir(dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .filter(|name| name.contains("tessera-") && name.ends_with(".tmp"))
+            .collect();
+        assert!(leftovers.is_empty(), "{leftovers:?}");
+    }
 }
 
 #[test]

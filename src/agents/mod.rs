@@ -86,6 +86,10 @@ pub struct HookConfig {
     pub agent: &'static str,
     pub layout: HookLayout,
     pub events: &'static [HookEvent],
+    /// The agent runs hook scripts, not command lines (Augment: a `command`
+    /// is a path to a `.sh`, `.ps1`, `.cmd` or `.bat` file): Tessera writes
+    /// one script per event in this directory and lists their paths.
+    pub scripts: Option<&'static str>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -173,6 +177,7 @@ pub const AGENTS: &[Agent] = &[
             path: ".claude/settings.local.json",
             agent: "claude",
             layout: HookLayout::Nested,
+            scripts: None,
             events: &[
                 on("SessionStart", "session-start", 10),
                 on_tools("PreToolUse", "pre-edit", "Edit|Write|MultiEdit", 10),
@@ -198,6 +203,7 @@ pub const AGENTS: &[Agent] = &[
             path: ".codex/hooks.json",
             agent: "codex",
             layout: HookLayout::Nested,
+            scripts: None,
             events: &[
                 on("SessionStart", "session-start", 10),
                 on_tools("PreToolUse", "pre-edit", "Edit|Write|apply_patch", 10),
@@ -221,6 +227,7 @@ pub const AGENTS: &[Agent] = &[
             path: ".gemini/settings.json",
             agent: "gemini",
             layout: HookLayout::NestedMillis,
+            scripts: None,
             events: &[
                 on("SessionStart", "session-start", 10),
                 on_tools("AfterTool", "post-edit", "write_file|replace", 30),
@@ -243,6 +250,7 @@ pub const AGENTS: &[Agent] = &[
             path: ".agents/hooks.json",
             agent: "antigravity",
             layout: HookLayout::Antigravity,
+            scripts: None,
             events: &[
                 on("SessionStart", "session-start", 10),
                 on_tools(
@@ -270,6 +278,7 @@ pub const AGENTS: &[Agent] = &[
             path: ".github/hooks/tessera.json",
             agent: "copilot",
             layout: HookLayout::Copilot,
+            scripts: None,
             events: &[
                 on("sessionStart", "session-start", 10),
                 on("postToolUse", "post-edit", 30),
@@ -302,6 +311,7 @@ pub const AGENTS: &[Agent] = &[
             path: ".cursor/hooks.json",
             agent: "cursor",
             layout: HookLayout::Cursor,
+            scripts: None,
             events: &[
                 on("sessionStart", "session-start", 10),
                 on("postToolUse", "post-edit", 30),
@@ -336,6 +346,7 @@ pub const AGENTS: &[Agent] = &[
             path: ".qwen/settings.json",
             agent: "qwen",
             layout: HookLayout::Nested,
+            scripts: None,
             events: &[
                 on("SessionStart", "session-start", 10),
                 on("PostToolUse", "post-edit", 30),
@@ -443,11 +454,12 @@ pub const AGENTS: &[Agent] = &[
         binaries: &["auggie"],
         home_markers: &[".augment"],
         global_mcp: mcp(".augment/settings.json", McpFormat::McpServers),
-        limits: Some("its MCP config is global only (use --global); no pre-edit note; hooks run in the CLI only"),
+        limits: Some("its MCP config is global only (use --global); no pre-edit note; hooks run in the CLI only, through scripts in .augment/hooks"),
         hooks: Some(HookConfig {
             path: ".augment/settings.local.json",
             agent: "augment",
             layout: HookLayout::NestedMillis,
+            scripts: Some(".augment/hooks"),
             events: &[
                 on("SessionStart", "session-start", 10),
                 on("PostToolUse", "post-edit", 30),

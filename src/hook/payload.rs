@@ -6,6 +6,8 @@ use std::path::{Path, PathBuf};
 
 use serde_json::Value;
 
+use super::Agent;
+
 /// Tools that write files, across agents.
 const EDIT_TOOLS: &[&str] = &[
     "edit",
@@ -54,21 +56,35 @@ pub struct Payload {
     pub stop_cause: Option<String>,
     /// The agent reported changed files directly (Augment's `file_changes`).
     pub file_changes: bool,
+    /// The client that sent the payload, when its fields tell.
+    pub client: Option<Agent>,
+    /// The client's own name for the event (`hook_event_name`).
+    pub event_name: Option<String>,
+    /// The client's id for the turn, when it sends one.
+    pub turn: Option<String>,
 }
 
 impl Payload {
     pub fn parse(raw: &str) -> Self {
         let value: Value = serde_json::from_str(raw).unwrap_or(Value::Null);
-        let session = [
-            "session_id",
-            "sessionId",
-            "conversation_id",
-            "conversationId",
-        ]
-        .iter()
-        .find_map(|key| value[*key].as_str())
-        .unwrap_or("default")
-        .to_string();
+        let client = client(&value);
+        // Cursor sends a `session_id` only at session start; its other events
+        // carry the conversation id.
+        let ids: &[&str] = if client == Some(Agent::Cursor) {
+            &["conversation_id", "session_id"]
+        } else {
+            &[
+                "session_id",
+                "sessionId",
+                "conversation_id",
+                "conversationId",
+            ]
+        };
+        let session = ids
+            .iter()
+            .find_map(|key| value[*key].as_str())
+            .unwrap_or("default")
+            .to_string();
         let cwd = value["cwd"]
             .as_str()
             .or_else(|| value["workspace_roots"][0].as_str())
@@ -132,11 +148,17 @@ impl Payload {
             stop_hook_active: value["stop_hook_active"]
                 .as_bool()
                 .or_else(|| value["loop_count"].as_u64().map(|count| count > 0)),
-            stop_cause: ["status", "agent_stop_cause"]
+            stop_cause: stop_cause(&value),
+            file_changes,
+            client,
+            event_name: value["hook_event_name"]
+                .as_str()
+                .or_else(|| value["hookEventName"].as_str())
+                .map(ToOwned::to_owned),
+            turn: ["generation_id", "turn_id"]
                 .iter()
                 .find_map(|key| value[*key].as_str())
                 .map(ToOwned::to_owned),
-            file_changes,
         }
     }
 
@@ -156,7 +178,7 @@ impl Payload {
     pub fn finished(&self) -> bool {
         self.stop_cause
             .as_deref()
-            .is_none_or(|cause| matches!(cause, "completed" | "end_turn"))
+            .is_none_or(|cause| matches!(cause, "completed" | "end_turn" | "model_stop"))
     }
 
     /// The edited files relative to `root`, dropping any outside it.
@@ -183,6 +205,103 @@ impl Payload {
         out.dedup();
         out
     }
+}
+
+/// Why the agent stopped, in any client's words; an error message (as
+/// Antigravity sends one) is a stop on error.
+fn stop_cause(value: &Value) -> Option<String> {
+    if value["error"].as_str().is_some_and(|e| !e.is_empty()) {
+        return Some("error".to_string());
+    }
+    [
+        "status",
+        "agent_stop_cause",
+        "terminationReason",
+        "stopReason",
+        "stop_reason",
+    ]
+    .iter()
+    .filter_map(|key| value[*key].as_str())
+    .find(|cause| !cause.is_empty())
+    .map(ToOwned::to_owned)
+}
+
+/// Gemini's event names; Claude-shaped agents use `PreToolUse` and so on.
+const GEMINI_EVENTS: &[&str] = &[
+    "BeforeTool",
+    "AfterTool",
+    "BeforeAgent",
+    "AfterAgent",
+    "BeforeModel",
+    "AfterModel",
+    "BeforeToolSelection",
+    "PreCompress",
+];
+
+/// The client that sent `value`, from fields only it sends (docs/agents.md),
+/// since clients run each other's hook files: Cursor and Copilot CLI both
+/// load `.claude/settings*.json`. `None` when nothing tells.
+pub fn client(value: &Value) -> Option<Agent> {
+    let has = |key: &str| !value[key].is_null();
+    // Cursor and Augment both send these; Cursor's event names are camelCase.
+    let workspace = has("conversation_id") && has("workspace_roots");
+    let camel_event = value["hook_event_name"]
+        .as_str()
+        .and_then(|e| e.chars().next())
+        .is_some_and(|c| c.is_ascii_lowercase());
+    if has("cursor_version") || has("generation_id") || (workspace && camel_event) {
+        return Some(Agent::Cursor);
+    }
+    if [
+        "toolCall",
+        "conversationId",
+        "workspacePaths",
+        "terminationReason",
+        "fullyIdle",
+    ]
+    .iter()
+    .any(|key| has(key))
+    {
+        return Some(Agent::Antigravity);
+    }
+    // Copilot CLI: camelCase for its own hook files, snake_case with an ISO
+    // timestamp (and neither a transcript nor a permission mode, which Qwen
+    // and Gemini send) for hooks it reads from Claude's files.
+    let camel = ["toolName", "toolArgs", "toolResult", "stopReason"]
+        .iter()
+        .any(|key| has(key))
+        || (has("sessionId") && value["timestamp"].is_number());
+    let snake = has("tool_result")
+        || has("stop_reason")
+        || (value["timestamp"].is_string()
+            && !has("transcript_path")
+            && !has("permission_mode")
+            && has("session_id"));
+    if camel || snake {
+        return Some(Agent::Copilot);
+    }
+    if value["hook_event_name"]
+        .as_str()
+        .is_some_and(|event| GEMINI_EVENTS.contains(&event))
+    {
+        return Some(Agent::Gemini);
+    }
+    if [
+        "is_mcp_tool",
+        "file_changes",
+        "agent_stop_cause",
+        "tool_error",
+    ]
+    .iter()
+    .any(|key| has(key))
+        || workspace
+    {
+        return Some(Agent::Augment);
+    }
+    if has("turn_id") {
+        return Some(Agent::Codex);
+    }
+    None
 }
 
 /// A deleted file cannot be canonicalised; its parent can.
@@ -308,6 +427,55 @@ mod tests {
         );
         assert_eq!(p.old_texts, vec!["a", "c"]);
         assert_eq!(p.stop_hook_active, Some(false));
+    }
+
+    #[test]
+    fn the_client_is_told_by_its_own_fields() {
+        let cases = [
+            (
+                r#"{"session_id":"s","transcript_path":"/t","cwd":"/r","permission_mode":"default","hook_event_name":"PostToolUse","tool_name":"Edit","tool_input":{},"tool_response":{},"tool_use_id":"t"}"#,
+                None,
+            ),
+            (
+                r#"{"session_id":"s","transcript_path":"/t","cwd":"/r","hook_event_name":"PostToolUse","timestamp":"2026-10-21T10:00:00Z","permission_mode":"default","tool_name":"edit"}"#,
+                None,
+            ),
+            (
+                r#"{"conversation_id":"c","generation_id":"g","cursor_version":"2.1","workspace_roots":["/r"],"hook_event_name":"postToolUse"}"#,
+                Some(Agent::Cursor),
+            ),
+            (
+                r#"{"sessionId":"c","timestamp":1,"cwd":"/r","toolName":"edit","toolArgs":"{}"}"#,
+                Some(Agent::Copilot),
+            ),
+            (
+                r#"{"hook_event_name":"PostToolUse","session_id":"c","timestamp":"2026-10-21T10:00:00Z","cwd":"/r","tool_name":"edit","tool_input":{},"tool_result":{"result_type":"success"}}"#,
+                Some(Agent::Copilot),
+            ),
+            (
+                r#"{"hook_event_name":"PreToolUse","session_id":"c","timestamp":"2026-10-21T10:00:00Z","cwd":"/r","tool_name":"edit","tool_input":{}}"#,
+                Some(Agent::Copilot),
+            ),
+            (
+                r#"{"session_id":"g","transcript_path":"/t","cwd":"/r","hook_event_name":"AfterTool","timestamp":"2026-10-21T10:00:00Z"}"#,
+                Some(Agent::Gemini),
+            ),
+            (
+                r#"{"conversation_id":"a","workspace_roots":["/r"],"hook_event_name":"PostToolUse","is_mcp_tool":false}"#,
+                Some(Agent::Augment),
+            ),
+            (
+                r#"{"conversationId":"v","workspacePaths":["/r"],"toolCall":{"name":"x"}}"#,
+                Some(Agent::Antigravity),
+            ),
+            (
+                r#"{"session_id":"x","turn_id":"t","cwd":"/r","hook_event_name":"Stop","model":"gpt"}"#,
+                Some(Agent::Codex),
+            ),
+        ];
+        for (raw, client) in cases {
+            assert_eq!(Payload::parse(raw).client, client, "{raw}");
+        }
     }
 
     #[test]

@@ -12,7 +12,7 @@
   "antigravity stop": [
     "block {\"decision\":\"continue\",\"reason\":\"T\"}",
     "context {\"decision\":\"continue\",\"reason\":\"T\"}",
-    "silent {}"
+    "silent {\"decision\":\"stop\"}"
   ],
   "augment post-edit": [
     "block {\"hookSpecificOutput\":{\"hookEventName\":\"PostToolUse\",\"additionalContext\":\"T\"}}",

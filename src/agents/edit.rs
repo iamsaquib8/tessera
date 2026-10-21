@@ -2,7 +2,10 @@
 //! there. A file that cannot be changed safely is left alone, and the caller
 //! shows the snippet to add by hand.
 
+use std::path::Path;
+
 use serde_json::{json, Value};
+use yaml_rust2::{Yaml, YamlLoader};
 
 use super::{HookConfig, HookEvent, HookLayout, McpFormat};
 
@@ -46,7 +49,13 @@ pub fn mcp(format: McpFormat, existing: Option<&str>, server: &Server) -> Edit {
         McpFormat::Toml => toml_entry(existing, server),
         McpFormat::ContinueYaml => match existing {
             Some(_) => Edit::Unchanged,
-            None => Edit::Write(continue_yaml(server)),
+            None => {
+                let text = continue_yaml(server);
+                match yaml_document(&text) {
+                    Some(Yaml::Hash(_)) => Edit::Write(text),
+                    _ => manual("Tessera could not write valid YAML for it", text),
+                }
+            }
         },
         McpFormat::GooseYaml => goose_entry(existing, server),
     }
@@ -122,23 +131,28 @@ fn quote(text: &str) -> String {
     serde_json::to_string(text).expect("strings serialize")
 }
 
+/// `[mcp_servers.tessera]` appended, so the rest of the file is kept byte for
+/// byte. The file is parsed to see what is already there, and the result is
+/// parsed again: anything that would not come back as the same settings
+/// plus Tessera's entry is left for the user to add by hand.
 fn toml_entry(existing: Option<&str>, server: &Server) -> Edit {
     let text = existing.unwrap_or_default();
-    let configured = text.lines().any(|line| {
-        let line = line.trim();
-        line.starts_with("[mcp_servers.tessera")
-            || line.starts_with("[mcp_servers.\"tessera\"")
-            || line.starts_with("mcp_servers.tessera")
-    });
-    if configured {
-        return Edit::Unchanged;
-    }
     let args: Vec<String> = server.args.iter().map(|a| quote(a)).collect();
     let block = format!(
         "[mcp_servers.tessera]\ncommand = {}\nargs = [{}]\n",
         quote(&server.command),
         args.join(", ")
     );
+    let Ok(before) = text.parse::<toml::Table>() else {
+        return manual("it is not valid TOML", block);
+    };
+    match before.get("mcp_servers") {
+        Some(toml::Value::Table(servers)) if servers.contains_key("tessera") => {
+            return Edit::Unchanged
+        }
+        Some(toml::Value::Table(_)) | None => {}
+        Some(_) => return manual("its `mcp_servers` is not a table", block),
+    }
     let mut out = text.to_string();
     if !out.is_empty() {
         if !out.ends_with('\n') {
@@ -147,6 +161,23 @@ fn toml_entry(existing: Option<&str>, server: &Server) -> Edit {
         out.push('\n');
     }
     out.push_str(&block);
+    let Ok(mut after) = out.parse::<toml::Table>() else {
+        return manual("Tessera's table cannot be appended to it", block);
+    };
+    let added = match after.get_mut("mcp_servers") {
+        Some(toml::Value::Table(servers)) => servers.remove("tessera").is_some(),
+        _ => false,
+    };
+    if after
+        .get("mcp_servers")
+        .is_some_and(|s| s.as_table().is_some_and(|t| t.is_empty()))
+        && !before.contains_key("mcp_servers")
+    {
+        after.remove("mcp_servers");
+    }
+    if !added || after != before {
+        return manual("Tessera's table cannot be appended to it", block);
+    }
     Edit::Write(out)
 }
 
@@ -190,43 +221,110 @@ fn goose_block(server: &Server, indent: &str) -> String {
     out
 }
 
+/// Goose's `extensions:` map with Tessera's entry added as lines, so the
+/// rest of the file is kept. Like the TOML edit, the file is parsed first
+/// and the result again, and is left alone unless it comes back as the same
+/// settings plus Tessera's entry.
 fn goose_entry(existing: Option<&str>, server: &Server) -> Edit {
     let text = existing.unwrap_or_default();
-    let lines: Vec<&str> = text.lines().collect();
-    let Some(at) = lines
-        .iter()
-        .position(|line| line.trim_end() == "extensions:")
-    else {
-        let mut out = text.to_string();
-        if !out.is_empty() && !out.ends_with('\n') {
-            out.push('\n');
-        }
-        out.push_str("extensions:\n");
-        out.push_str(&goose_block(server, "  "));
-        return Edit::Write(out);
+    let snippet = format!("extensions:\n{}", goose_block(server, "  "));
+    let Some(before) = yaml_document(text) else {
+        return manual("it is not a YAML mapping Tessera can read", snippet);
     };
-    let indent: String = lines[at + 1..]
-        .iter()
-        .find(|line| !line.trim().is_empty())
-        .map(|line| line.chars().take_while(|c| *c == ' ').collect())
-        .filter(|indent: &String| !indent.is_empty())
-        .unwrap_or_else(|| "  ".to_string());
-    let configured = lines[at + 1..]
-        .iter()
-        .take_while(|line| line.is_empty() || line.starts_with(' '))
-        .any(|line| *line == format!("{indent}tessera:"));
-    if configured {
-        return Edit::Unchanged;
+    let tessera = Yaml::String("tessera".to_string());
+    let extensions = Yaml::String("extensions".to_string());
+    if let Some(Yaml::Hash(map)) = before.as_hash().and_then(|top| top.get(&extensions)) {
+        if map.contains_key(&tessera) {
+            return Edit::Unchanged;
+        }
     }
-    let mut out: Vec<String> = lines[..=at].iter().map(|l| l.to_string()).collect();
-    out.push(goose_block(server, &indent).trim_end().to_string());
-    out.extend(lines[at + 1..].iter().map(|l| l.to_string()));
-    Edit::Write(out.join("\n") + "\n")
+    let lines: Vec<&str> = text.lines().collect();
+    let out = match lines.iter().position(|line| extensions_line(line)) {
+        None => {
+            let mut out = text.to_string();
+            if !out.is_empty() && !out.ends_with('\n') {
+                out.push('\n');
+            }
+            out.push_str(&snippet);
+            out
+        }
+        Some(at) => {
+            let indent: String = lines[at + 1..]
+                .iter()
+                .find(|line| !line.trim().is_empty() && !line.trim_start().starts_with('#'))
+                .map(|line| line.chars().take_while(|c| *c == ' ').collect())
+                .filter(|indent: &String| !indent.is_empty())
+                .unwrap_or_else(|| "  ".to_string());
+            let mut out: Vec<String> = lines[..=at].iter().map(|l| l.to_string()).collect();
+            out.push(goose_block(server, &indent).trim_end().to_string());
+            out.extend(lines[at + 1..].iter().map(|l| l.to_string()));
+            out.join("\n") + "\n"
+        }
+    };
+    let Some(Yaml::Hash(mut after)) = yaml_document(&out) else {
+        return manual("Tessera's entry cannot be added to it safely", snippet);
+    };
+    let added = match after.get_mut(&extensions) {
+        Some(Yaml::Hash(map)) => map.remove(&tessera).is_some(),
+        _ => false,
+    };
+    // `extensions:` with nothing under it was null before Tessera's entry.
+    if after
+        .get(&extensions)
+        .is_some_and(|e| e.as_hash().is_some_and(|map| map.is_empty()))
+    {
+        match before.as_hash().and_then(|top| top.get(&extensions)) {
+            Some(value) => {
+                after.insert(extensions.clone(), value.clone());
+            }
+            None => {
+                after.remove(&extensions);
+            }
+        }
+    }
+    let unchanged = match &before {
+        Yaml::Hash(top) => *top == after,
+        _ => after.is_empty(),
+    };
+    if !added || !unchanged {
+        return manual("Tessera's entry cannot be added to it safely", snippet);
+    }
+    Edit::Write(out)
+}
+
+/// The top-level `extensions:` key with its value on the following lines.
+fn extensions_line(line: &str) -> bool {
+    line.strip_prefix("extensions:").is_some_and(|rest| {
+        let rest = rest.trim();
+        rest.is_empty() || rest.starts_with('#')
+    })
+}
+
+/// The one YAML document in `text`: a mapping, or `Null` when the file is
+/// empty; `None` when it is not valid YAML or is something else.
+fn yaml_document(text: &str) -> Option<Yaml> {
+    let mut docs = YamlLoader::load_from_str(text).ok()?;
+    match docs.len() {
+        0 => Some(Yaml::Null),
+        1 => match docs.remove(0) {
+            doc @ (Yaml::Hash(_) | Yaml::Null) => Some(doc),
+            _ => None,
+        },
+        _ => None,
+    }
 }
 
 /// One handler for `event` in the agent's layout.
-fn hook_entry(config: &HookConfig, event: &HookEvent, command: &str) -> Value {
-    let command = format!("{command} hook {} {}", config.agent, event.event);
+fn hook_entry(
+    config: &HookConfig,
+    event: &HookEvent,
+    command: &str,
+    scripts: Option<&Path>,
+) -> Value {
+    let command = match scripts {
+        Some(dir) => dir.join(script_name(event)).to_string_lossy().into_owned(),
+        None => format!("{command} hook {} {}", config.agent, event.event),
+    };
     let handler = match config.layout {
         HookLayout::Nested | HookLayout::Antigravity => {
             json!({ "type": "command", "command": command, "timeout": event.seconds })
@@ -257,7 +355,12 @@ fn hook_entry(config: &HookConfig, event: &HookEvent, command: &str) -> Value {
 
 /// Tessera's hooks added to an agent's hook file, next to whatever hooks
 /// are already there.
-pub fn hooks(existing: Option<&str>, config: &HookConfig, command: &str) -> Edit {
+pub fn hooks(
+    existing: Option<&str>,
+    config: &HookConfig,
+    command: &str,
+    scripts: Option<&Path>,
+) -> Edit {
     let (wrapper, versioned) = match config.layout {
         HookLayout::Antigravity => ("tessera", false),
         HookLayout::Copilot | HookLayout::Cursor => ("hooks", true),
@@ -269,7 +372,7 @@ pub fn hooks(existing: Option<&str>, config: &HookConfig, command: &str) -> Edit
         for event in config.events {
             events.insert(
                 event.name.to_string(),
-                json!([hook_entry(config, event, command)]),
+                json!([hook_entry(config, event, command, scripts)]),
             );
         }
         let mut root = serde_json::Map::new();
@@ -302,10 +405,11 @@ pub fn hooks(existing: Option<&str>, config: &HookConfig, command: &str) -> Edit
         };
         let ours = list.iter().any(|entry| {
             let text = entry.to_string();
-            text.contains("tessera") && text.contains(&marker)
+            text.contains("tessera")
+                && (text.contains(&marker) || text.contains(&script_name(event)))
         });
         if !ours {
-            list.push(hook_entry(config, event, command));
+            list.push(hook_entry(config, event, command, scripts));
             added = true;
         }
     }
@@ -313,6 +417,26 @@ pub fn hooks(existing: Option<&str>, config: &HookConfig, command: &str) -> Edit
         return Edit::Unchanged;
     }
     Edit::Write(pretty(&root, &indent_of(existing.unwrap_or_default())))
+}
+
+/// The wrapper script for `event`, for agents whose hooks run scripts.
+pub fn script_name(event: &HookEvent) -> String {
+    format!("tessera-{}.sh", event.event)
+}
+
+/// A wrapper script that runs `tessera hook <agent> <event>` with the hook's
+/// input; an existing script that does not run Tessera is left alone.
+pub fn hook_script(existing: Option<&str>, command: &str, agent: &str, event: &HookEvent) -> Edit {
+    let run = format!("exec {command} hook {agent} {}", event.event);
+    let script = format!(
+        "#!/bin/sh\n# Added by `tessera init`: {agent} runs hook scripts, so this one runs Tessera's.\n{run}\n"
+    );
+    match existing {
+        None => Edit::Write(script),
+        Some(text) if text.contains(&run) => Edit::Unchanged,
+        Some(text) if text.contains("Added by `tessera init`") => Edit::Write(script),
+        Some(_) => manual("a script of that name already exists", script),
+    }
 }
 
 pub const INSTRUCTIONS: &str = "## Code graph (Tessera)\n\n\
@@ -441,6 +565,78 @@ mod tests {
             mcp(McpFormat::Toml, Some(&after), &server()),
             Edit::Unchanged
         );
+    }
+
+    #[test]
+    fn toml_already_set_up_in_any_spelling_is_left_alone() {
+        for existing in [
+            "[mcp_servers]\ntessera = { command = \"tessera\", args = [\"mcp\"] }\n",
+            "mcp_servers = { tessera = { command = \"tessera\" } }\n",
+            "[ mcp_servers.tessera ]\ncommand = \"tessera\"\n",
+            "[mcp_servers.'tessera']\ncommand = \"tessera\"\n",
+        ] {
+            assert_eq!(
+                mcp(McpFormat::Toml, Some(existing), &server()),
+                Edit::Unchanged,
+                "{existing}"
+            );
+        }
+    }
+
+    #[test]
+    fn toml_output_is_valid_or_the_file_is_left_alone() {
+        let Edit::Write(after) = mcp(
+            McpFormat::Toml,
+            Some("[mcp_servers]\nother = { command = \"o\" }\n"),
+            &server(),
+        ) else {
+            panic!()
+        };
+        let table: toml::Table = after.parse().unwrap();
+        assert!(table["mcp_servers"]["other"].is_table(), "{after}");
+        assert_eq!(
+            table["mcp_servers"]["tessera"]["command"].as_str(),
+            Some("tessera")
+        );
+        for existing in [
+            "mcp_servers = { other = { command = \"o\" } }\n",
+            "mcp_servers = \"nope\"\n",
+            "model = \n",
+        ] {
+            assert!(
+                matches!(
+                    mcp(McpFormat::Toml, Some(existing), &server()),
+                    Edit::Manual { .. }
+                ),
+                "{existing}"
+            );
+        }
+    }
+
+    #[test]
+    fn goose_finds_extensions_with_a_comment_and_never_writes_bad_yaml() {
+        let before = "extensions:  # mine\n  developer:\n    enabled: true\n";
+        let Edit::Write(after) = mcp(McpFormat::GooseYaml, Some(before), &server()) else {
+            panic!()
+        };
+        assert_eq!(after.matches("extensions:").count(), 1, "{after}");
+        let docs = yaml_rust2::YamlLoader::load_from_str(&after).unwrap();
+        let extensions = &docs[0]["extensions"];
+        assert!(!extensions["developer"].is_badvalue(), "{after}");
+        assert_eq!(
+            extensions["tessera"]["cmd"].as_str(),
+            Some("tessera"),
+            "{after}"
+        );
+        for existing in ["extensions: {}\n", "extensions: [\n"] {
+            assert!(
+                matches!(
+                    mcp(McpFormat::GooseYaml, Some(existing), &server()),
+                    Edit::Manual { .. }
+                ),
+                "{existing}"
+            );
+        }
     }
 
     #[test]
