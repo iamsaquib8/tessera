@@ -11,10 +11,11 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::Result;
 use rusqlite::Connection;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use crate::config::TesseraConfig;
@@ -27,7 +28,7 @@ use crate::types::SymbolRecord;
 use crate::walk;
 use crate::workspace::Workspace;
 use payload::Payload;
-use session::{content_hash, Session, Store};
+use session::{content_hash, Answered, Session, Store};
 
 /// How long an edit hook waits for another index writer before staying silent.
 const EDIT_WAIT: Duration = Duration::from_secs(3);
@@ -110,7 +111,7 @@ fn squash(name: &str) -> String {
         .to_ascii_lowercase()
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Reply {
     /// Information the agent should see; never stops it.
     Context(String),
@@ -126,12 +127,30 @@ pub struct HookOptions {
     pub exe: Option<PathBuf>,
 }
 
+/// One event reaches Tessera through every wiring the client loads (the
+/// plugin and `init`; Cursor and Copilot CLI also run Claude's hook file).
+/// A run of the same event that started before the first answer was ready,
+/// or through another adapter just after it, gets that answer again.
+const SAME_EVENT: Duration = Duration::from_secs(2);
+/// Answers kept for that.
+const ANSWERS_KEPT: usize = 16;
+
 /// Runs one hook and returns the JSON to print, if any.
-pub fn run(agent: &str, event: &str, input: &str, options: &HookOptions) -> Result<Option<Value>> {
-    let (Some(agent), Some(kind)) = (Agent::parse(agent), Event::parse(event)) else {
+pub fn run(
+    adapter: &str,
+    event: &str,
+    input: &str,
+    options: &HookOptions,
+) -> Result<Option<Value>> {
+    let started = now_ms();
+    let (Some(named), Some(kind)) = (Agent::parse(adapter), Event::parse(event)) else {
         return Ok(None);
     };
     let payload = Payload::parse(input);
+    // The output shape follows the client that sent the event, which is not
+    // always the one the hook file was written for.
+    let agent = payload.client.unwrap_or(named);
+    let event = payload.event_name.as_deref().unwrap_or(event);
     let cwd = match &payload.cwd {
         Some(cwd) => cwd.clone(),
         None => std::env::current_dir()?,
@@ -157,6 +176,23 @@ pub fn run(agent: &str, event: &str, input: &str, options: &HookOptions) -> Resu
             }
         }
     }
+    let key = event_key(kind, &payload, &ws.root);
+    let adapter = squash(adapter);
+    if let Some(answer) = key.as_ref().and_then(|key| {
+        session.answered.iter_mut().find(|a| {
+            a.key == *key
+                && (started < a.finished_ms
+                    || (started < a.finished_ms + SAME_EVENT.as_millis() as u64
+                        && !a.adapters.contains(&adapter)))
+        })
+    }) {
+        answer.adapters.push(adapter);
+        let reply = answer.reply.clone();
+        store.save(&session)?;
+        return Ok(reply
+            .and_then(|reply| render(agent, kind, event, reply))
+            .or_else(|| silent(agent, kind)));
+    }
     let reply = match kind {
         Event::SessionStart => {
             session::expire(&ws.db_path);
@@ -165,27 +201,54 @@ pub fn run(agent: &str, event: &str, input: &str, options: &HookOptions) -> Resu
             }
             None
         }
-        Event::PreEdit | Event::PostEdit
-            if session.last_edit == Some(session::hash(input.as_bytes())) =>
-        {
-            // The same event again: Tessera is wired twice (plugin and init).
-            None
-        }
         Event::PreEdit if matches!(agent, Agent::Claude | Agent::Codex) => {
-            session.last_edit = Some(session::hash(input.as_bytes()));
             hook.pre_edit(&payload, &mut session)?
         }
         Event::PreEdit => None,
-        Event::PostEdit => {
-            session.last_edit = Some(session::hash(input.as_bytes()));
-            hook.post_edit(&payload, &mut session)?
-        }
+        Event::PostEdit => hook.post_edit(&payload, &mut session)?,
         Event::Stop => hook.stop(&payload, &mut session)?,
     };
+    if let Some(key) = key {
+        session.answered.push(Answered {
+            key,
+            reply: reply.clone(),
+            finished_ms: now_ms(),
+            adapters: vec![adapter],
+        });
+        let extra = session.answered.len().saturating_sub(ANSWERS_KEPT);
+        session.answered.drain(..extra);
+    }
     store.save(&session)?;
     Ok(reply
         .and_then(|reply| render(agent, kind, event, reply))
         .or_else(|| silent(agent, kind)))
+}
+
+/// What makes two runs the same event: the files an edit touched with
+/// their content now, or the turn that stopped.
+fn event_key(kind: Event, payload: &Payload, root: &Path) -> Option<String> {
+    let mut key = match kind {
+        Event::SessionStart => return None,
+        Event::PreEdit => "pre".to_string(),
+        Event::PostEdit => "post".to_string(),
+        Event::Stop => {
+            return Some(format!(
+                "stop {}",
+                payload.turn.as_deref().unwrap_or_default()
+            ));
+        }
+    };
+    for path in payload.paths_in(root) {
+        let hash = content_hash(&root.join(&path));
+        key.push_str(&format!(" {path}:{}", &hash[..hash.len().min(16)]));
+    }
+    Some(key)
+}
+
+fn now_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| d.as_millis() as u64)
 }
 
 /// The agent's output shape for `reply`; `None` where its contract has no
@@ -233,9 +296,15 @@ pub fn silent(agent: Agent, kind: Event) -> Option<Value> {
     }
 }
 
-/// The output for a hook that could not run: the agent's no-op answer.
-pub fn fallback(agent: &str, event: &str) -> Option<Value> {
-    silent(Agent::parse(agent)?, Event::parse(event)?)
+/// The output for a hook that could not run: the no-op answer of the client
+/// that sent `input`.
+pub fn fallback(agent: &str, event: &str, input: &str) -> Option<Value> {
+    let named = Agent::parse(agent)?;
+    let value: Value = serde_json::from_str(input).unwrap_or(Value::Null);
+    silent(
+        payload::client(&value).unwrap_or(named),
+        Event::parse(event)?,
+    )
 }
 
 struct Hook<'a> {

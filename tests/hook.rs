@@ -808,3 +808,193 @@ fn the_session_file_counts_what_the_hooks_did() {
         "{session}"
     );
 }
+
+fn session_file(root: &Path, id: &str) -> Value {
+    let path = root.join(format!(".tessera/sessions/{id}.json"));
+    serde_json::from_str(&fs::read_to_string(path).unwrap()).unwrap()
+}
+
+fn index_now(root: &Path) {
+    Command::cargo_bin("tessera")
+        .unwrap()
+        .current_dir(root)
+        .args(["--quiet", "index"])
+        .assert()
+        .success();
+}
+
+/// Cursor loads `.claude/settings.local.json` too, so with Claude and Cursor
+/// set up each Cursor event reaches `hook claude` and `hook cursor`.
+#[test]
+fn a_cursor_event_through_both_adapters_gets_one_answer_in_cursor_shape() {
+    let temp = repo();
+    let root = temp.path();
+    index_now(root);
+    let common = json!({
+        "conversation_id": "u", "generation_id": "g1", "cursor_version": "2.1.0",
+        "workspace_roots": [root.to_string_lossy()], "model": "m",
+    });
+    let with = |extra: Value| {
+        let mut payload = common.clone();
+        payload
+            .as_object_mut()
+            .unwrap()
+            .extend(extra.as_object().unwrap().clone());
+        payload
+    };
+    hook(
+        "cursor",
+        "sessionStart",
+        with(json!({ "hook_event_name": "sessionStart", "session_id": "u" })),
+    );
+    replace_in(
+        root,
+        "src/users/repo.ts",
+        "repo.findById(id)",
+        "repo.findByIdd(id)",
+    );
+    let post = with(json!({
+        "hook_event_name": "postToolUse", "tool_name": "Edit", "tool_use_id": "t1",
+        "tool_input": { "file_path": path_of(root, "src/users/repo.ts") }, "tool_output": "ok",
+    }));
+    let first = hook("claude", "post-edit", post.clone());
+    assert!(
+        first["additional_context"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("findByIdd"),
+        "{first}"
+    );
+    assert!(first.get("hookSpecificOutput").is_none(), "{first}");
+    assert_eq!(hook("cursor", "post-edit", post), first);
+
+    let stop = with(json!({ "hook_event_name": "stop", "status": "completed", "loop_count": 0 }));
+    let first = hook("claude", "stop", stop.clone());
+    assert!(
+        first["followup_message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("findByIdd"),
+        "{first}"
+    );
+    assert_eq!(hook("cursor", "stop", stop), first);
+    assert_eq!(session_file(root, "u")["counts"]["stop_blocks"], 1);
+}
+
+/// Copilot CLI reads `.claude/settings*.json` as well, and sends hooks
+/// configured there its snake_case payload.
+#[test]
+fn a_copilot_event_through_both_adapters_gets_one_answer_in_copilot_shape() {
+    let temp = repo();
+    let root = temp.path();
+    index_now(root);
+    let cwd = root.to_string_lossy().into_owned();
+    let file = path_of(root, "src/users/repo.ts");
+    hook(
+        "copilot",
+        "sessionStart",
+        json!({ "sessionId": "c", "timestamp": 1_760_000_000_000_u64, "cwd": cwd, "source": "new" }),
+    );
+    replace_in(
+        root,
+        "src/users/repo.ts",
+        "repo.findById(id)",
+        "repo.findByIdd(id)",
+    );
+    let snake = json!({
+        "hook_event_name": "PostToolUse", "session_id": "c", "timestamp": "2026-10-21T10:00:00Z",
+        "cwd": cwd, "tool_name": "edit", "tool_input": { "path": file },
+        "tool_result": { "result_type": "success", "text_result_for_llm": "ok" },
+    });
+    let camel = json!({
+        "sessionId": "c", "timestamp": 1_760_000_000_100_u64, "cwd": cwd, "toolName": "edit",
+        "toolArgs": json!({ "path": file }).to_string(),
+        "toolResult": { "resultType": "success", "textResultForLlm": "ok" },
+    });
+    let first = hook("claude", "post-edit", snake);
+    assert!(
+        first["additionalContext"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("findByIdd"),
+        "{first}"
+    );
+    assert!(first.get("hookSpecificOutput").is_none(), "{first}");
+    assert_eq!(hook("copilot", "post-edit", camel), first);
+
+    let snake = json!({
+        "hook_event_name": "Stop", "session_id": "c", "timestamp": "2026-10-21T10:00:01Z",
+        "cwd": cwd, "transcript_path": "/t", "stop_reason": "end_turn", "stop_hook_active": false,
+    });
+    let camel = json!({
+        "sessionId": "c", "timestamp": 1_760_000_001_000_u64, "cwd": cwd, "transcriptPath": "/t",
+        "stopReason": "end_turn", "stop_hook_active": false,
+    });
+    let first = hook("claude", "stop", snake);
+    assert_eq!(first["decision"], "block", "{first}");
+    assert_eq!(hook("copilot", "agentStop", camel), first);
+    assert_eq!(session_file(root, "c")["counts"]["stop_blocks"], 1);
+}
+
+/// The plugin and `init` both wired: Claude Code runs the two identical
+/// commands at once with the same input.
+#[test]
+fn the_same_event_run_twice_at_once_is_answered_once() {
+    use std::io::Write;
+    use std::process::Stdio;
+
+    let temp = repo();
+    let root = temp.path();
+    start_indexed(root);
+    replace_in(
+        root,
+        "src/users/repo.ts",
+        "repo.findById(id)",
+        "repo.findByIdd(id)",
+    );
+    let mut payload = edit_payload(
+        root,
+        "src/users/repo.ts",
+        "repo.findById(id)",
+        "repo.findByIdd(id)",
+    );
+    let ids = json!({ "session_id": "s1", "cwd": root.to_string_lossy() });
+    payload
+        .as_object_mut()
+        .unwrap()
+        .extend(ids.as_object().unwrap().clone());
+    let lock = fs::OpenOptions::new()
+        .write(true)
+        .open(root.join(".tessera/sessions/s1.lock"))
+        .unwrap();
+    lock.lock().unwrap();
+    let bin = assert_cmd::cargo::cargo_bin("tessera");
+    let children: Vec<_> = (0..2)
+        .map(|_| {
+            let mut child = StdCommand::new(&bin)
+                .args(["hook", "claude", "post-edit"])
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .spawn()
+                .unwrap();
+            child
+                .stdin
+                .take()
+                .unwrap()
+                .write_all(payload.to_string().as_bytes())
+                .unwrap();
+            child
+        })
+        .collect();
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    drop(lock);
+    let outputs: Vec<Value> = children
+        .into_iter()
+        .map(|child| {
+            let out = child.wait_with_output().unwrap();
+            serde_json::from_slice(&out.stdout).unwrap()
+        })
+        .collect();
+    assert!(outputs[0].get("decision").is_none(), "{outputs:?}");
+    assert_eq!(outputs[0], outputs[1]);
+}

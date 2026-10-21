@@ -10,6 +10,8 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+use super::Reply;
+
 /// Session files untouched for this long are removed at the next session start.
 const EXPIRY: Duration = Duration::from_secs(7 * 24 * 60 * 60);
 
@@ -35,12 +37,25 @@ pub struct Session {
     pub problems: BTreeMap<String, u32>,
     /// Stop blocks since the turn began.
     pub stop_blocks: u32,
-    /// Hash of the last edit event, to answer a duplicate only once.
-    pub last_edit: Option<String>,
+    /// The latest answers, so the same event arriving through a second
+    /// wiring gets the same answer instead of a second check.
+    pub answered: Vec<Answered>,
     /// What the hooks did this session, for evaluation and support.
     pub counts: Counts,
     /// Every finding a hook has blocked on, as `id path message`.
     pub blocked: BTreeSet<String>,
+}
+
+#[derive(Debug, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Answered {
+    /// The event: the edited files with their content, or the stopped turn.
+    pub key: String,
+    pub reply: Option<Reply>,
+    /// When the answer was ready, in milliseconds since the Unix epoch.
+    pub finished_ms: u64,
+    /// The adapters (`tessera hook <adapter>`) that gave it.
+    pub adapters: Vec<String>,
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]

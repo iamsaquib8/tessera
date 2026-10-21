@@ -805,11 +805,11 @@ fn run_hook(agent: &str, event: &str, cli: &Cli) -> u8 {
             if !cli.quiet {
                 eprintln!("tessera hook: {error:#}");
             }
-            hook::fallback(agent, event)
+            hook::fallback(agent, event, &input)
         }
         Err(_) => {
             eprintln!("tessera hook: internal error");
-            hook::fallback(agent, event)
+            hook::fallback(agent, event, &input)
         }
     };
     if let Some(value) = value {

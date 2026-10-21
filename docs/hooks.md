@@ -18,8 +18,15 @@ For Claude Code there is also a plugin, which needs no files in the project:
 /plugin install tessera@tessera
 ```
 
-Use the plugin or `init` for Claude Code, not both. (If both are wired,
-Tessera answers each edit once.)
+Use the plugin or `init` for Claude Code, not both. If both are wired,
+Tessera checks each event once and gives both runs the same answer.
+
+Cursor and Copilot CLI also run the hooks in `.claude/settings.local.json`,
+so with Claude Code and one of them set up, each of their events reaches
+Tessera twice. Tessera tells the client from the event's fields (not from
+the hook file it came through), answers in that client's shape, checks the
+event once and repeats the answer to the second run, and counts one end of
+turn once.
 
 ## What happens
 
