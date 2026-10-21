@@ -414,6 +414,43 @@ fn a_namespace_re_export_is_a_module_named_by_its_alias() {
 }
 
 #[test]
+fn enum_members_and_implicit_members_are_never_missing() {
+    let (_temp, ws) = repo_with(&[
+        ("Color.java", "enum Color { RED, GREEN }\n"),
+        ("Point.java", "record Point(int x, int y) {}\n"),
+        ("Box.java", "class Box {\n  int size() { return 1; }\n}\n"),
+        (
+            "Main.java",
+            "class Main {\n  String run(Point p, Box b) {\n    Color c = Color.valueOf(\"RED\");\n    c.ordinal();\n    b.toString();\n    b.sizee();\n    return \"\" + p.x() + Color.values().length + b.hashCode();\n  }\n}\n",
+        ),
+        ("kind.ts", "export enum Kind { A, B = 2 }\n"),
+        (
+            "shape.ts",
+            "export class Shape {\n  area() { return 1; }\n}\n",
+        ),
+        (
+            "main.ts",
+            "import { Kind } from \"./kind\";\nimport { Shape } from \"./shape\";\n\
+             export function f(k: Kind.A, s: Shape): string {\n  s.aera();\n  return s.toString() + Kind.B;\n}\n",
+        ),
+    ]);
+    let all = edges(&ws.db_path);
+    let missing: Vec<&String> = all
+        .iter()
+        .filter(|e| e.ends_with("[high/missing]"))
+        .collect();
+    // Only the two real typos remain.
+    assert_eq!(
+        missing,
+        vec![
+            "Main.run -call-> sizee [high/missing]",
+            "f -call-> aera [high/missing]"
+        ],
+        "{all:#?}"
+    );
+}
+
+#[test]
 fn a_java_call_on_a_this_field_uses_the_field_type() {
     let (_temp, ws) = repo_with(&[
         (

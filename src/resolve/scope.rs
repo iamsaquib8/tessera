@@ -501,7 +501,8 @@ impl<'c> Resolver<'c> {
                         for class in &classes {
                             found.extend(self.members(*class, name, 0)?);
                         }
-                        if found.is_empty() && confidence == "high" {
+                        if found.is_empty() && confidence == "high" && !inherited_from_object(name)
+                        {
                             if let Some(path) = self.closed_class_file(&classes)? {
                                 if !self.declares_property(&classes, name, 0)? {
                                     return Ok(Resolution::missing(path));
@@ -1375,9 +1376,11 @@ impl<'c> Resolver<'c> {
         let file = self.file(sym.file_id)?;
         // A type alias, a variable, or a TypeScript interface (index
         // signatures, declaration merging) can carry members it does not
-        // declare; only classes and Java's types list them all.
+        // declare, and an enum or a record has members that are not symbols
+        // (`Kind.A`, `valueOf`, a record's accessors); only classes and
+        // Java's interfaces list them all.
         let closable = match sym.kind.as_str() {
-            "class" | "enum" | "record" => true,
+            "class" => true,
             "interface" | "annotation" => file.language == Language::Java,
             _ => false,
         };
@@ -1562,6 +1565,29 @@ fn map_sym(row: &rusqlite::Row<'_>) -> rusqlite::Result<Sym> {
         default_export: row.get(7)?,
         arity: min.map(|min| (min, max)),
     })
+}
+
+/// Members every Java object and every JavaScript object has without
+/// declaring them (`toString`, `equals`, `hasOwnProperty`).
+fn inherited_from_object(name: &str) -> bool {
+    const OBJECT_MEMBERS: &[&str] = &[
+        "toString",
+        "equals",
+        "hashCode",
+        "getClass",
+        "notify",
+        "notifyAll",
+        "wait",
+        "clone",
+        "finalize",
+        "valueOf",
+        "toLocaleString",
+        "hasOwnProperty",
+        "isPrototypeOf",
+        "propertyIsEnumerable",
+        "constructor",
+    ];
+    OBJECT_MEMBERS.contains(&name)
 }
 
 /// The lower of two confidence levels.
