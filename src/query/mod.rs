@@ -23,7 +23,7 @@ pub use search::{SearchArgs, SearchResults};
 pub use status::{ShadowBinary, StatusResult};
 pub use verify::{
     changed_paths, problem_keys, problems, verify_changes, verify_paths, verify_problems,
-    with_tests, Changes, Finding, Problem, VerifyArgs, VerifyResult,
+    with_tests, with_tests_until, Changes, Finding, Problem, VerifyArgs, VerifyResult,
 };
 
 pub use blast::run as blast;

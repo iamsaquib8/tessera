@@ -50,6 +50,10 @@ Files that were already changed before the session started are not checked
 at the end of a turn unless the agent changes them again. `tessera verify
 --changed` and `--diff` (for CI) still report everything.
 
+The end-of-turn check answers within 40 seconds (its hook is given 60),
+however large the change: every problem is reported, and on a very large
+change the list of tests that reach it may be cut short.
+
 A problem in Tessera itself never stops the agent: if the index is missing
 or busy, or anything fails, the hook prints nothing (or the agent's no-op
 answer) and exits 0.

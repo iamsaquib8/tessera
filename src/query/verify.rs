@@ -19,6 +19,8 @@ use crate::types::{Language, SymbolSuggestion};
 /// tests, visiting at most this many symbols each.
 const TEST_DEPTH: usize = 4;
 const TEST_SCAN_CAP: usize = 2_000;
+/// The test walk starts from at most this many changed symbols.
+const TEST_SEEDS: usize = 300;
 /// Agent output lists at most this many findings; the rest are counted.
 const AGENT_MAX_FINDINGS: usize = 8;
 
@@ -196,9 +198,22 @@ pub fn with_tests(
     root: &Path,
     changed: &HashSet<String>,
     changes: &Changes,
-    mut findings: Vec<Finding>,
+    findings: Vec<Finding>,
 ) -> Result<VerifyResult> {
-    let tests = tests_to_run(conn, root, changed, changes)?;
+    with_tests_until(conn, root, changed, changes, findings, None)
+}
+
+/// [`with_tests`], with the test walk cut short at `deadline`: the tests
+/// found by then are listed.
+pub fn with_tests_until(
+    conn: &Connection,
+    root: &Path,
+    changed: &HashSet<String>,
+    changes: &Changes,
+    mut findings: Vec<Finding>,
+    deadline: Option<std::time::Instant>,
+) -> Result<VerifyResult> {
+    let tests = tests_to_run(conn, root, changed, changes, deadline)?;
     for test in &tests {
         findings.push(Finding {
             id: "V6".to_string(),
@@ -253,9 +268,18 @@ pub fn problems(
     lost_imports(conn, root, changed, rev, &mut out)?;
     arity_mismatches(conn, changed, &mut out)?;
     broken_imports(conn, changed, &barrels, &mut out)?;
-    let mut contracts = Vec::new();
-    contract_breaks(conn, root, changed, rev, &mut contracts)?;
-    out.extend(contracts.into_iter().map(contract_problem));
+    // V5 reads every changed file at `rev`; only a client can lose what a
+    // change removed, so an index without clients skips it.
+    let clients: bool = conn.query_row(
+        "SELECT EXISTS (SELECT 1 FROM facts WHERE kind IN (?1, ?2, ?3))",
+        params![kind::HTTP_CALL, kind::RPC_CALL, kind::CONSUMER],
+        |row| row.get(0),
+    )?;
+    if clients {
+        let mut contracts = Vec::new();
+        contract_breaks(conn, root, changed, rev, &mut contracts)?;
+        out.extend(contracts.into_iter().map(contract_problem));
+    }
     Ok(out)
 }
 
@@ -509,65 +533,6 @@ fn file_at(root: &Path, rev: &str, path: &str) -> Option<String> {
         .then(|| String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
-/// Each of `paths` as it was at `rev`, read by one git process; paths that
-/// did not exist then are left out.
-fn files_at(root: &Path, rev: &str, paths: &[String]) -> HashMap<String, String> {
-    use std::io::Write;
-    use std::process::Stdio;
-
-    let mut out = HashMap::new();
-    let Ok(mut child) = Command::new("git")
-        .arg("-C")
-        .arg(root)
-        .args(["cat-file", "--batch"])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-    else {
-        return out;
-    };
-    let input: String = paths.iter().map(|p| format!("{rev}:./{p}\n")).collect();
-    let Some(mut stdin) = child.stdin.take() else {
-        return out;
-    };
-    let writer = std::thread::spawn(move || stdin.write_all(input.as_bytes()));
-    let Ok(output) = child.wait_with_output() else {
-        return out;
-    };
-    let _ = writer.join();
-    let bytes = output.stdout;
-    let mut at = 0;
-    for path in paths {
-        let Some(end) = bytes[at..].iter().position(|b| *b == b'\n') else {
-            break;
-        };
-        let header = String::from_utf8_lossy(&bytes[at..at + end]).into_owned();
-        at += end + 1;
-        // "<name> missing" (or "ambiguous") carries no content.
-        if header.ends_with(" missing") || header.ends_with(" ambiguous") {
-            continue;
-        }
-        // "<sha> <type> <size>", then the content and a newline.
-        let mut parts = header.rsplitn(3, ' ');
-        let size = parts.next().and_then(|size| size.parse::<usize>().ok());
-        let (Some(size), Some(kind)) = (size, parts.next()) else {
-            break;
-        };
-        if at + size > bytes.len() {
-            break;
-        }
-        if kind == "blob" {
-            out.insert(
-                path.clone(),
-                String::from_utf8_lossy(&bytes[at..at + size]).into_owned(),
-            );
-        }
-        at += size + 1;
-    }
-    out
-}
-
 /// Deep-tier languages, whose high-confidence findings block.
 fn blocks(path: &str) -> bool {
     let extension = path.rsplit('.').next().unwrap_or_default();
@@ -756,7 +721,7 @@ fn lost_imports(
         return Ok(());
     }
     let wanted: Vec<String> = candidates.iter().map(|c| c.0.clone()).collect();
-    let before = files_at(root, rev, &wanted);
+    let before = blobs_at(root, rev, &wanted);
     let mut in_repo = conn.prepare_cached(
         "SELECT EXISTS (SELECT 1 FROM import_bindings WHERE source = ?1 AND target_path IS NOT NULL)",
     )?;
@@ -793,6 +758,65 @@ fn lost_imports(
         }
     }
     Ok(())
+}
+
+/// Each of `paths` as it was at `rev`, read by one git process; paths that
+/// did not exist then are left out.
+fn blobs_at(root: &Path, rev: &str, paths: &[String]) -> HashMap<String, String> {
+    use std::io::Write;
+    use std::process::Stdio;
+
+    let mut out = HashMap::new();
+    let Ok(mut child) = Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args(["cat-file", "--batch"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+    else {
+        return out;
+    };
+    let input: String = paths.iter().map(|p| format!("{rev}:./{p}\n")).collect();
+    let Some(mut stdin) = child.stdin.take() else {
+        return out;
+    };
+    let writer = std::thread::spawn(move || stdin.write_all(input.as_bytes()));
+    let Ok(output) = child.wait_with_output() else {
+        return out;
+    };
+    let _ = writer.join();
+    let bytes = output.stdout;
+    let mut at = 0;
+    for path in paths {
+        let Some(end) = bytes[at..].iter().position(|b| *b == b'\n') else {
+            break;
+        };
+        let header = String::from_utf8_lossy(&bytes[at..at + end]).into_owned();
+        at += end + 1;
+        // "<name> missing" (or "ambiguous") carries no content.
+        if header.ends_with(" missing") || header.ends_with(" ambiguous") {
+            continue;
+        }
+        // "<sha> <type> <size>", then the content and a newline.
+        let mut parts = header.rsplitn(3, ' ');
+        let size = parts.next().and_then(|size| size.parse::<usize>().ok());
+        let (Some(size), Some(kind)) = (size, parts.next()) else {
+            break;
+        };
+        if at + size > bytes.len() {
+            break;
+        }
+        if kind == "blob" {
+            out.insert(
+                path.clone(),
+                String::from_utf8_lossy(&bytes[at..at + size]).into_owned(),
+            );
+        }
+        at += size + 1;
+    }
+    out
 }
 
 struct ArityRow {
@@ -988,6 +1012,7 @@ fn tests_to_run(
     root: &Path,
     changed: &HashSet<String>,
     changes: &Changes,
+    deadline: Option<std::time::Instant>,
 ) -> Result<Vec<String>> {
     let mut tests: BTreeSet<String> = changed
         .iter()
@@ -1003,16 +1028,21 @@ fn tests_to_run(
         .unwrap_or_default();
     let mut in_file = conn
         .prepare("SELECT s.id FROM symbols s JOIN files f ON f.id = s.file_id WHERE f.path = ?1")?;
-    for path in changed {
-        if !tracked(root, path) {
-            for id in in_file.query_map(params![path], |row| row.get(0))? {
-                seeds.push(id?);
-            }
+    let untracked = untracked(root);
+    let mut new_files: Vec<&String> = changed.iter().filter(|p| untracked.contains(*p)).collect();
+    new_files.sort();
+    for path in new_files {
+        for id in in_file.query_map(params![path], |row| row.get(0))? {
+            seeds.push(id?);
         }
     }
     seeds.sort_unstable();
     seeds.dedup();
+    seeds.truncate(TEST_SEEDS);
     for seed in seeds {
+        if deadline.is_some_and(|deadline| std::time::Instant::now() >= deadline) {
+            break;
+        }
         for test in graph::tests_reaching(conn, seed, TEST_DEPTH, TEST_SCAN_CAP)? {
             tests.insert(test.path);
         }
@@ -1020,13 +1050,29 @@ fn tests_to_run(
     Ok(tests.into_iter().collect())
 }
 
-fn tracked(root: &Path, path: &str) -> bool {
+/// Files git does not track and does not ignore, from one git process.
+fn untracked(root: &Path) -> HashSet<String> {
     Command::new("git")
         .arg("-C")
         .arg(root)
-        .args(["ls-files", "--error-unmatch", "--", path])
+        .args([
+            "-c",
+            "core.quotePath=false",
+            "ls-files",
+            "--others",
+            "--exclude-standard",
+        ])
         .output()
-        .is_ok_and(|out| out.status.success())
+        .ok()
+        .filter(|out| out.status.success())
+        .map(|out| {
+            String::from_utf8_lossy(&out.stdout)
+                .lines()
+                .map(|l| l.trim().replace('\\', "/"))
+                .filter(|l| !l.is_empty())
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// Repository-relative paths the change touches, deleted files included.

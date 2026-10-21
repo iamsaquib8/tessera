@@ -418,6 +418,54 @@ fn problems_the_agent_gave_up_on_do_not_block_later_turns() {
     );
 }
 
+/// Stop checks everything changed since the session began, so its time
+/// must not grow with one git process per changed file.
+#[test]
+fn stop_over_five_hundred_changed_files_is_quick() {
+    let temp = TempDir::new().unwrap();
+    let root = temp.path();
+    support::synth_repo(root, 1_000);
+    for args in [
+        &["init", "-q"][..],
+        &["add", "."],
+        &[
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@example.com",
+            "commit",
+            "-qm",
+            "base",
+        ],
+    ] {
+        assert!(StdCommand::new("git")
+            .args(args)
+            .current_dir(root)
+            .status()
+            .unwrap()
+            .success());
+    }
+    start_indexed(root);
+    for i in 0..500 {
+        let path = format!("module_{i:05}.ts");
+        replace_in(root, &path, &format!("x + {i})"), &format!("x + {i} + 1)"));
+    }
+    replace_in(
+        root,
+        "module_00001.ts",
+        "sharedHelper(x) +",
+        "sharedHelper(x, 2) +",
+    );
+    let started = std::time::Instant::now();
+    let stop = claude(root, "Stop", json!({ "stop_hook_active": false }));
+    let took = started.elapsed();
+    assert_eq!(stop["decision"], "block", "{stop}");
+    assert!(
+        took < std::time::Duration::from_secs(4),
+        "Stop over 500 changed files took {took:?}"
+    );
+}
+
 #[test]
 fn edits_are_found_in_every_payload_shape() {
     let temp = repo();

@@ -34,6 +34,9 @@ use session::{content_hash, Answered, Session, Store};
 const EDIT_WAIT: Duration = Duration::from_secs(3);
 /// Stop may wait longer: the turn is over.
 const STOP_WAIT: Duration = Duration::from_secs(20);
+/// Stop answers within this, well inside the 60 s its hooks are given: the
+/// test walk ends early and the findings so far are reported.
+const STOP_BUDGET: Duration = Duration::from_secs(40);
 const POLL: Duration = Duration::from_millis(25);
 /// Stop blocks at most this many times per turn.
 const MAX_STOP_BLOCKS: u32 = 3;
@@ -490,6 +493,7 @@ impl Hook<'_> {
 
     /// At the end of a turn: everything changed since the session began.
     fn stop(&self, payload: &Payload, session: &mut Session) -> Result<Option<Reply>> {
+        let deadline = Instant::now() + STOP_BUDGET;
         if !payload.finished() {
             return Ok(None);
         }
@@ -526,7 +530,9 @@ impl Hook<'_> {
                 .is_none_or(|hash| *hash != content_hash(&self.ws.root.join(path)))
         });
         let scope = self.admitted(fresh_changes.chain(session.edited.iter().cloned()));
-        if scope.is_empty() || !self.ready(STOP_WAIT) {
+        if scope.is_empty()
+            || !self.ready(STOP_WAIT.min(deadline.saturating_duration_since(Instant::now())))
+        {
             return Ok(None);
         }
         self.take_baseline(session, &scope);
@@ -539,7 +545,14 @@ impl Hook<'_> {
         if !findings.iter().any(|f| f.blocking) {
             return Ok(None);
         }
-        let result = query::with_tests(&conn, &self.ws.root, &scope, &changes, findings)?;
+        let result = query::with_tests_until(
+            &conn,
+            &self.ws.root,
+            &scope,
+            &changes,
+            findings,
+            Some(deadline),
+        )?;
         session.stop_blocks += 1;
         session.counts.stop_blocks += 1;
         session.blocked.extend(blocked(&result));
