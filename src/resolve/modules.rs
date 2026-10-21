@@ -16,6 +16,13 @@ const JS_SOURCE_FOR_EMITTED: &[(&str, &[&str])] = &[
     ("mjs", &["mts"]),
     ("cjs", &["cts"]),
 ];
+/// Files a bundler imports as data or assets; Tessera never indexes them.
+const ASSET_EXTENSIONS: &[&str] = &[
+    "json", "json5", "css", "scss", "sass", "less", "styl", "pcss", "svg", "png", "jpg", "jpeg",
+    "gif", "webp", "avif", "ico", "bmp", "tiff", "woff", "woff2", "ttf", "otf", "eot", "mp3",
+    "mp4", "webm", "wav", "ogg", "flac", "m4a", "mov", "txt", "md", "mdx", "html", "htm", "yaml",
+    "yml", "toml", "graphql", "gql", "wasm", "csv", "tsv", "xml", "glsl", "frag", "vert", "pdf",
+];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ModuleTarget {
@@ -41,6 +48,7 @@ struct WorkspacePackage {
 /// the `files` table plus the tsconfig and package.json files on disk.
 #[derive(Debug, Default)]
 pub struct ModuleResolver {
+    root: PathBuf,
     files: HashMap<String, i64>,
     /// Directory (root-relative, "" for the root) → nearest tsconfig.
     tsconfigs: HashMap<String, TsConfig>,
@@ -86,6 +94,7 @@ impl ModuleResolver {
     /// and package.json files under `root`.
     pub fn from_files(root: &Path, files: HashMap<String, i64>) -> Self {
         let mut resolver = Self {
+            root: root.to_path_buf(),
             files,
             ..Self::default()
         };
@@ -123,6 +132,10 @@ impl ModuleResolver {
     }
 
     fn resolve_js(&self, from_file: &str, source: &str) -> ModuleTarget {
+        // Bundler syntax around the path: inline loaders (`!raw-loader!./x`)
+        // and resource queries (`./logo.svg?react`).
+        let source = source.rsplit('!').next().unwrap_or(source);
+        let source = source.split('?').next().unwrap_or(source);
         if source.starts_with('.') || source.starts_with('/') {
             let base = parent_dir(from_file);
             let target = if source.starts_with('/') {
@@ -130,9 +143,19 @@ impl ModuleResolver {
             } else {
                 normalize(&join(&base, source))
             };
-            return target
-                .and_then(|path| self.probe_js(&path))
-                .map_or(ModuleTarget::Unresolved, ModuleTarget::File);
+            let Some(path) = target else {
+                return ModuleTarget::Unresolved;
+            };
+            if let Some(id) = self.probe_js(&path) {
+                return ModuleTarget::File(id);
+            }
+            // A data file, an asset, or a source file the index skipped
+            // (ignored, generated, too large) is real, just not indexed.
+            return if is_asset(&path) || self.on_disk(&path) {
+                ModuleTarget::External(source.to_string())
+            } else {
+                ModuleTarget::Unresolved
+            };
         }
         if let Some(id) = self.resolve_tsconfig(from_file, source) {
             return ModuleTarget::File(id);
@@ -172,6 +195,35 @@ impl ModuleResolver {
             }
         }
         None
+    }
+
+    /// Whether `path` (root-relative, without the extension an import may
+    /// leave out) exists: as a file, as a file with any extension, or as a
+    /// directory with an index or a package manifest.
+    fn on_disk(&self, path: &str) -> bool {
+        let full = self.root.join(path);
+        if full.is_file() {
+            return true;
+        }
+        let has_entry = |dir: &Path, matches: &dyn Fn(&str) -> bool| {
+            fs::read_dir(dir).is_ok_and(|entries| {
+                entries
+                    .filter_map(|e| e.ok())
+                    .any(|e| matches(&e.file_name().to_string_lossy()))
+            })
+        };
+        if full.is_dir()
+            && has_entry(&full, &|name| {
+                name.starts_with("index.") || name == "package.json"
+            })
+        {
+            return true;
+        }
+        let (Some(dir), Some(stem)) = (full.parent(), full.file_name()) else {
+            return false;
+        };
+        let prefix = format!("{}.", stem.to_string_lossy());
+        has_entry(dir, &|name| name.starts_with(&prefix))
     }
 
     fn resolve_tsconfig(&self, from_file: &str, source: &str) -> Option<i64> {
@@ -425,6 +477,12 @@ fn expand_workspace_pattern(root: &Path, pattern: &str) -> Vec<String> {
         None if !pattern.contains('*') => vec![pattern.to_string()],
         None => Vec::new(),
     }
+}
+
+fn is_asset(path: &str) -> bool {
+    let name = path.rsplit('/').next().unwrap_or(path);
+    name.rsplit_once('.')
+        .is_some_and(|(_, ext)| ASSET_EXTENSIONS.contains(&ext.to_ascii_lowercase().as_str()))
 }
 
 /// `@scope/pkg/sub` → `@scope/pkg`; `pkg/sub` → `pkg`.

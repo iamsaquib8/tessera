@@ -247,6 +247,46 @@ fn comments_typed_arrows_and_tagged_templates_never_make_an_arity_mismatch() {
 }
 
 #[test]
+fn imports_of_files_the_index_does_not_hold_are_not_broken() {
+    let temp = repo();
+    let root = temp.path();
+    fs::create_dir_all(root.join("src/assets")).unwrap();
+    fs::create_dir_all(root.join("generated/client")).unwrap();
+    fs::write(root.join(".gitignore"), "generated/\n").unwrap();
+    fs::write(root.join("src/data.json"), "{}\n").unwrap();
+    fs::write(root.join("src/notes.txt"), "hi\n").unwrap();
+    fs::write(root.join("src/assets/logo.svg"), "<svg/>\n").unwrap();
+    fs::write(
+        root.join("generated/client/index.ts"),
+        "export function call() { return 1; }\n",
+    )
+    .unwrap();
+    fs::write(
+        root.join("src/big.ts"),
+        format!(
+            "export function big() {{ return 1; }}\n{}",
+            "// padding\n".repeat(120_000)
+        ),
+    )
+    .unwrap();
+    fs::write(
+        root.join("src/view.tsx"),
+        "import data from \"./data.json\";\nimport styles from \"./app.module.css\";\n\
+         import logo from \"./assets/logo.svg\";\nimport Logo from \"./assets/logo.svg?react\";\n\
+         import notes from \"!raw-loader!./notes.txt\";\nimport pkg from \"../package.json\";\n\
+         import { big } from \"./big\";\nimport { call } from \"../generated/client\";\n\n\
+         export function View() {\n  big();\n  call();\n  return [data, styles, logo, Logo, notes, pkg];\n}\n",
+    )
+    .unwrap();
+    let (code, findings, _) = verify_changed(root);
+    assert_eq!(code, 0, "{findings:?}");
+    assert!(
+        !findings.iter().any(|f| f.starts_with("V4")),
+        "{findings:?}"
+    );
+}
+
+#[test]
 fn plain_javascript_argument_counts_never_make_an_arity_mismatch() {
     let temp = repo();
     fs::write(
