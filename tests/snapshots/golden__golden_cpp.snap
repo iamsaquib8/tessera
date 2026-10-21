@@ -5,12 +5,14 @@ expression: graph_dump(& db)
 {
   "bindings": [],
   "edges": [
-    "src/main.cpp main -call-> get [name]",
-    "src/main.cpp main -call-> load [name]",
-    "src/main.cpp main -call-> load [name]",
-    "src/main.cpp main -new-> Store [name]",
-    "src/store.cpp app.load -call-> get [name]",
-    "tests/store_test.cpp test_load -call-> load [name]"
+    "src/main.cpp main -call-> src/main.cpp:load [high/local]",
+    "src/main.cpp main -call-> src/main.cpp:load [low/name]",
+    "src/main.cpp main -call-> src/store.cpp:app.get [medium/name]",
+    "src/main.cpp main -call-> src/store.cpp:app.load [low/name]",
+    "src/main.cpp main -new-> src/store.hpp:app.Store [medium/name]",
+    "src/store.cpp app.load -call-> src/store.cpp:app.get [medium/name]",
+    "tests/store_test.cpp test_load -call-> src/main.cpp:load [low/name]",
+    "tests/store_test.cpp test_load -call-> src/store.cpp:app.load [low/name]"
   ],
   "hints": [],
   "imports": [

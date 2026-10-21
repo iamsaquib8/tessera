@@ -13,12 +13,12 @@ expression: graph_dump(& db)
   ],
   "edges": [
     "src/App.test.tsx it(\"renders\") -call-> render [name]",
-    "src/App.test.tsx it(\"renders\") -jsx-> App [name]",
-    "src/App.tsx App -call-> useUser [name]",
-    "src/App.tsx App -jsx-> UserCard [name]",
-    "src/components/UserCard.tsx UserCard -jsx-> Avatar [name]",
+    "src/App.test.tsx it(\"renders\") -jsx-> src/App.tsx:App [high/import]",
+    "src/App.tsx App -call-> src/hooks/useUser.ts:useUser [high/import]",
+    "src/App.tsx App -jsx-> src/components/UserCard.tsx:UserCard [high/import]",
+    "src/components/UserCard.tsx UserCard -jsx-> src/components/Avatar.tsx:Avatar [high/import]",
     "src/components/UserCard.tsx UserCard -type-> Props [name]",
-    "src/hooks/useUser.ts useUser -call-> useState [name]"
+    "src/hooks/useUser.ts useUser -call-> useState [name/external]"
   ],
   "hints": [
     "src/App.tsx App::user: call:useUser (return)"

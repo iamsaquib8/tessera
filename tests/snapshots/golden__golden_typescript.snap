@@ -10,19 +10,19 @@ expression: graph_dump(& db)
     "test/repo.test.ts:1 named loadUser = loadUser from ../src/users/repo"
   ],
   "edges": [
-    "src/api/handler.ts handler -call-> loadUser [name]",
-    "src/api/handler.ts handler -type-> Request [name]",
+    "src/api/handler.ts handler -call-> src/users/repo.ts:loadUser [high/import]",
+    "src/api/handler.ts handler -type-> src/api/types.ts:Request [high/import]",
     "src/users/repo.ts UserRepo -new-> Map [name]",
-    "src/users/repo.ts UserRepo.findById -call-> formatName [name]",
-    "src/users/repo.ts UserRepo.findById -call-> lookup [name]",
-    "src/users/repo.ts UserRepo.lookup -call-> get [name]",
-    "src/users/repo.ts loadUser -call-> findById [name]",
-    "src/users/repo.ts loadUser -new-> UserRepo [name]",
+    "src/users/repo.ts UserRepo.findById -call-> src/users/repo.ts:UserRepo.lookup [high/this]",
+    "src/users/repo.ts UserRepo.findById -call-> src/util/format.ts:formatName [high/import]",
+    "src/users/repo.ts UserRepo.lookup -call-> get [name/external]",
+    "src/users/repo.ts loadUser -call-> src/users/repo.ts:UserRepo.findById [high/hint]",
+    "src/users/repo.ts loadUser -new-> src/users/repo.ts:UserRepo [high/local]",
     "src/util/format.ts formatName -call-> trim [name]",
-    "src/util/format.ts loadUser -call-> formatName [name]",
+    "src/util/format.ts loadUser -call-> src/util/format.ts:formatName [high/local]",
     "test/repo.test.ts describe(\"loadUser\") -call-> it [name]",
     "test/repo.test.ts describe(\"loadUser\").it(\"returns the user\") -call-> expect [name]",
-    "test/repo.test.ts describe(\"loadUser\").it(\"returns the user\") -call-> loadUser [name]",
+    "test/repo.test.ts describe(\"loadUser\").it(\"returns the user\") -call-> src/users/repo.ts:loadUser [high/import]",
     "test/repo.test.ts describe(\"loadUser\").it(\"returns the user\") -call-> toBe [name]"
   ],
   "hints": [

@@ -11,6 +11,7 @@ use super::legacy;
 use crate::db;
 use crate::fresh::{self, Freshness};
 use crate::output::AgentText;
+use crate::resolve::{self, ResolveReport};
 use crate::types::LanguageCount;
 use crate::workspace::Workspace;
 
@@ -36,6 +37,8 @@ pub struct StatusResult {
     pub skipped: usize,
     pub unreadable: Vec<String>,
     pub parse_errors: usize,
+    /// The last resolve pass: how many references resolved at each confidence.
+    pub resolution: Option<ResolveReport>,
     #[serde(skip)]
     parse_error_first: Option<String>,
     pub hints: Vec<String>,
@@ -62,6 +65,7 @@ pub fn run(ws: &Workspace) -> Result<StatusResult> {
         skipped: 0,
         unreadable: Vec::new(),
         parse_errors: 0,
+        resolution: None,
         parse_error_first: None,
         hints: Vec::new(),
     };
@@ -88,6 +92,7 @@ fn fill_counts(status: &mut StatusResult, conn: &Connection) -> Result<()> {
     let parse_errors = db::parse_error_paths(conn)?;
     status.parse_errors = parse_errors.len();
     status.parse_error_first = parse_errors.into_iter().next();
+    status.resolution = resolve::last_report(conn)?;
     Ok(())
 }
 
@@ -115,6 +120,12 @@ fn hints(status: &StatusResult) -> Vec<String> {
         hints.push(format!(
             "{count} file{} could not be read (first: {first}); check its permissions.",
             if count == 1 { "" } else { "s" }
+        ));
+    }
+    if status.resolution.as_ref().is_some_and(|r| r.fallback) {
+        hints.push(format!(
+            "The last change had more than {} dependent files, so every reference was re-resolved.",
+            resolve::MAX_INCREMENTAL_FILES
         ));
     }
     if let Some(first) = &status.parse_error_first {
@@ -210,6 +221,12 @@ impl AgentText for StatusResult {
         );
         if !languages.is_empty() {
             out.push_str(&format!("langs  {languages}\n"));
+        }
+        if let Some(r) = &self.resolution {
+            out.push_str(&format!(
+                "refs   {} high, {} medium, {} low confidence, {} unresolved\n",
+                r.high, r.medium, r.low, r.unresolved
+            ));
         }
         for hint in &self.hints {
             out.push_str(&format!("hint: {hint}\n"));

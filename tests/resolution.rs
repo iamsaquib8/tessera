@@ -1,0 +1,217 @@
+mod support;
+
+use std::fs;
+use std::path::Path;
+
+use rusqlite::Connection;
+use support::index_fixture;
+use tessera_codegraph::indexer::{self, IndexOptions};
+use tessera_codegraph::{Index, Workspace};
+
+/// `from -kind-> to [confidence/resolver]`, where `to` is `path:qualified_name`
+/// for resolved edges and the bare name otherwise.
+fn edges(db: &Path) -> Vec<String> {
+    let conn = Connection::open(db).unwrap();
+    let mut stmt = conn
+        .prepare(
+            "SELECT fs.qualified_name || ' -' || e.kind || '-> '
+                || COALESCE(tf.path || ':' || ts.qualified_name, e.to_symbol_name)
+                || ' [' || e.confidence || COALESCE('/' || e.resolver, '') || ']'
+             FROM edges e JOIN symbols fs ON fs.id = e.from_symbol_id
+             LEFT JOIN symbols ts ON ts.id = e.to_symbol_id
+             LEFT JOIN files tf ON tf.id = ts.file_id",
+        )
+        .unwrap();
+    let mut out: Vec<String> = stmt
+        .query_map([], |row| row.get(0))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect();
+    out.sort();
+    out
+}
+
+fn assert_has(all: &[String], expected: &[&str]) {
+    let missing: Vec<&&str> = expected
+        .iter()
+        .filter(|e| !all.iter().any(|a| a == **e))
+        .collect();
+    assert!(missing.is_empty(), "missing {missing:#?}\nin {all:#?}");
+}
+
+fn assert_lacks(all: &[String], prefixes: &[&str]) {
+    let found: Vec<&String> = all
+        .iter()
+        .filter(|a| prefixes.iter().any(|p| a.starts_with(p)))
+        .collect();
+    assert!(found.is_empty(), "unexpected {found:#?}");
+}
+
+#[test]
+fn typescript_edges_resolve_through_imports_hints_and_scope() {
+    let (_temp, db) = index_fixture("ts-resolution");
+    let all = edges(&db);
+    assert_has(
+        &all,
+        &[
+            // field hint from a constructor parameter property
+            "UserService.name -call-> src/data/repo.ts:UserRepo.require [high/hint]",
+            // default import through a tsconfig path alias
+            "makeService -call-> src/data/repo.ts:createRepo [high/import]",
+            "makeService -new-> src/data/repo.ts:UserRepo [high/import]",
+            // local variable typed by `new`
+            "makeService -call-> src/data/repo.ts:UserRepo.get [high/hint]",
+            "makeService -new-> src/services/users.ts:UserService [high/local]",
+            // namespace import, then a barrel re-export
+            "isUser -type-> src/domain/user.ts:User [high/import]",
+            "UserRepo.require -call-> src/data/repo.ts:UserRepo.get [high/this]",
+            // `export * from` in the barrel
+            "UserRepo.require -call-> src/domain/errors.ts:notFound [high/import]",
+            "UserRepo -extends-> src/data/repo.ts:Repo [high/local]",
+            "User -implements-> src/domain/user.ts:Entity [high/local]",
+            // CommonJS: destructured require with a rename, and a namespace require
+            "label -call-> src/legacy/strings.js:title [high/import]",
+            "label -call-> src/legacy/strings.js:slug [high/import]",
+            "label -call-> src/legacy/strings.js:suffix [high/import]",
+            "default -jsx-> src/ui/Badge.tsx:Badge [high/local]",
+            "describe(\"UserService\").it(\"names a user\") -call-> src/services/users.ts:makeService [high/import]",
+            // unknown receiver: unique name match, capped at medium
+            "UserService.name -call-> src/domain/user.ts:User.display [medium/name]",
+        ],
+    );
+    // A receiver typed as an external type, or a call imported from an
+    // external package, never falls back to a repo symbol.
+    assert_has(
+        &all,
+        &[
+            "UserRepo.get -call-> get [name/external]",
+            "Badge -call-> memo [name/external]",
+        ],
+    );
+    assert_lacks(
+        &all,
+        &[
+            "UserRepo.get -call-> src/",
+            "describe(\"UserService\") -call-> src/",
+        ],
+    );
+}
+
+#[test]
+fn java_edges_resolve_through_imports_packages_hints_and_overloads() {
+    let (_temp, db) = index_fixture("java-resolution");
+    let all = edges(&db);
+    let repo = "src/main/java/com/acme/repo/UserRepository.java";
+    let user = "src/main/java/com/acme/domain/User.java";
+    let service = "src/main/java/com/acme/service";
+    assert_has(
+        &all,
+        &[
+            // field type through a single-type import, overload picked by arity
+            &format!("UserService.describe -call-> {repo}:UserRepository.require [high/hint]"),
+            &format!("UserService.describe -new-> {user}:User [high/import]"),
+            &format!("UserService.describe -call-> {user}:User.id [high/hint]"),
+            &format!("UserService.describe -call-> {service}/Format.java:Format.label [high/import]"),
+            &format!("UserService.describe -call-> {service}/Format.java:Format.shout [high/import]"),
+            &format!("UserService -extends-> {service}/BaseService.java:BaseService [high/package]"),
+            &format!("UserRepository.require -call-> {repo}:UserRepository.find [high/this]"),
+            // wildcard import, static call
+            "UserRepository.require -call-> src/main/java/com/acme/domain/Errors.java:Errors.notFound [high/static]",
+            &format!(
+                "UserServiceTest.describesAUser -call-> {service}/UserService.java:UserService.describe [high/hint]"
+            ),
+            &format!("User.compareTo -call-> {user}:User.id [high/hint]"),
+        ],
+    );
+    // `require(key)` inside `require(key, strict)` picks the one-argument overload.
+    let arities: Vec<(i64, i64)> = Connection::open(&db)
+        .unwrap()
+        .prepare(
+            "SELECT fs.arity_min, ts.arity_min FROM edges e
+             JOIN symbols fs ON fs.id = e.from_symbol_id
+             JOIN symbols ts ON ts.id = e.to_symbol_id
+             WHERE fs.qualified_name = 'UserRepository.require'
+               AND ts.qualified_name = 'UserRepository.require'",
+        )
+        .unwrap()
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect();
+    assert_eq!(arities, vec![(2, 1)]);
+    assert_lacks(&all, &["UserRepository.find -call-> src/"]);
+}
+
+fn repo_with(files: &[(&str, &str)]) -> (tempfile::TempDir, Workspace) {
+    let temp = tempfile::TempDir::new().unwrap();
+    let root = temp.path().join("repo");
+    for (path, content) in files {
+        let path = root.join(path);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, content).unwrap();
+    }
+    let ws = Workspace {
+        root: root.canonicalize().unwrap(),
+        db_path: temp.path().join("t.db"),
+    };
+    Index::build(&ws.root, &ws.db_path, IndexOptions::default()).unwrap();
+    (temp, ws)
+}
+
+#[test]
+fn barrels_that_re_export_each_other_terminate() {
+    let (_temp, ws) = repo_with(&[
+        ("a/index.ts", "export * from \"../b\";\nexport * from \"./thing\";\n"),
+        ("a/thing.ts", "export function thing() { return 1; }\n"),
+        ("b/index.ts", "export * from \"../a\";\n"),
+        (
+            "main.ts",
+            "import { thing, missing } from \"./b\";\nexport function run() { thing(); missing(); }\n",
+        ),
+    ]);
+    let all = edges(&ws.db_path);
+    assert_has(&all, &["run -call-> a/thing.ts:thing [high/import]"]);
+    assert_lacks(&all, &["run -call-> missing [high"]);
+}
+
+#[test]
+fn a_local_definition_shadows_an_import() {
+    let (_temp, ws) = repo_with(&[
+        ("repo.ts", "export function loadUser() { return 1; }\n"),
+        (
+            "main.ts",
+            "import { loadUser } from \"./repo\";\nexport function run() {\n  const loadUser = () => 2;\n  return loadUser();\n}\n",
+        ),
+    ]);
+    let all = edges(&ws.db_path);
+    assert_has(&all, &["run -call-> main.ts:run.loadUser [high/local]"]);
+}
+
+#[test]
+fn renaming_an_export_re_resolves_its_importers() {
+    let (_temp, ws) = repo_with(&[
+        ("a.ts", "export function foo() { return 1; }\n"),
+        (
+            "b.ts",
+            "import { foo } from \"./a\";\nexport function run() { return foo(); }\n",
+        ),
+    ]);
+    assert_has(&edges(&ws.db_path), &["run -call-> a.ts:foo [high/import]"]);
+
+    fs::write(
+        ws.root.join("a.ts"),
+        "export function bar() { return 1; }\n",
+    )
+    .unwrap();
+    indexer::index_files(&ws, &["a.ts".to_string()]).unwrap();
+    let all = edges(&ws.db_path);
+    assert_lacks(&all, &["run -call-> a.ts:"]);
+
+    fs::write(
+        ws.root.join("a.ts"),
+        "export function bar() { return 1; }\nexport function foo() { return 2; }\n",
+    )
+    .unwrap();
+    indexer::index_files(&ws, &["a.ts".to_string()]).unwrap();
+    assert_has(&edges(&ws.db_path), &["run -call-> a.ts:foo [high/import]"]);
+}

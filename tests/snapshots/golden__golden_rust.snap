@@ -5,15 +5,16 @@ expression: graph_dump(& db)
 {
   "bindings": [],
   "edges": [
-    "src/api.rs handle -call-> load [name]",
-    "src/api.rs load -call-> get [name]",
+    "src/api.rs handle -call-> src/api.rs:load [low/name]",
+    "src/api.rs handle -call-> src/store.rs:load [low/name]",
     "src/api.rs load -call-> is_some [name]",
-    "src/api.rs load -call-> new [name]",
+    "src/api.rs load -call-> src/store.rs:Store.get [medium/name]",
+    "src/api.rs load -call-> src/store.rs:Store.new [medium/name]",
     "src/store.rs Store.get -call-> get [name]",
     "src/store.rs Store.new -call-> new [name]",
-    "src/store.rs load -call-> get [name]",
     "src/store.rs load -call-> is_some [name]",
-    "src/store.rs load -call-> new [name]"
+    "src/store.rs load -call-> src/store.rs:Store.get [medium/name]",
+    "src/store.rs load -call-> src/store.rs:Store.new [high/static]"
   ],
   "hints": [],
   "imports": [

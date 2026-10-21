@@ -7,9 +7,9 @@ expression: graph_dump(& db)
   "edges": [
     "app/controllers/api/v1/test_cases_controller.rb TestCasesController.index -call-> new [name]",
     "app/models/user.rb User -call-> has_many [name]",
-    "app/models/user.rb User.display_name -call-> format [name]",
+    "app/models/user.rb User.display_name -call-> app/services/name_formatter.rb:NameFormatter.format [medium/name]",
     "app/services/name_formatter.rb NameFormatter.format -call-> strip [name]",
-    "app/services/user_loader.rb UserLoader.load -call-> display_name [name]",
+    "app/services/user_loader.rb UserLoader.load -call-> app/models/user.rb:User.display_name [medium/name]",
     "app/services/user_loader.rb UserLoader.load -call-> new [name]"
   ],
   "hints": [],

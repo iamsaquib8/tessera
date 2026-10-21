@@ -5,13 +5,14 @@ expression: graph_dump(& db)
 {
   "bindings": [],
   "edges": [
-    "app/models.py User.display -call-> format_name [name]",
-    "app/service.py cached_load -call-> load [name]",
-    "app/service.py load -call-> User [name]",
-    "app/service.py load -call-> display [name]",
-    "app/service.py load -call-> load [name]",
+    "app/models.py User.display -call-> app/util.py:format_name [medium/name]",
+    "app/service.py cached_load -call-> app/service.py:load [high/local]",
+    "app/service.py load -call-> app/models.py:User [medium/name]",
+    "app/service.py load -call-> app/models.py:User.display [medium/name]",
+    "app/service.py load -call-> app/util.py:load [medium/name]",
     "app/util.py format_name -call-> strip [name]",
-    "tests/test_service.py test_load -call-> load [name]"
+    "tests/test_service.py test_load -call-> app/service.py:load [low/name]",
+    "tests/test_service.py test_load -call-> app/util.py:load [low/name]"
   ],
   "hints": [],
   "imports": [

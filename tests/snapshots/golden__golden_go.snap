@@ -5,11 +5,13 @@ expression: graph_dump(& db)
 {
   "bindings": [],
   "edges": [
-    "api/handler.go Handle -call-> Load [name]",
-    "store/store.go Load -call-> Get [name]",
-    "store/store.go Load -call-> New [name]",
+    "api/handler.go Handle -call-> api/handler.go:Load [low/name]",
+    "api/handler.go Handle -call-> store/store.go:Load [low/name]",
+    "store/store.go Load -call-> store/store.go:New [high/local]",
+    "store/store.go Load -call-> store/store.go:Store.Get [medium/name]",
     "store/store_test.go TestLoad -call-> Fatal [name]",
-    "store/store_test.go TestLoad -call-> Load [name]"
+    "store/store_test.go TestLoad -call-> api/handler.go:Load [low/name]",
+    "store/store_test.go TestLoad -call-> store/store.go:Load [low/name]"
   ],
   "hints": [],
   "imports": [

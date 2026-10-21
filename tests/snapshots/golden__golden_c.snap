@@ -5,10 +5,10 @@ expression: graph_dump(& db)
 {
   "bindings": [],
   "edges": [
-    "src/main.c main -call-> lookup [name]",
-    "src/main.c main -call-> store_load [name]",
-    "src/store.c store_load -call-> lookup [name]",
-    "tests/test_store.c test_store_load -call-> store_load [name]"
+    "src/main.c main -call-> src/main.c:lookup [high/local]",
+    "src/main.c main -call-> src/store.c:store_load [medium/name]",
+    "src/store.c store_load -call-> src/store.c:lookup [high/local]",
+    "tests/test_store.c test_store_load -call-> src/store.c:store_load [medium/name]"
   ],
   "hints": [],
   "imports": [

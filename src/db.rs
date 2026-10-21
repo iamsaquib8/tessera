@@ -238,6 +238,7 @@ fn create_schema(conn: &Connection) -> Result<()> {
         CREATE INDEX idx_edges_to ON edges(to_symbol_name);
         CREATE INDEX idx_edges_to_id ON edges(to_symbol_id);
         CREATE INDEX idx_edges_from ON edges(from_symbol_id);
+        CREATE INDEX idx_edges_ref ON edges(ref_id);
 
         CREATE TABLE imports (
             id INTEGER PRIMARY KEY,
@@ -254,11 +255,13 @@ fn create_schema(conn: &Connection) -> Result<()> {
             imported TEXT,
             source TEXT NOT NULL,
             kind TEXT NOT NULL,
-            line INTEGER NOT NULL
+            line INTEGER NOT NULL,
+            target_path TEXT
         );
 
         CREATE INDEX idx_bindings_file ON import_bindings(file_id);
         CREATE INDEX idx_bindings_source ON import_bindings(source);
+        CREATE INDEX idx_bindings_target ON import_bindings(target_path);
 
         CREATE TABLE type_hints (
             id INTEGER PRIMARY KEY,
@@ -549,6 +552,7 @@ pub fn insert_references(
     conn: &Connection,
     file_id: i64,
     refs: &[IndexedReference],
+    ordered_ids: &[i64],
     symbol_ids: &HashMap<String, i64>,
 ) -> Result<usize> {
     let mut insert_ref = conn.prepare_cached(
@@ -563,9 +567,14 @@ pub fn insert_references(
     )?;
     for reference in refs {
         let from_symbol_id = reference
-            .from_qualified_name
-            .as_deref()
-            .and_then(|name| symbol_ids.get(name).copied());
+            .from_symbol
+            .and_then(|index| ordered_ids.get(index).copied())
+            .or_else(|| {
+                reference
+                    .from_qualified_name
+                    .as_deref()
+                    .and_then(|name| symbol_ids.get(name).copied())
+            });
         insert_ref.execute(params![
             reference.symbol_name,
             from_symbol_id,
@@ -794,6 +803,7 @@ mod tests {
         let reference = IndexedReference {
             symbol_name: "f".to_string(),
             from_qualified_name: None,
+            from_symbol: None,
             line: 1,
             column: 1,
             context: "x".repeat(10_000),
@@ -802,7 +812,7 @@ mod tests {
             receiver_name: None,
             arg_count: None,
         };
-        insert_references(&conn, file_id, &[reference], &HashMap::new()).unwrap();
+        insert_references(&conn, file_id, &[reference], &[], &HashMap::new()).unwrap();
         let context: String = conn
             .query_row("SELECT context FROM refs", [], |row| row.get(0))
             .unwrap();

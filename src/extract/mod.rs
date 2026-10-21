@@ -71,6 +71,7 @@ pub fn parse_file(language: Language, content: &str) -> Result<ParsedFile> {
             cx.scope.push(ScopeFrame {
                 name: symbol.qualified_name.clone(),
                 end_byte: node.end_byte(),
+                index: out.symbols.len(),
             });
             out.symbols.push(symbol);
         }
@@ -108,6 +109,7 @@ pub fn parse_file(language: Language, content: &str) -> Result<ParsedFile> {
 struct ScopeFrame {
     name: String,
     end_byte: usize,
+    index: usize,
 }
 
 pub struct Cx<'a> {
@@ -185,6 +187,7 @@ impl<'a> Cx<'a> {
         IndexedReference {
             symbol_name,
             from_qualified_name: self.current_scope().map(ToOwned::to_owned),
+            from_symbol: self.scope.last().map(|frame| frame.index),
             line: node.start_position().row + 1,
             column: node.start_position().column + 1,
             context: self

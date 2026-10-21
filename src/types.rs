@@ -142,6 +142,10 @@ pub struct IndexedImport {
 pub struct IndexedReference {
     pub symbol_name: String,
     pub from_qualified_name: Option<String>,
+    /// Index of the enclosing symbol in the file's symbol list; tells
+    /// overloads that share a qualified name apart.
+    #[serde(default)]
+    pub from_symbol: Option<usize>,
     pub line: usize,
     pub column: usize,
     pub context: String,

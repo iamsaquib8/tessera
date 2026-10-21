@@ -9,6 +9,7 @@ use sha2::{Digest, Sha256};
 
 use crate::config::TesseraConfig;
 use crate::db;
+use crate::resolve::{self, ResolveReport, ResolveScope};
 use crate::walk::{self, FileStatus, SkipReason, SourceFile, WalkOptions};
 use crate::workspace::Workspace;
 
@@ -23,6 +24,7 @@ pub struct IndexReport {
     pub elapsed_ms: u128,
     pub mode: IndexMode,
     pub warnings: Vec<IndexWarning>,
+    pub resolve: Option<ResolveReport>,
 }
 
 #[derive(Debug, Clone)]
@@ -146,9 +148,14 @@ pub fn index_path_locked(
         .map(|s| (s.rel_path.clone(), s.size, s.mtime_ns, s.reason.as_str()))
         .collect();
 
+    let mut changed_ids: Vec<i64> = Vec::new();
     for file in &discovery.files {
         match index_one(&tx, file, full, &mut report)? {
-            FileOutcome::Indexed(id) | FileOutcome::Reused(id) => visited_ids.push(id),
+            FileOutcome::Indexed(id) => {
+                visited_ids.push(id);
+                changed_ids.push(id);
+            }
+            FileOutcome::Reused(id) => visited_ids.push(id),
             FileOutcome::Skipped(reason) => skipped.push((
                 file.rel_path.clone(),
                 file.size,
@@ -163,6 +170,16 @@ pub fn index_path_locked(
     }
     report.files_skipped = skipped.len();
     db::replace_skipped(&tx, &skipped)?;
+    let scope = if full {
+        Some(ResolveScope::All)
+    } else if !changed_ids.is_empty() || report.files_removed > 0 {
+        Some(ResolveScope::Changed(changed_ids))
+    } else {
+        None
+    };
+    if let Some(scope) = scope {
+        report.resolve = Some(resolve::resolve(&tx, &root, scope)?);
+    }
     tx.commit()?;
 
     report.elapsed_ms = started.elapsed().as_millis();
@@ -198,6 +215,7 @@ pub fn index_files(ws: &Workspace, rel_paths: &[String]) -> Result<IndexReport> 
     let options = walk_options(&config, &persisted_excludes(&conn)?);
     let mut report = IndexReport::new(IndexMode::Incremental);
     let tx = Transaction::new_unchecked(&conn, TransactionBehavior::Immediate)?;
+    let mut changed_ids: Vec<i64> = Vec::new();
     for rel_path in rel_paths {
         let rel_path = rel_path.trim_start_matches("./").replace('\\', "/");
         let status = walk::describe(&root, &rel_path, &config, &options)?;
@@ -216,13 +234,24 @@ pub fn index_files(ws: &Workspace, rel_paths: &[String]) -> Result<IndexReport> 
             continue;
         };
         db::delete_skipped(&tx, &rel_path)?;
-        if let FileOutcome::Skipped(reason) = index_one(&tx, &file, false, &mut report)? {
-            if let Some((id, _)) = db::file_sha(&tx, &rel_path)? {
-                db::delete_file_cascade(&tx, id)?;
+        match index_one(&tx, &file, false, &mut report)? {
+            FileOutcome::Skipped(reason) => {
+                if let Some((id, _)) = db::file_sha(&tx, &rel_path)? {
+                    db::delete_file_cascade(&tx, id)?;
+                }
+                db::upsert_skipped(&tx, &rel_path, file.size, file.mtime_ns, reason.as_str())?;
+                report.files_skipped += 1;
             }
-            db::upsert_skipped(&tx, &rel_path, file.size, file.mtime_ns, reason.as_str())?;
-            report.files_skipped += 1;
+            FileOutcome::Indexed(id) => changed_ids.push(id),
+            FileOutcome::Reused(_) => {}
         }
+    }
+    if !changed_ids.is_empty() || report.files_removed > 0 {
+        report.resolve = Some(resolve::resolve(
+            &tx,
+            &root,
+            ResolveScope::Changed(changed_ids),
+        )?);
     }
     tx.commit()?;
     report.elapsed_ms = started.elapsed().as_millis();
@@ -257,6 +286,7 @@ impl IndexReport {
             elapsed_ms: 0,
             mode,
             warnings: Vec::new(),
+            resolve: None,
         }
     }
 }
@@ -356,7 +386,7 @@ fn index_one(
             .or_insert(*id);
     }
     report.references_indexed +=
-        db::insert_references(tx, file_id, &parsed.references, &ids_by_name)?;
+        db::insert_references(tx, file_id, &parsed.references, &symbol_ids, &ids_by_name)?;
     db::insert_imports(tx, file_id, &parsed.imports)?;
     db::insert_bindings(tx, file_id, &parsed.bindings)?;
     db::insert_hints(tx, file_id, &parsed.hints)?;

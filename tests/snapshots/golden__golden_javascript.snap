@@ -16,16 +16,16 @@ expression: graph_dump(& db)
     "specs/util.spec.js:1 require_member slugify = slugify from ../lib/util"
   ],
   "edges": [
-    "app.js app.get(\"/send\") -call-> run [name]",
+    "app.js app.get(\"/send\") -call-> lib/worker.js:BaseWorker.run [medium/name]",
     "app.js app.get(\"/send\") -call-> send [name]",
     "app.js app.get(\"/send\") -new-> EmailWorker [name]",
     "lib/email_worker.js EmailWorker -extends-> BaseWorker [name]",
-    "lib/email_worker.js EmailWorker.perform -call-> slugify [name]",
+    "lib/email_worker.js EmailWorker.perform -call-> lib/util.js:slugify [high/import]",
     "lib/util.js slugify -call-> toLowerCase [name]",
-    "lib/worker.js BaseWorker.run -call-> perform [name]",
+    "lib/worker.js BaseWorker.run -call-> lib/worker.js:BaseWorker.perform [high/this]",
     "specs/util.spec.js describe(\"slugify\") -call-> it [name]",
     "specs/util.spec.js describe(\"slugify\").it(\"lowercases\") -call-> expect [name]",
-    "specs/util.spec.js describe(\"slugify\").it(\"lowercases\") -call-> slugify [name]",
+    "specs/util.spec.js describe(\"slugify\").it(\"lowercases\") -call-> lib/util.js:slugify [high/import]",
     "specs/util.spec.js describe(\"slugify\").it(\"lowercases\") -call-> toBe [name]"
   ],
   "hints": [

@@ -5,12 +5,13 @@ expression: graph_dump(& db)
 {
   "bindings": [],
   "edges": [
-    "src/Users/UserService.php UserService.__construct -new-> UserRepository [name]",
-    "src/Users/UserService.php UserService.load -call-> findById [name]",
-    "src/Users/UserService.php UserService.load -call-> trim [name]",
+    "src/Users/UserService.php UserService.__construct -new-> src/Users/UserRepository.php:UserRepository [medium/name]",
+    "src/Users/UserService.php UserService.load -call-> src/Users/UserRepository.php:UserRepository.findById [medium/name]",
+    "src/Users/UserService.php UserService.load -call-> src/Util/Strings.php:Strings.trim [medium/name]",
     "src/Util/Strings.php Strings.trim -call-> trim [name]",
-    "tests/UserServiceTest.php UserServiceTest.testLoad -call-> load [name]",
-    "tests/UserServiceTest.php UserServiceTest.testLoad -new-> UserService [name]"
+    "tests/UserServiceTest.php UserServiceTest.testLoad -call-> src/Users/UserService.php:UserService.load [low/name]",
+    "tests/UserServiceTest.php UserServiceTest.testLoad -call-> src/Util/Strings.php:load [low/name]",
+    "tests/UserServiceTest.php UserServiceTest.testLoad -new-> src/Users/UserService.php:UserService [medium/name]"
   ],
   "hints": [],
   "imports": [
