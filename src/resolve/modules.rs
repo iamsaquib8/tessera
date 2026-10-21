@@ -203,7 +203,7 @@ impl ModuleResolver {
             }
             // A data file, an asset, or a source file the index skipped
             // (ignored, generated, too large) is real, just not indexed.
-            return if is_asset(&path) || self.on_disk(&path) {
+            return if is_asset(&path) || is_generated(&path) || self.on_disk(&path) {
                 ModuleTarget::External(source.to_string())
             } else {
                 ModuleTarget::Unresolved
@@ -244,6 +244,16 @@ impl ModuleResolver {
             };
             if let Some(id) = self.files.get(&index) {
                 return Some(*id);
+            }
+        }
+        // `./testing.js` naming the emitted index of the `testing` directory.
+        if let Some((stem, ext)) = path.rsplit_once('.') {
+            if JS_SOURCE_FOR_EMITTED.iter().any(|(e, _)| *e == ext) && !stem.ends_with('/') {
+                for source in JS_EXTENSIONS {
+                    if let Some(id) = self.files.get(&format!("{stem}/index.{source}")) {
+                        return Some(*id);
+                    }
+                }
             }
         }
         None
@@ -585,6 +595,13 @@ fn generates_code(root: &Path, module: &str) -> bool {
     }
 }
 
+/// Under a `generated` directory: written by a code generator (Prisma,
+/// GraphQL, OpenAPI) before the build, so a checkout may not have it yet.
+fn is_generated(path: &str) -> bool {
+    path.split('/')
+        .any(|segment| matches!(segment, "generated" | "__generated__"))
+}
+
 fn is_asset(path: &str) -> bool {
     let name = path.rsplit('/').next().unwrap_or(path);
     name.rsplit_once('.')
@@ -796,6 +813,27 @@ mod tests {
         assert_eq!(
             r.resolve("src/a.ts", "@scope/pkg/deep", ts),
             ModuleTarget::External("@scope/pkg".to_string())
+        );
+    }
+
+    #[test]
+    fn emitted_directory_imports_and_generated_code() {
+        let temp = TempDir::new().unwrap();
+        let paths = ["packages/testing/index.ts", "src/posts.ts"];
+        let r = resolver(temp.path(), &paths);
+        let ts = Language::TypeScript;
+        assert_eq!(
+            r.resolve("src/posts.ts", "../packages/testing.js", ts),
+            id(&paths, "packages/testing/index.ts")
+        );
+        // Code a generator writes before the build, absent from a checkout.
+        assert_eq!(
+            r.resolve("src/posts.ts", "./generated/prisma/client.js", ts),
+            ModuleTarget::External("./generated/prisma/client.js".to_string())
+        );
+        assert_eq!(
+            r.resolve("src/posts.ts", "./missing", ts),
+            ModuleTarget::Unresolved
         );
     }
 
