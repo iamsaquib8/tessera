@@ -15,7 +15,6 @@ expression: graph_dump(& db)
     "src/users/repo.ts UserRepo -new-> Map [name]",
     "src/users/repo.ts UserRepo.findById -call-> src/users/repo.ts:UserRepo.lookup [high/this]",
     "src/users/repo.ts UserRepo.findById -call-> src/util/format.ts:formatName [high/import]",
-    "src/users/repo.ts UserRepo.lookup -call-> get [name/external]",
     "src/users/repo.ts loadUser -call-> src/users/repo.ts:UserRepo.findById [high/hint]",
     "src/users/repo.ts loadUser -new-> src/users/repo.ts:UserRepo [high/local]",
     "src/util/format.ts formatName -call-> trim [name]",

@@ -676,6 +676,7 @@ struct IndexSummary {
     references: usize,
     elapsed_ms: u128,
     warnings: usize,
+    resolve: Option<tessera_codegraph::resolve::ResolveReport>,
 }
 
 impl From<&IndexReport> for IndexSummary {
@@ -690,6 +691,7 @@ impl From<&IndexReport> for IndexSummary {
             references: report.references_indexed,
             elapsed_ms: report.elapsed_ms,
             warnings: report.warnings.len(),
+            resolve: report.resolve.clone(),
         }
     }
 }

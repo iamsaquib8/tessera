@@ -18,6 +18,8 @@ pub const SCHEMA_VERSION: i64 = 6;
 pub const APPLICATION_ID: i64 = 0x5453_5352;
 
 const BUSY_TIMEOUT: Duration = Duration::from_millis(5_000);
+/// Negative `cache_size` is in KiB: 128 MiB, allocated only as pages are used.
+const WRITER_CACHE_KIB: i64 = -131_072;
 const CONTEXT_MAX_CHARS: usize = 200;
 
 #[derive(Debug)]
@@ -70,6 +72,9 @@ pub fn open_rw(path: &Path) -> Result<Connection> {
     }
     conn.pragma_update(None, "journal_mode", "WAL")?;
     configure(&conn)?;
+    // A full index of a large repository keeps its index b-trees hot; with
+    // SQLite's 2 MB default, pages spill to the WAL and are read back.
+    conn.pragma_update(None, "cache_size", WRITER_CACHE_KIB)?;
     let version = user_version(&conn)?;
     if version != SCHEMA_VERSION {
         drop_all(&conn)?;
@@ -282,16 +287,6 @@ fn create_schema(conn: &Connection) -> Result<()> {
             content='symbols', content_rowid='id',
             tokenize='trigram'
         );
-
-        CREATE TRIGGER symbols_ai AFTER INSERT ON symbols BEGIN
-            INSERT INTO symbols_fts(rowid, name, qualified_name)
-            VALUES (new.id, new.name, new.qualified_name);
-        END;
-
-        CREATE TRIGGER symbols_ad AFTER DELETE ON symbols BEGIN
-            INSERT INTO symbols_fts(symbols_fts, rowid, name, qualified_name)
-            VALUES('delete', old.id, old.name, old.qualified_name);
-        END;
         ",
     )?;
     Ok(())
@@ -352,7 +347,36 @@ pub fn touch_file(conn: &Connection, file_id: i64, size_bytes: u64, mtime_ns: i6
     Ok(())
 }
 
+// The symbol search index is kept per file, not per row: a trigger on every
+// symbol insert makes FTS5 flush its pending terms on each statement.
+
+/// Adds `file_id`'s symbols to the search index.
+pub fn fts_insert_file(conn: &Connection, file_id: i64) -> Result<()> {
+    conn.prepare_cached(
+        "INSERT INTO symbols_fts(rowid, name, qualified_name)
+         SELECT id, name, qualified_name FROM symbols WHERE file_id = ?1",
+    )?
+    .execute(params![file_id])?;
+    Ok(())
+}
+
+fn fts_delete_file(conn: &Connection, file_id: i64) -> Result<()> {
+    conn.prepare_cached(
+        "INSERT INTO symbols_fts(symbols_fts, rowid, name, qualified_name)
+         SELECT 'delete', id, name, qualified_name FROM symbols WHERE file_id = ?1",
+    )?
+    .execute(params![file_id])?;
+    Ok(())
+}
+
+/// Rebuilds the search index from the symbols table, after a bulk load.
+pub fn fts_rebuild(conn: &Connection) -> Result<()> {
+    conn.execute_batch("INSERT INTO symbols_fts(symbols_fts) VALUES('rebuild');")?;
+    Ok(())
+}
+
 pub fn delete_file_cascade(conn: &Connection, file_id: i64) -> Result<()> {
+    fts_delete_file(conn, file_id)?;
     conn.prepare_cached("DELETE FROM files WHERE id = ?1")?
         .execute(params![file_id])?;
     Ok(())
@@ -370,6 +394,12 @@ pub fn delete_files_not_in(conn: &Connection, retained_ids: &[i64]) -> Result<us
             insert.execute(params![id])?;
         }
     }
+    conn.execute(
+        "INSERT INTO symbols_fts(symbols_fts, rowid, name, qualified_name)
+         SELECT 'delete', id, name, qualified_name FROM symbols
+         WHERE file_id NOT IN (SELECT id FROM retained_files)",
+        [],
+    )?;
     let removed = conn.execute(
         "DELETE FROM files WHERE id NOT IN (SELECT id FROM retained_files)",
         [],
@@ -561,10 +591,6 @@ pub fn insert_references(
             receiver, receiver_name, arg_count
          ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
     )?;
-    let mut insert_edge = conn.prepare_cached(
-        "INSERT INTO edges(from_symbol_id, to_symbol_name, kind, ref_id, weight)
-         VALUES (?1, ?2, ?3, ?4, 1.0)",
-    )?;
     for reference in refs {
         let from_symbol_id = reference
             .from_symbol
@@ -587,15 +613,6 @@ pub fn insert_references(
             reference.receiver_name,
             reference.arg_count
         ])?;
-        let ref_id = conn.last_insert_rowid();
-        if let Some(from_symbol_id) = from_symbol_id {
-            insert_edge.execute(params![
-                from_symbol_id,
-                reference.symbol_name,
-                reference.kind,
-                ref_id
-            ])?;
-        }
     }
     Ok(refs.len())
 }

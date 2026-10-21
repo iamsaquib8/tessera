@@ -17,8 +17,7 @@ expression: graph_dump(& db)
     "src/App.tsx App -call-> src/hooks/useUser.ts:useUser [high/import]",
     "src/App.tsx App -jsx-> src/components/UserCard.tsx:UserCard [high/import]",
     "src/components/UserCard.tsx UserCard -jsx-> src/components/Avatar.tsx:Avatar [high/import]",
-    "src/components/UserCard.tsx UserCard -type-> Props [name]",
-    "src/hooks/useUser.ts useUser -call-> useState [name/external]"
+    "src/components/UserCard.tsx UserCard -type-> src/components/UserCard.tsx:Props [high/local]"
   ],
   "hints": [
     "src/App.tsx App::user: call:useUser (return)"

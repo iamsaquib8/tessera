@@ -89,6 +89,11 @@ pub fn resolve(conn: &Connection, root: &Path, scope: ResolveScope) -> Result<Re
                 "low" => report.low += 1,
                 _ => report.unresolved += 1,
             }
+            // A reference known to point outside the repository gets no edge:
+            // a reference with an enclosing symbol and no edge is external.
+            if resolution.resolver == Some("external") {
+                continue;
+            }
             let targets: Vec<Option<i64>> = if resolution.targets.is_empty() {
                 vec![None]
             } else {

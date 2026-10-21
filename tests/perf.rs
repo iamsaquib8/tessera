@@ -24,7 +24,7 @@ fn timed<T>(f: impl FnOnce() -> T) -> (T, Duration) {
 }
 
 #[test]
-#[ignore = "perf budget; run with --release -- --ignored"]
+#[ignore = "perf budget; run with --release -- --ignored --test-threads=1"]
 fn context_and_blast_under_budget() {
     let (_temp, index) = synth_index(2_000);
     let (_, context) = timed(|| {
@@ -56,7 +56,7 @@ fn p95(mut samples: Vec<Duration>) -> Duration {
 }
 
 #[test]
-#[ignore = "perf budget; run with --release -- --ignored"]
+#[ignore = "perf budget; run with --release -- --ignored --test-threads=1"]
 fn freshness_and_lookups_on_ten_thousand_files() {
     use tessera_codegraph::fresh;
     use tessera_codegraph::query::{FindArgs, RefsArgs};
@@ -108,7 +108,7 @@ fn freshness_and_lookups_on_ten_thousand_files() {
 }
 
 #[test]
-#[ignore = "perf budget; run with --release -- --ignored"]
+#[ignore = "perf budget; run with --release -- --ignored --test-threads=1"]
 fn incremental_index_on_forty_thousand_files() {
     let (temp, index) = synth_index(40_000);
     let root = index.root().to_path_buf();
@@ -125,7 +125,7 @@ fn incremental_index_on_forty_thousand_files() {
 }
 
 #[test]
-#[ignore = "perf budget; run with --release -- --ignored"]
+#[ignore = "perf budget; run with --release -- --ignored --test-threads=1"]
 fn no_op_reindex_skips_unchanged_files_quickly() {
     let (temp, index) = synth_index(10_000);
     let root = index.root().to_path_buf();
@@ -136,5 +136,70 @@ fn no_op_reindex_skips_unchanged_files_quickly() {
     assert!(
         took <= Duration::from_millis(400),
         "no-op re-index took {took:?}"
+    );
+}
+
+/// Full index of `synth_repo(10_000)` before resolution existed (v0.10.0,
+/// release build, M-series laptop). Resolution may cost at most half again.
+const M0_FULL_INDEX_10K: Duration = Duration::from_millis(2_432);
+
+#[test]
+#[ignore = "perf budget; run with --release -- --ignored --test-threads=1"]
+fn full_index_with_resolution_stays_within_half_again_of_m0() {
+    let temp = TempDir::new().unwrap();
+    let root = temp.path().join("repo");
+    synth_repo(&root, 10_000);
+    let (report, took) =
+        timed(|| Index::build(&root, temp.path().join("t.db"), IndexOptions::default()).unwrap());
+    let resolve = report.resolve.expect("a full index resolves");
+    assert!(resolve.high > 0);
+    let budget = M0_FULL_INDEX_10K.mul_f64(1.5);
+    assert!(
+        took <= budget,
+        "full index took {took:?}, budget {budget:?}"
+    );
+}
+
+#[test]
+#[ignore = "perf budget; run with --release -- --ignored --test-threads=1"]
+fn single_file_edit_re_resolves_dependents_quickly() {
+    use tessera_codegraph::indexer;
+
+    let (_temp, index) = synth_index(5_000);
+    let ws = index.workspace();
+    drop(index);
+    let mut samples = Vec::new();
+    for round in 0..20 {
+        let path = format!("module_{:05}.ts", 100 + round * 37);
+        let content = std::fs::read_to_string(ws.root.join(&path)).unwrap();
+        std::fs::write(ws.root.join(&path), format!("{content}// edit {round}\n")).unwrap();
+        let (report, took) =
+            timed(|| indexer::index_files(&ws, std::slice::from_ref(&path)).unwrap());
+        let resolve = report.resolve.expect("an edit re-resolves");
+        assert!(!resolve.fallback, "{resolve:?}");
+        samples.push(took);
+    }
+    let p95 = p95(samples);
+    assert!(p95 <= Duration::from_millis(300), "edit p95 {p95:?}");
+}
+
+#[test]
+#[ignore = "perf budget; run with --release -- --ignored --test-threads=1"]
+fn editing_a_hub_file_falls_back_to_a_full_resolve_within_budget() {
+    use tessera_codegraph::indexer;
+
+    let temp = TempDir::new().unwrap();
+    let root = temp.path().join("repo");
+    synth_repo(&root, 5_000);
+    let db = temp.path().join("t.db");
+    let (_, full) = timed(|| Index::build(&root, &db, IndexOptions::default()).unwrap());
+    let ws = Index::open(&db).unwrap().workspace();
+    let util = std::fs::read_to_string(root.join("util.ts")).unwrap();
+    std::fs::write(root.join("util.ts"), format!("{util}// edit\n")).unwrap();
+    let (report, took) = timed(|| indexer::index_files(&ws, &["util.ts".to_string()]).unwrap());
+    assert!(report.resolve.expect("re-resolved").fallback);
+    assert!(
+        took <= full * 2,
+        "hub edit took {took:?}, full index {full:?}"
     );
 }

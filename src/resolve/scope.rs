@@ -19,10 +19,24 @@ const CLASS_KINDS: &[&str] = &[
     "annotation",
 ];
 const TYPE_REF_KINDS: &[&str] = &["extends", "implements", "type"];
+/// What a type reference can name: anything with members, or a type alias.
+const TYPE_KINDS: &[&str] = &[
+    "class",
+    "interface",
+    "enum",
+    "record",
+    "struct",
+    "trait",
+    "annotation",
+    "type",
+];
 /// More name-matched candidates than this is noise, not ambiguity.
 const MAX_AMBIGUOUS: usize = 5;
 /// Bounds every walk over re-exports, inheritance and call chains.
 const MAX_DEPTH: usize = 12;
+/// Loaded files kept in memory; a full pass over a large repository would
+/// otherwise hold every file's bindings and hints at once.
+const FILE_CACHE_LIMIT: usize = 4_096;
 
 #[derive(Debug)]
 pub(super) struct Sym {
@@ -138,6 +152,9 @@ pub(super) struct Resolver<'c> {
     symbols: HashMap<i64, Rc<Sym>>,
     by_name: HashMap<String, Rc<Vec<i64>>>,
     supers: HashMap<i64, Rc<Vec<i64>>>,
+    module_cache: HashMap<(String, String), ModuleTarget>,
+    binding_cache: HashMap<(String, String), Found>,
+    candidate_cache: HashMap<(String, bool, bool), Rc<Vec<i64>>>,
 }
 
 impl<'c> Resolver<'c> {
@@ -149,6 +166,9 @@ impl<'c> Resolver<'c> {
             symbols: HashMap::new(),
             by_name: HashMap::new(),
             supers: HashMap::new(),
+            module_cache: HashMap::new(),
+            binding_cache: HashMap::new(),
+            candidate_cache: HashMap::new(),
         };
         if preload {
             resolver.preload()?;
@@ -169,9 +189,25 @@ impl<'c> Resolver<'c> {
         Ok(())
     }
 
+    /// Module resolution is a pure function of the importing directory and the
+    /// specifier, and the same pair recurs for every reference in a file.
+    fn module(&mut self, from_file: &str, source: &str, language: Language) -> ModuleTarget {
+        let dir = from_file.rsplit_once('/').map_or("", |(dir, _)| dir);
+        let key = (format!("{}:{dir}", language.family()), source.to_string());
+        if let Some(target) = self.module_cache.get(&key) {
+            return target.clone();
+        }
+        let target = self.modules.resolve(from_file, source, language);
+        self.module_cache.insert(key, target.clone());
+        target
+    }
+
     pub fn file(&mut self, file_id: i64) -> Result<Rc<FileInfo>> {
         if let Some(file) = self.files.get(&file_id) {
             return Ok(Rc::clone(file));
+        }
+        if self.files.len() >= FILE_CACHE_LIMIT {
+            self.files.clear();
         }
         let (path, language, module): (String, String, Option<String>) = self.conn.query_row(
             "SELECT path, language, module FROM files WHERE id = ?1",
@@ -291,7 +327,7 @@ impl<'c> Resolver<'c> {
             _ if binding.source == "." => return None,
             _ => binding.source.clone(),
         };
-        match self.modules.resolve(&file.path, &source, file.language) {
+        match self.module(&file.path, &source, file.language) {
             ModuleTarget::File(id) => self.file(id).ok().map(|f| f.path.clone()),
             _ => None,
         }
@@ -505,7 +541,7 @@ impl<'c> Resolver<'c> {
             }
             return Ok(Resolution::unresolved());
         }
-        let kinds = types_only.then_some(CLASS_KINDS);
+        let kinds = types_only.then_some(TYPE_KINDS);
         self.by_name(name, None, false, kinds, None)
     }
 
@@ -522,7 +558,7 @@ impl<'c> Resolver<'c> {
                 .symbols
                 .iter()
                 .filter(|sym| sym.name == name && sym.container == *scope)
-                .filter(|sym| !types_only || CLASS_KINDS.contains(&sym.kind.as_str()))
+                .filter(|sym| !types_only || TYPE_KINDS.contains(&sym.kind.as_str()))
                 .filter(|sym| !self.is_member(file, sym))
                 .map(|sym| sym.id)
                 .collect();
@@ -537,8 +573,18 @@ impl<'c> Resolver<'c> {
         file.bindings.iter().any(|b| b.local == name)
     }
 
-    /// The symbols an imported name stands for.
+    /// The symbols an imported name stands for, cached per file and name.
     fn binding_symbols(&mut self, file: &Rc<FileInfo>, name: &str) -> Result<Found> {
+        let key = (file.path.clone(), name.to_string());
+        if let Some(found) = self.binding_cache.get(&key) {
+            return Ok(found.clone());
+        }
+        let found = self.binding_symbols_uncached(file, name)?;
+        self.binding_cache.insert(key, found.clone());
+        Ok(found)
+    }
+
+    fn binding_symbols_uncached(&mut self, file: &Rc<FileInfo>, name: &str) -> Result<Found> {
         let bindings: Vec<(String, Option<String>, String)> = file
             .bindings
             .iter()
@@ -554,7 +600,7 @@ impl<'c> Resolver<'c> {
                     } else {
                         imported.unwrap_or_else(|| name.to_string())
                     };
-                    match self.modules.resolve(&file.path, &source, file.language) {
+                    match self.module(&file.path, &source, file.language) {
                         ModuleTarget::File(target) => {
                             self.export_lookup(target, &export, &mut HashSet::new(), 0)?
                         }
@@ -604,7 +650,7 @@ impl<'c> Resolver<'c> {
         } else {
             name
         };
-        match self.modules.resolve("", fqn, Language::Java) {
+        match self.module("", fqn, Language::Java) {
             ModuleTarget::File(target) => {
                 let file = self.file(target)?;
                 let ids: Vec<i64> = file
@@ -687,7 +733,7 @@ impl<'c> Resolver<'c> {
                     Found::Symbols(local)
                 }
             } else {
-                match self.modules.resolve(&file.path, &source, file.language) {
+                match self.module(&file.path, &source, file.language) {
                     ModuleTarget::File(target) => {
                         self.export_lookup(target, &wanted, visited, depth + 1)?
                     }
@@ -729,13 +775,11 @@ impl<'c> Resolver<'c> {
             .find(|b| b.local == receiver && matches!(b.kind.as_str(), "namespace" | "require"))
             .map(|b| b.source.clone());
         if let Some(source) = module_binding {
-            return Ok(
-                match self.modules.resolve(&file.path, &source, file.language) {
-                    ModuleTarget::File(id) => Receiver::Module(id),
-                    ModuleTarget::External(_) => Receiver::External,
-                    ModuleTarget::Unresolved => Receiver::Unknown,
-                },
-            );
+            return Ok(match self.module(&file.path, &source, file.language) {
+                ModuleTarget::File(id) => Receiver::Module(id),
+                ModuleTarget::External(_) => Receiver::External,
+                ModuleTarget::Unresolved => Receiver::Unknown,
+            });
         }
         if receiver.contains('.') && !receiver.starts_with("this.") {
             return Ok(Receiver::Unknown);
@@ -964,11 +1008,43 @@ impl<'c> Resolver<'c> {
         kinds: Option<&[&str]>,
         exclude: Option<i64>,
     ) -> Result<Resolution> {
+        let candidates: Vec<i64> = self
+            .candidates(name, members, kinds)?
+            .iter()
+            .copied()
+            .filter(|id| Some(*id) != exclude)
+            .collect();
+        let candidates = self.filter_arity(candidates, arity)?;
+        Ok(match candidates.len() {
+            0 => Resolution::unresolved(),
+            1 => Resolution {
+                targets: candidates,
+                confidence: "medium",
+                resolver: Some("name"),
+            },
+            n if n <= MAX_AMBIGUOUS => Resolution {
+                targets: candidates,
+                confidence: "low",
+                resolver: Some("name"),
+            },
+            _ => Resolution::unresolved(),
+        })
+    }
+
+    /// Definitions named `name`, minus callbacks, members unless `members`,
+    /// and kinds outside `kinds`.
+    fn candidates(
+        &mut self,
+        name: &str,
+        members: bool,
+        kinds: Option<&[&str]>,
+    ) -> Result<Rc<Vec<i64>>> {
+        let key = (name.to_string(), members, kinds.is_some());
+        if let Some(found) = self.candidate_cache.get(&key) {
+            return Ok(Rc::clone(found));
+        }
         let mut candidates = Vec::new();
         for id in self.named(name)?.iter() {
-            if Some(*id) == exclude {
-                continue;
-            }
             let Some(sym) = self.symbol(*id)? else {
                 continue;
             };
@@ -986,21 +1062,9 @@ impl<'c> Resolver<'c> {
             }
             candidates.push(*id);
         }
-        let candidates = self.filter_arity(candidates, arity)?;
-        Ok(match candidates.len() {
-            0 => Resolution::unresolved(),
-            1 => Resolution {
-                targets: candidates,
-                confidence: "medium",
-                resolver: Some("name"),
-            },
-            n if n <= MAX_AMBIGUOUS => Resolution {
-                targets: candidates,
-                confidence: "low",
-                resolver: Some("name"),
-            },
-            _ => Resolution::unresolved(),
-        })
+        let candidates = Rc::new(candidates);
+        self.candidate_cache.insert(key, Rc::clone(&candidates));
+        Ok(candidates)
     }
 }
 

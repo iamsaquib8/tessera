@@ -6,7 +6,7 @@ use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 
 use super::blast::confidence_mark;
-use super::common::{is_test_path, read_body};
+use super::common::read_body;
 use super::{graph, legacy};
 use crate::db;
 use crate::output::{estimate_tokens, AgentText, Confidence};
@@ -14,8 +14,12 @@ use crate::types::SymbolRecord;
 
 const DEFAULT_BUDGET: usize = 2_000;
 const MAX_SIBLINGS: usize = 5;
-/// How far up the call graph to look for tests that exercise the symbol.
+/// How far up the call graph to look for tests that exercise the symbol, and
+/// how many symbols that walk may visit.
 const TEST_DEPTH: usize = 4;
+const TEST_SCAN_CAP: usize = 2_000;
+/// The budget trims these further; the cap keeps hub symbols cheap.
+const MAX_NEIGHBOURS: usize = 60;
 
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -65,22 +69,21 @@ pub fn run(conn: &Connection, root: &Path, args: &ContextArgs) -> Result<Context
             confidence_mark(*confidence)
         )
     };
-    let tests = graph::blast(conn, &[symbol.id], TEST_DEPTH)?
-        .0
+    let tests = graph::tests_reaching(conn, symbol.id, TEST_DEPTH, TEST_SCAN_CAP)?
         .into_iter()
-        .filter(|t| is_test_path(&t.symbol.path))
-        .map(|t| {
-            format!(
-                "{} ({}:{})",
-                t.symbol.qualified_name, t.symbol.path, t.symbol.start_line
-            )
-        })
+        .map(|t| format!("{} ({}:{})", t.qualified_name, t.path, t.start_line))
         .collect();
     let mut result = ContextResult {
         signature: symbol.signature.clone(),
         body,
-        dependencies: graph::callees(conn, symbol.id)?.iter().map(line).collect(),
-        callers: graph::callers(conn, symbol.id)?.iter().map(line).collect(),
+        dependencies: graph::callees(conn, symbol.id, MAX_NEIGHBOURS)?
+            .iter()
+            .map(line)
+            .collect(),
+        callers: graph::callers(conn, symbol.id, MAX_NEIGHBOURS)?
+            .iter()
+            .map(line)
+            .collect(),
         tests,
         siblings: legacy::siblings_conn(conn, &symbol.qualified_name)?
             .siblings

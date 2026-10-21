@@ -113,30 +113,52 @@ pub fn incoming_refs(
     Ok(refs)
 }
 
-/// Symbols whose resolved edges point at `id`, with the best confidence.
-pub fn callers(conn: &Connection, id: i64) -> Result<Vec<(SymbolRecord, Confidence)>> {
+/// Up to `limit` symbols whose resolved edges point at `id`, strongest
+/// confidence first.
+pub fn callers(
+    conn: &Connection,
+    id: i64,
+    limit: usize,
+) -> Result<Vec<(SymbolRecord, Confidence)>> {
     neighbours(
         conn,
         "SELECT from_symbol_id, confidence FROM edges WHERE to_symbol_id = ?1",
         id,
+        limit,
     )
 }
 
-/// Symbols `id` resolves to, with the best confidence.
-pub fn callees(conn: &Connection, id: i64) -> Result<Vec<(SymbolRecord, Confidence)>> {
+/// Up to `limit` symbols `id` resolves to, strongest confidence first.
+pub fn callees(
+    conn: &Connection,
+    id: i64,
+    limit: usize,
+) -> Result<Vec<(SymbolRecord, Confidence)>> {
     neighbours(
         conn,
         "SELECT to_symbol_id, confidence FROM edges
          WHERE from_symbol_id = ?1 AND to_symbol_id IS NOT NULL",
         id,
+        limit,
     )
 }
 
-fn neighbours(conn: &Connection, sql: &str, id: i64) -> Result<Vec<(SymbolRecord, Confidence)>> {
+fn neighbours(
+    conn: &Connection,
+    sql: &str,
+    id: i64,
+    limit: usize,
+) -> Result<Vec<(SymbolRecord, Confidence)>> {
     let mut best: HashMap<i64, Confidence> = HashMap::new();
+    let sql = format!(
+        "{sql} ORDER BY CASE confidence WHEN 'high' THEN 0 WHEN 'medium' THEN 1
+         WHEN 'low' THEN 2 ELSE 3 END, 1 LIMIT ?2"
+    );
     let rows: Vec<(i64, String)> = conn
-        .prepare_cached(sql)?
-        .query_map(params![id], |row| Ok((row.get(0)?, row.get(1)?)))?
+        .prepare_cached(&sql)?
+        .query_map(params![id, (limit * 4) as i64], |row| {
+            Ok((row.get(0)?, row.get(1)?))
+        })?
         .collect::<rusqlite::Result<_>>()?;
     for (other, value) in rows {
         let value = confidence(&value);
@@ -159,7 +181,47 @@ fn neighbours(conn: &Connection, sql: &str, id: i64) -> Result<Vec<(SymbolRecord
             .then_with(|| a.0.path.cmp(&b.0.path))
             .then(a.0.start_line.cmp(&b.0.start_line))
     });
+    out.truncate(limit);
     Ok(out)
+}
+
+/// Test files whose symbols reach `id` within `depth` resolved hops,
+/// visiting at most `cap` symbols.
+pub fn tests_reaching(
+    conn: &Connection,
+    id: i64,
+    depth: usize,
+    cap: usize,
+) -> Result<Vec<SymbolRecord>> {
+    let mut seen: HashMap<i64, usize> = HashMap::from([(id, 0)]);
+    let mut queue: VecDeque<(i64, usize)> = VecDeque::from([(id, 0)]);
+    let mut tests = Vec::new();
+    let mut stmt = conn.prepare_cached(
+        "SELECT DISTINCT e.from_symbol_id, f.path FROM edges e
+         JOIN symbols s ON s.id = e.from_symbol_id JOIN files f ON f.id = s.file_id
+         WHERE e.to_symbol_id = ?1",
+    )?;
+    while let Some((node, node_depth)) = queue.pop_front() {
+        if node_depth >= depth || seen.len() >= cap {
+            continue;
+        }
+        let rows: Vec<(i64, String)> = stmt
+            .query_map(params![node], |row| Ok((row.get(0)?, row.get(1)?)))?
+            .collect::<rusqlite::Result<_>>()?;
+        for (caller, path) in rows {
+            if seen.contains_key(&caller) || seen.len() >= cap {
+                continue;
+            }
+            seen.insert(caller, node_depth + 1);
+            if super::common::is_test_path(&path) {
+                tests.extend(symbol(conn, caller)?);
+            } else {
+                queue.push_back((caller, node_depth + 1));
+            }
+        }
+    }
+    tests.sort_by(|a, b| a.path.cmp(&b.path).then(a.start_line.cmp(&b.start_line)));
+    Ok(tests)
 }
 
 #[derive(Debug, Clone)]

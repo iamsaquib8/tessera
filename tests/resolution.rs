@@ -74,24 +74,20 @@ fn typescript_edges_resolve_through_imports_hints_and_scope() {
             "label -call-> src/legacy/strings.js:slug [high/import]",
             "label -call-> src/legacy/strings.js:suffix [high/import]",
             "default -jsx-> src/ui/Badge.tsx:Badge [high/local]",
+            // a type alias is a type
+            "Badge -type-> src/ui/Badge.tsx:Props [high/local]",
             "describe(\"UserService\").it(\"names a user\") -call-> src/services/users.ts:makeService [high/import]",
             // unknown receiver: unique name match, capped at medium
             "UserService.name -call-> src/domain/user.ts:User.display [medium/name]",
         ],
     );
     // A receiver typed as an external type, or a call imported from an
-    // external package, never falls back to a repo symbol.
-    assert_has(
-        &all,
-        &[
-            "UserRepo.get -call-> get [name/external]",
-            "Badge -call-> memo [name/external]",
-        ],
-    );
+    // external package, never falls back to a repo symbol: it gets no edge.
     assert_lacks(
         &all,
         &[
-            "UserRepo.get -call-> src/",
+            "UserRepo.get -call->",
+            "Badge -call-> memo",
             "describe(\"UserService\") -call-> src/",
         ],
     );

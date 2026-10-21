@@ -1,6 +1,8 @@
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fs::{self, File, OpenOptions, TryLockError};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::mpsc;
 use std::time::Instant;
 
 use anyhow::{Context, Result};
@@ -97,6 +99,12 @@ pub fn index_path(root: &Path, db_path: &Path) -> Result<IndexReport> {
 }
 
 const EXCLUDES_META_KEY: &str = "excludes";
+/// Parsing runs on this many threads at most; storing stays on one.
+const MAX_WORKERS: usize = 8;
+/// Fewer files than this are parsed on the calling thread.
+const PARALLEL_THRESHOLD: usize = 32;
+/// tree-sitter recursion on deeply nested input needs more than the default.
+const WORKER_STACK_BYTES: usize = 8 << 20;
 const FINGERPRINT_META_KEY: &str = "fingerprint";
 
 pub fn index_path_with(root: &Path, db_path: &Path, options: IndexOptions) -> Result<IndexReport> {
@@ -149,8 +157,9 @@ pub fn index_path_locked(
         .collect();
 
     let mut changed_ids: Vec<i64> = Vec::new();
-    for file in &discovery.files {
-        match index_one(&tx, file, full, &mut report)? {
+    let outcomes = index_discovered(&tx, &discovery.files, full, &mut report)?;
+    for (file, outcome) in discovery.files.iter().zip(outcomes) {
+        match outcome {
             FileOutcome::Indexed(id) => {
                 visited_ids.push(id);
                 changed_ids.push(id);
@@ -170,6 +179,9 @@ pub fn index_path_locked(
     }
     report.files_skipped = skipped.len();
     db::replace_skipped(&tx, &skipped)?;
+    if full {
+        db::fts_rebuild(&tx)?;
+    }
     let scope = if full {
         Some(ResolveScope::All)
     } else if !changed_ids.is_empty() || report.files_removed > 0 {
@@ -234,7 +246,9 @@ pub fn index_files(ws: &Workspace, rel_paths: &[String]) -> Result<IndexReport> 
             continue;
         };
         db::delete_skipped(&tx, &rel_path)?;
-        match index_one(&tx, &file, false, &mut report)? {
+        let known_sha = db::file_sha(&tx, &rel_path)?.map(|(_, sha)| sha);
+        let prepared = prepare(&file, known_sha.as_deref());
+        match store(&tx, &file, prepared, false, &mut report)? {
             FileOutcome::Skipped(reason) => {
                 if let Some((id, _)) = db::file_sha(&tx, &rel_path)? {
                     db::delete_file_cascade(&tx, id)?;
@@ -298,40 +312,29 @@ enum FileOutcome {
     Skipped(SkipReason),
 }
 
-fn index_one(
-    tx: &Connection,
-    file: &SourceFile,
-    full: bool,
-    report: &mut IndexReport,
-) -> Result<FileOutcome> {
-    let rel_path = &file.rel_path;
-    if !full {
-        if let Some((id, size, mtime_ns)) = db::file_stat(tx, rel_path)? {
-            if size == file.size && mtime_ns == file.mtime_ns {
-                report.files_reused += 1;
-                return Ok(FileOutcome::Reused(id));
-            }
-        }
-    }
+/// What a worker learns about a file without touching the database.
+enum Prepared {
+    Unreadable(String),
+    Minified,
+    /// The content hash matches the indexed copy; only the stat changed.
+    SameContent,
+    Parsed {
+        sha: String,
+        loc: usize,
+        lossy: bool,
+        parsed: std::result::Result<ParsedFile, String>,
+    },
+}
+
+/// Reads, decodes and parses `file`. Pure, so it runs on worker threads.
+fn prepare(file: &SourceFile, known_sha: Option<&str>) -> Prepared {
     let bytes = match fs::read(&file.abs_path) {
         Ok(bytes) => bytes,
-        Err(error) => {
-            report.warnings.push(IndexWarning {
-                path: rel_path.clone(),
-                message: format!("failed to read file: {error}"),
-            });
-            return Ok(FileOutcome::Skipped(SkipReason::Unreadable));
-        }
+        Err(error) => return Prepared::Unreadable(error.to_string()),
     };
-    let content = match String::from_utf8(bytes) {
-        Ok(content) => content,
-        Err(error) => {
-            report.warnings.push(IndexWarning {
-                path: rel_path.clone(),
-                message: "not valid UTF-8; indexed with replacement characters".to_string(),
-            });
-            String::from_utf8_lossy(error.as_bytes()).into_owned()
-        }
+    let (content, lossy) = match String::from_utf8(bytes) {
+        Ok(content) => (content, false),
+        Err(error) => (String::from_utf8_lossy(error.as_bytes()).into_owned(), true),
     };
     let content = content
         .strip_prefix('\u{feff}')
@@ -343,26 +346,125 @@ fn index_one(
         .unwrap_or_default()
         .to_string_lossy();
     if walk::is_minified(&name, content.as_bytes()) {
-        return Ok(FileOutcome::Skipped(SkipReason::Minified));
+        return Prepared::Minified;
     }
     let sha = format!("{:x}", Sha256::digest(content.as_bytes()));
-    if !full {
-        if let Some((existing_id, existing_sha)) = db::file_sha(tx, rel_path)? {
-            if existing_sha == sha {
+    if known_sha == Some(sha.as_str()) {
+        return Prepared::SameContent;
+    }
+    Prepared::Parsed {
+        loc: content.lines().count(),
+        parsed: parse_file(file.language, &content).map_err(|error| error.to_string()),
+        sha,
+        lossy,
+    }
+}
+
+/// Prepares `pending` files on worker threads and hands each result to
+/// `store` in the order given, so ids and output stay deterministic.
+fn prepare_all(
+    files: &[SourceFile],
+    pending: &[(usize, Option<String>)],
+    mut store: impl FnMut(usize, Prepared) -> Result<()>,
+) -> Result<()> {
+    let workers = std::thread::available_parallelism()
+        .map_or(1, |n| n.get())
+        .min(MAX_WORKERS);
+    if pending.len() < PARALLEL_THRESHOLD || workers < 2 {
+        for (index, known_sha) in pending {
+            store(*index, prepare(&files[*index], known_sha.as_deref()))?;
+        }
+        return Ok(());
+    }
+    let next = AtomicUsize::new(0);
+    std::thread::scope(|scope| -> Result<()> {
+        let (sender, receiver) = mpsc::sync_channel::<(usize, Prepared)>(workers * 8);
+        for _ in 0..workers {
+            let sender = sender.clone();
+            let next = &next;
+            std::thread::Builder::new()
+                .stack_size(WORKER_STACK_BYTES)
+                .spawn_scoped(scope, move || loop {
+                    let slot = next.fetch_add(1, Ordering::Relaxed);
+                    let Some((index, known_sha)) = pending.get(slot) else {
+                        return;
+                    };
+                    let prepared = prepare(&files[*index], known_sha.as_deref());
+                    if sender.send((slot, prepared)).is_err() {
+                        return;
+                    }
+                })?;
+        }
+        drop(sender);
+        let mut waiting: BTreeMap<usize, Prepared> = BTreeMap::new();
+        let mut expected = 0;
+        for (slot, prepared) in receiver.iter() {
+            waiting.insert(slot, prepared);
+            while let Some(prepared) = waiting.remove(&expected) {
+                store(pending[expected].0, prepared)?;
+                expected += 1;
+            }
+        }
+        Ok(())
+    })
+}
+
+/// Writes one prepared file. `full` means the index was emptied first.
+fn store(
+    tx: &Connection,
+    file: &SourceFile,
+    prepared: Prepared,
+    full: bool,
+    report: &mut IndexReport,
+) -> Result<FileOutcome> {
+    let rel_path = &file.rel_path;
+    let warn = |report: &mut IndexReport, message: String| {
+        report.warnings.push(IndexWarning {
+            path: rel_path.clone(),
+            message,
+        })
+    };
+    let (sha, loc, parsed) = match prepared {
+        Prepared::Unreadable(error) => {
+            warn(report, format!("failed to read file: {error}"));
+            return Ok(FileOutcome::Skipped(SkipReason::Unreadable));
+        }
+        Prepared::Minified => return Ok(FileOutcome::Skipped(SkipReason::Minified)),
+        Prepared::SameContent => {
+            if let Some((existing_id, _)) = db::file_sha(tx, rel_path)? {
                 db::touch_file(tx, existing_id, file.size, file.mtime_ns)?;
                 report.files_reused += 1;
                 return Ok(FileOutcome::Reused(existing_id));
             }
+            return Ok(FileOutcome::Skipped(SkipReason::Unreadable));
+        }
+        Prepared::Parsed {
+            sha,
+            loc,
+            lossy,
+            parsed,
+        } => {
+            if lossy {
+                warn(
+                    report,
+                    "not valid UTF-8; indexed with replacement characters".to_string(),
+                );
+            }
+            (sha, loc, parsed)
+        }
+    };
+    if !full {
+        if let Some((existing_id, _)) = db::file_sha(tx, rel_path)? {
             db::delete_file_cascade(tx, existing_id)?;
         }
     }
-    let parsed = match parse_file(file.language, &content) {
+    let parsed = match parsed {
         Ok(parsed) => parsed,
         Err(error) => {
-            report.warnings.push(IndexWarning {
-                path: rel_path.clone(),
-                message: format!("failed to parse {}: {error}", file.language),
-            });
+            warn(
+                report,
+                format!("failed to parse {}: {error}", file.language),
+            );
             return Ok(FileOutcome::Skipped(SkipReason::Unreadable));
         }
     };
@@ -371,7 +473,7 @@ fn index_one(
         rel_path,
         file.language,
         &sha,
-        content.lines().count(),
+        loc,
         file.size,
         file.mtime_ns,
     )?;
@@ -379,6 +481,9 @@ fn index_one(
         db::mark_parse_errors(tx, file_id)?;
     }
     let symbol_ids = db::insert_symbols(tx, file_id, &parsed.symbols)?;
+    if !full {
+        db::fts_insert_file(tx, file_id)?;
+    }
     let mut ids_by_name: HashMap<String, i64> = HashMap::with_capacity(symbol_ids.len());
     for (symbol, id) in parsed.symbols.iter().zip(&symbol_ids) {
         ids_by_name
@@ -394,6 +499,36 @@ fn index_one(
     report.files_indexed += 1;
     report.symbols_indexed += symbol_ids.len();
     Ok(FileOutcome::Indexed(file_id))
+}
+
+/// Unchanged files keep their rows; others are prepared and stored.
+fn index_discovered(
+    tx: &Connection,
+    files: &[SourceFile],
+    full: bool,
+    report: &mut IndexReport,
+) -> Result<Vec<FileOutcome>> {
+    let mut outcomes: Vec<Option<FileOutcome>> = vec![None; files.len()];
+    let mut pending = Vec::new();
+    for (index, file) in files.iter().enumerate() {
+        let mut known_sha = None;
+        if !full {
+            if let Some((id, size, mtime_ns)) = db::file_stat(tx, &file.rel_path)? {
+                if size == file.size && mtime_ns == file.mtime_ns {
+                    report.files_reused += 1;
+                    outcomes[index] = Some(FileOutcome::Reused(id));
+                    continue;
+                }
+                known_sha = db::file_sha(tx, &file.rel_path)?.map(|(_, sha)| sha);
+            }
+        }
+        pending.push((index, known_sha));
+    }
+    prepare_all(files, &pending, |index, prepared| {
+        outcomes[index] = Some(store(tx, &files[index], prepared, full, report)?);
+        Ok(())
+    })?;
+    Ok(outcomes.into_iter().flatten().collect())
 }
 
 /// Ignores the index but keeps the shareable project config committable.
