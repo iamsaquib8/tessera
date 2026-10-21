@@ -1,0 +1,4 @@
+# Tessera's own index. The fixtures under tests/ are inputs for the test
+# suite, several of them broken on purpose, not code of this project.
+[exclude]
+paths = ["tests/fixtures/"]
