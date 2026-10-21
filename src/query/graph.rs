@@ -58,6 +58,10 @@ fn symbols(conn: &Connection, sql: &str, arg: &str) -> Result<Vec<SymbolRecord>>
     Ok(rows.collect::<rusqlite::Result<_>>()?)
 }
 
+pub fn symbol_by_id(conn: &Connection, id: i64) -> Result<Option<SymbolRecord>> {
+    symbol(conn, id)
+}
+
 fn symbol(conn: &Connection, id: i64) -> Result<Option<SymbolRecord>> {
     Ok(symbols(
         conn,

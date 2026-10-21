@@ -16,3 +16,8 @@ func (fe *frontendServer) convert(ctx context.Context, money *pb.Money) (*pb.Mon
 	return client.
 		Convert(ctx, &pb.CurrencyConversionRequest{From: money})
 }
+
+func (fe *frontendServer) currencies(ctx context.Context) ([]string, error) {
+	resp, err := pb.NewCurrencyServiceClient(fe.currencySvcConn).GetSupportedCurrencies(ctx, &pb.Empty{})
+	return resp.GetCurrencyCodes(), err
+}

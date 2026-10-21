@@ -672,12 +672,20 @@ pub fn connect_conn(
         }
     }
 
+    // Contracts add hops across services: a client to the server's handler.
+    let links = super::map::links(conn)?;
     let mut hit: Option<i64> = None;
     'bfs: while let Some((node, depth)) = queue.pop_front() {
         if depth >= max_depth {
             continue;
         }
-        for callee in callees_for_symbol(conn, &node, 200)? {
+        let mut callees = callees_for_symbol(conn, &node, 200)?;
+        for id in links.get(&node.id).into_iter().flatten() {
+            if let Some(target) = super::graph::symbol_by_id(conn, *id)? {
+                callees.push(target);
+            }
+        }
+        for callee in callees {
             if !visited.insert(callee.id) {
                 continue;
             }

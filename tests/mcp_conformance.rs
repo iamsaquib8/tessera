@@ -135,14 +135,14 @@ fn modern_discover_and_version_errors() {
 }
 
 #[test]
-fn tools_list_has_eight_read_only_tools() {
+fn tools_list_has_nine_read_only_tools() {
     let (_temp, state) = state_for("typescript");
     let listed = reply(&state, modern(1, "tools/list", json!({})));
     let tools = listed["result"]["tools"].as_array().unwrap();
     let names: Vec<&str> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
     assert_eq!(
         names,
-        vec!["find", "search", "refs", "blast", "verify", "context", "path", "status"]
+        vec!["find", "search", "refs", "blast", "verify", "context", "path", "map", "status"]
     );
     for tool in tools {
         assert_eq!(tool["annotations"]["readOnlyHint"], true, "{tool}");
@@ -306,7 +306,7 @@ mod live {
         .unwrap();
         let listed = server.request("tools/list", json!({}), Duration::from_secs(2));
         assert_eq!(listed["id"], 2, "notification must not produce a reply");
-        assert_eq!(listed["result"]["tools"].as_array().unwrap().len(), 8);
+        assert_eq!(listed["result"]["tools"].as_array().unwrap().len(), 9);
         let ready = Instant::now();
         while server.tool_text("status", json!({})).0 {
             assert!(ready.elapsed() < Duration::from_secs(10));
@@ -543,7 +543,7 @@ mod http {
         let (status, listed) = post_modern(&server, "tools/list", json!({}), None);
         assert_eq!(status, 200);
         assert_eq!(listed["result"]["resultType"], "complete");
-        assert_eq!(listed["result"]["tools"].as_array().unwrap().len(), 8);
+        assert_eq!(listed["result"]["tools"].as_array().unwrap().len(), 9);
 
         let calls = [
             ("find", json!({ "symbol": "findById" })),

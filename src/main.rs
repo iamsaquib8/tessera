@@ -163,7 +163,7 @@ enum Commands {
     },
     /// Contracts between services: routes, gRPC methods, topics and tables, with both sides.
     Map {
-        /// Contract kind: route, rpc, topic, or table.
+        /// Contract kind: route, rpc, topic, or table; or `service` for what each service calls and serves.
         kind: Option<String>,
         /// Only contracts whose name or files contain this.
         query: Option<String>,

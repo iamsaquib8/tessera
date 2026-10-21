@@ -67,7 +67,7 @@ fn grpc_clients_link_to_servers_in_five_languages() {
         "CartService/AddItem: cart/CartService.cs -> ",
         "CartService/GetCart: cart/CartService.cs -> frontend/rpc.go",
         "CurrencyService/Convert: currency/server.js -> frontend/rpc.go",
-        "CurrencyService/GetSupportedCurrencies: currency/server.js -> ",
+        "CurrencyService/GetSupportedCurrencies: currency/server.js -> frontend/rpc.go",
         "ProductCatalogService/ListProducts:  -> recommendation/client.py",
         "EmailService/SendOrderConfirmation: email/email_server.py -> checkout/main.go",
         "CheckoutService/PlaceOrder: checkout/main.go -> ",
@@ -215,4 +215,80 @@ fn tables_link_migrations_models_and_queries() {
         );
     }
     assert_eq!(tables.len(), 4, "{tables:#?}");
+}
+
+fn tessera(root: &Path, args: &[&str]) -> Value {
+    let output = Command::cargo_bin("tessera")
+        .unwrap()
+        .current_dir(root)
+        .args(["--quiet", "--json"])
+        .args(args)
+        .output()
+        .unwrap();
+    serde_json::from_slice(&output.stdout).unwrap_or_else(|e| {
+        panic!(
+            "{e}: {}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        )
+    })
+}
+
+#[test]
+fn path_crosses_a_service_boundary_through_a_contract() {
+    let temp = fixture("contracts-grpc");
+    // Go's `GetSupportedCurrencies` call and Node's `getSupportedCurrencies`
+    // handler share no name; only the contract links them.
+    let result = tessera(
+        temp.path(),
+        &[
+            "path",
+            "frontendServer.currencies",
+            "getSupportedCurrencies",
+        ],
+    );
+    assert_eq!(result["found"], true, "{result}");
+    let hops: Vec<&str> = result["path"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|n| n["path"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        hops,
+        vec!["frontend/rpc.go", "currency/server.js"],
+        "{result}"
+    );
+}
+
+#[test]
+fn map_service_shows_what_a_service_calls_and_serves() {
+    let temp = fixture("contracts-grpc");
+    let result = map(temp.path(), &["service", "checkout"]);
+    let service = &result["services"][0];
+    assert_eq!(service["name"], "checkout", "{result}");
+    let calls: Vec<String> = service["calls"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|l| {
+            format!(
+                "{} -> {}",
+                l["contract"].as_str().unwrap(),
+                l["services"][0].as_str().unwrap()
+            )
+        })
+        .collect();
+    assert_eq!(
+        calls,
+        vec!["EmailService/SendOrderConfirmation -> email"],
+        "{result}"
+    );
+    let serves: Vec<&str> = service["serves"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|l| l["contract"].as_str().unwrap())
+        .collect();
+    assert_eq!(serves, vec!["CheckoutService/PlaceOrder"], "{result}");
 }

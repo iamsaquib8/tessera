@@ -28,12 +28,13 @@ const MANIFESTS: &[&str] = &[
     "composer.json",
     "Dockerfile",
 ];
-pub const KINDS: &[&str] = &["route", "rpc", "topic", "table"];
+pub const KINDS: &[&str] = &["route", "rpc", "topic", "table", "service"];
 
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct MapArgs {
-    /// `route`, `rpc`, `topic` or `table`; `None` for every kind.
+    /// `route`, `rpc`, `topic`, `table`, or `service`; `None` for every
+    /// contract kind.
     pub kind: Option<String>,
     /// Keeps contracts whose name, or a file of theirs, contains this.
     pub query: Option<String>,
@@ -45,6 +46,8 @@ pub struct Site {
     pub line: usize,
     /// The handler or caller around the site.
     pub symbol: Option<String>,
+    #[serde(skip)]
+    pub symbol_id: Option<i64>,
     pub service: String,
     pub confidence: String,
     pub rule: String,
@@ -67,6 +70,28 @@ pub struct Contract {
 #[derive(Debug, Clone, Serialize)]
 pub struct MapResult {
     pub contracts: Vec<Contract>,
+    /// With kind `service`: each service and its links to others.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub services: Vec<ServiceView>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ServiceView {
+    pub name: String,
+    /// Contracts this service provides that other services use.
+    pub serves: Vec<ServiceLink>,
+    /// Contracts of other services this service uses.
+    pub calls: Vec<ServiceLink>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ServiceLink {
+    pub kind: String,
+    pub contract: String,
+    /// The services on the other side.
+    pub services: Vec<String>,
+    /// This service's sites.
+    pub sites: Vec<Site>,
 }
 
 #[derive(Debug, Clone)]
@@ -77,6 +102,7 @@ struct Fact {
     path: String,
     line: usize,
     symbol: Option<String>,
+    symbol_id: Option<i64>,
     confidence: String,
     rule: String,
     evidence: String,
@@ -84,7 +110,8 @@ struct Fact {
 
 fn load(conn: &Connection, prefix: &str) -> Result<Vec<Fact>> {
     let mut stmt = conn.prepare(
-        "SELECT f.kind, f.key, f.name, fl.path, f.line, s.qualified_name, f.confidence, f.rule, f.evidence
+        "SELECT f.kind, f.key, f.name, fl.path, f.line, s.qualified_name, f.confidence, f.rule,
+                f.evidence, f.symbol_id
          FROM facts f JOIN files fl ON fl.id = f.file_id
          LEFT JOIN symbols s ON s.id = f.symbol_id
          WHERE f.key LIKE ?1 || '%'
@@ -101,6 +128,7 @@ fn load(conn: &Connection, prefix: &str) -> Result<Vec<Fact>> {
             confidence: row.get(6)?,
             rule: row.get(7)?,
             evidence: row.get(8)?,
+            symbol_id: row.get(9)?,
         })
     })?;
     Ok(rows.collect::<rusqlite::Result<_>>()?)
@@ -109,19 +137,30 @@ fn load(conn: &Connection, prefix: &str) -> Result<Vec<Fact>> {
 /// The nearest directory above `path` with a build manifest, relative to
 /// the root; the root's own name when there is none.
 pub struct Services {
-    root: PathBuf,
+    root: Option<PathBuf>,
     cache: HashMap<String, String>,
 }
 
 impl Services {
     pub fn new(root: &Path) -> Self {
         Self {
-            root: root.to_path_buf(),
+            root: Some(root.to_path_buf()),
+            cache: HashMap::new(),
+        }
+    }
+
+    /// No labels, for callers that only follow links.
+    fn none() -> Self {
+        Self {
+            root: None,
             cache: HashMap::new(),
         }
     }
 
     pub fn of(&mut self, path: &str) -> String {
+        if self.root.is_none() {
+            return String::new();
+        }
         let dir = Path::new(path)
             .parent()
             .map(|d| d.to_string_lossy().replace('\\', "/"))
@@ -133,7 +172,8 @@ impl Services {
         if let Some(found) = self.cache.get(dir) {
             return found.clone();
         }
-        let absolute = self.root.join(dir);
+        let root = self.root.clone().unwrap_or_default();
+        let absolute = root.join(dir);
         let has_manifest = !dir.is_empty()
             && (MANIFESTS.iter().any(|m| absolute.join(m).is_file())
                 || std::fs::read_dir(&absolute).is_ok_and(|entries| {
@@ -144,8 +184,7 @@ impl Services {
         let found = if has_manifest {
             dir.to_string()
         } else if dir.is_empty() {
-            self.root
-                .file_name()
+            root.file_name()
                 .map(|n| n.to_string_lossy().into_owned())
                 .unwrap_or_default()
         } else {
@@ -166,6 +205,7 @@ impl Fact {
             path: self.path.clone(),
             line: self.line,
             symbol: self.symbol.clone(),
+            symbol_id: self.symbol_id,
             service: services.of(&self.path),
             confidence: self.confidence.clone(),
             rule: self.rule.clone(),
@@ -193,13 +233,125 @@ pub fn run(conn: &Connection, root: &Path, args: &MapArgs) -> Result<MapResult> 
         }
     }
     let mut services = Services::new(root);
-    let wants = |kind: &str| args.kind.as_deref().is_none_or(|k| k == kind);
+    if args.kind.as_deref() == Some("service") {
+        let contracts = all(conn, &mut services, None)?;
+        return Ok(MapResult {
+            contracts: Vec::new(),
+            services: service_views(&contracts, args.query.as_deref()),
+        });
+    }
+    let mut contracts = all(conn, &mut services, args.kind.as_deref())?;
+    if let Some(query) = &args.query {
+        let query = query.to_lowercase();
+        contracts.retain(|c| {
+            c.name.to_lowercase().contains(&query)
+                || c.key.contains(&query)
+                || c.providers
+                    .iter()
+                    .chain(&c.consumers)
+                    .any(|s| s.path.to_lowercase().contains(&query))
+        });
+    }
+    Ok(MapResult {
+        contracts,
+        services: Vec::new(),
+    })
+}
+
+/// Caller → callee hops contracts add to the call graph, by symbol id: a
+/// client to the server's handler, a producer to the consumer.
+pub fn links(conn: &Connection) -> Result<HashMap<i64, Vec<i64>>> {
+    let mut out: HashMap<i64, Vec<i64>> = HashMap::new();
+    let has_facts: bool =
+        conn.query_row("SELECT EXISTS (SELECT 1 FROM facts)", [], |row| row.get(0))?;
+    if !has_facts {
+        return Ok(out);
+    }
+    for contract in all(conn, &mut Services::none(), None)? {
+        let (from, to) = match contract.kind.as_str() {
+            "table" => continue,
+            "topic" => (&contract.providers, &contract.consumers),
+            _ => (&contract.consumers, &contract.providers),
+        };
+        for source in from.iter().filter_map(|s| s.symbol_id) {
+            for target in to.iter().filter_map(|s| s.symbol_id) {
+                if source != target {
+                    out.entry(source).or_default().push(target);
+                }
+            }
+        }
+    }
+    for targets in out.values_mut() {
+        targets.sort_unstable();
+        targets.dedup();
+    }
+    Ok(out)
+}
+
+/// Each service's links to other services, for `map service [name]`.
+/// Upstream is the provider side (servers, producers), downstream the
+/// consumer side.
+fn service_views(contracts: &[Contract], query: Option<&str>) -> Vec<ServiceView> {
+    let mut views: BTreeMap<String, ServiceView> = BTreeMap::new();
+    let services =
+        |sites: &[Site]| -> BTreeSet<String> { sites.iter().map(|s| s.service.clone()).collect() };
+    for contract in contracts.iter().filter(|c| c.kind != "table") {
+        let up = services(&contract.providers);
+        let down = services(&contract.consumers);
+        let sides = [
+            (&up, &down, &contract.providers, true),
+            (&down, &up, &contract.consumers, false),
+        ];
+        for (mine, theirs, sites, serves) in sides {
+            for service in mine {
+                // Calls within the service itself are not links to others.
+                let others: Vec<String> =
+                    theirs.iter().filter(|s| *s != service).cloned().collect();
+                if others.is_empty() && theirs.contains(service) {
+                    continue;
+                }
+                let link = ServiceLink {
+                    kind: contract.kind.clone(),
+                    contract: contract.name.clone(),
+                    services: others,
+                    sites: sites
+                        .iter()
+                        .filter(|s| &s.service == service)
+                        .cloned()
+                        .collect(),
+                };
+                let view = views.entry(service.clone()).or_insert_with(|| ServiceView {
+                    name: service.clone(),
+                    serves: Vec::new(),
+                    calls: Vec::new(),
+                });
+                if serves {
+                    view.serves.push(link);
+                } else {
+                    view.calls.push(link);
+                }
+            }
+        }
+    }
+    let query = query.map(str::to_lowercase);
+    views
+        .into_values()
+        .filter(|v| {
+            query
+                .as_ref()
+                .is_none_or(|q| v.name.to_lowercase().contains(q))
+        })
+        .collect()
+}
+
+fn all(conn: &Connection, services: &mut Services, only: Option<&str>) -> Result<Vec<Contract>> {
+    let wants = |kind: &str| only.is_none_or(|k| k == kind);
     let mut contracts = Vec::new();
     if wants("route") {
-        contracts.extend(route_contracts(&load(conn, "http ")?, &mut services));
+        contracts.extend(route_contracts(&load(conn, "http ")?, services));
     }
     if wants("rpc") {
-        contracts.extend(rpc_contracts(&load(conn, "grpc ")?, &mut services));
+        contracts.extend(rpc_contracts(&load(conn, "grpc ")?, services));
     }
     if wants("topic") {
         let facts = load(conn, "topic ")?;
@@ -209,7 +361,7 @@ pub fn run(conn: &Connection, root: &Path, args: &MapArgs) -> Result<MapResult> 
             &[],
             &[kind::PRODUCER],
             &[kind::CONSUMER],
-            &mut services,
+            services,
         ));
     }
     if wants("table") {
@@ -242,21 +394,10 @@ pub fn run(conn: &Connection, root: &Path, args: &MapArgs) -> Result<MapResult> 
             &[kind::TABLE],
             &[kind::ENTITY],
             &[kind::SQL],
-            &mut services,
+            services,
         ));
     }
-    if let Some(query) = &args.query {
-        let query = query.to_lowercase();
-        contracts.retain(|c| {
-            c.name.to_lowercase().contains(&query)
-                || c.key.contains(&query)
-                || c.providers
-                    .iter()
-                    .chain(&c.consumers)
-                    .any(|s| s.path.to_lowercase().contains(&query))
-        });
-    }
-    Ok(MapResult { contracts })
+    Ok(contracts)
 }
 
 /// gRPC: `.proto` methods, with servers and clients matched to them. A
@@ -558,6 +699,33 @@ impl fmt::Display for MapResult {
 
 impl AgentText for MapResult {
     fn agent_text(&self) -> String {
+        if !self.services.is_empty() {
+            let mut out = String::new();
+            for view in &self.services {
+                out.push_str(&format!("service {}\n", view.name));
+                for (label, links) in [("serves", &view.serves), ("calls", &view.calls)] {
+                    for link in links {
+                        let at = link
+                            .sites
+                            .first()
+                            .map(|s| format!("  {}:{}", s.path, s.line))
+                            .unwrap_or_default();
+                        let others = if link.services.is_empty() {
+                            String::new()
+                        } else if label == "serves" {
+                            format!(" to {}", link.services.join(", "))
+                        } else {
+                            format!(" on {}", link.services.join(", "))
+                        };
+                        out.push_str(&format!(
+                            "  {label:<6} {} {}{others}{at}\n",
+                            link.kind, link.contract
+                        ));
+                    }
+                }
+            }
+            return out;
+        }
         if self.contracts.is_empty() {
             return "No contracts found.\n".to_string();
         }

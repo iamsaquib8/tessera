@@ -4,7 +4,9 @@ use serde_json::{json, Map, Value};
 use super::protocol::{RpcError, INVALID_PARAMS};
 use super::ServerState;
 use crate::output::AgentText;
-use crate::query::{BlastArgs, ContextArgs, FindArgs, PathArgs, RefsArgs, SearchArgs, VerifyArgs};
+use crate::query::{
+    BlastArgs, ContextArgs, FindArgs, MapArgs, PathArgs, RefsArgs, SearchArgs, VerifyArgs,
+};
 use crate::Index;
 
 const MCP_DEFAULT_LIMIT: usize = 25;
@@ -31,7 +33,7 @@ pub fn registry() -> &'static [ToolSpec] {
     &REGISTRY
 }
 
-static REGISTRY: [ToolSpec; 8] = [
+static REGISTRY: [ToolSpec; 9] = [
     ToolSpec {
         name: "find",
         title: "Find definition",
@@ -80,6 +82,13 @@ static REGISTRY: [ToolSpec; 8] = [
         description: "Shortest call chain from `from` to `to`: answers whether A reaches B, and through which functions.",
         input_schema: path_schema,
         run: |index, args| run_query(args, false, |a: PathArgs| index.path(&a)),
+    },
+    ToolSpec {
+        name: "map",
+        title: "Contract map",
+        description: "How services talk to each other: HTTP routes with the requests that reach them, gRPC methods with their servers and clients, Kafka topics with producers and consumers, and tables with their migrations, models and queries. `kind` picks one (`route`, `rpc`, `topic`, `table`); `service` lists what each service serves and calls. `query` filters by name or file. Use before changing an endpoint, a message, or a table to see every other service it affects.",
+        input_schema: map_schema,
+        run: |index, args| run_query(args, false, |a: MapArgs| index.map(&a)),
     },
     ToolSpec {
         name: "status",
@@ -329,6 +338,16 @@ fn path_schema() -> Value {
             "depth": { "type": "integer", "minimum": 1, "maximum": 12 }
         }),
         &["from", "to"],
+    )
+}
+
+fn map_schema() -> Value {
+    schema(
+        json!({
+            "kind": { "type": "string", "enum": ["route", "rpc", "topic", "table", "service"] },
+            "query": { "type": "string" }
+        }),
+        &[],
     )
 }
 
