@@ -2,8 +2,9 @@
 //! capture convention, so a framework is added without touching this code.
 //!
 //! Captures: `@route`, `@client`, `@producer`, `@consumer`, `@entity` mark
-//! the fact and its line; `@method`, `@path`, `@prefix`, `@topic`, `@table`
-//! and `@handler` carry its parts; `@args` and `@prefix_args` are argument
+//! the fact and its line; `@method`, `@path`, `@prefix`, `@topic`, `@table`,
+//! `@name` and `@handler` carry its parts; `@topic_args` and `@table_args`
+//! are annotation or call arguments holding them; `@args` and `@prefix_args` are argument
 //! lists whose first string (or `value =`/`path =` pair) is the path or
 //! prefix, `@prefix_path` one whose `path =` pair is. `(#set! method "GET")`
 //! gives a default. Other captures only serve predicates.
@@ -57,6 +58,36 @@ pub const PACKS: &[Pack] = &[
         query: include_str!("../../packs/spring-mvc.scm"),
     },
     Pack {
+        id: "spring-kafka",
+        languages: JAVA,
+        gate: r"KafkaListener|KafkaTemplate|kafkaTemplate|RabbitListener|JmsListener|SqsListener|\.send\(",
+        query: include_str!("../../packs/spring-kafka.scm"),
+    },
+    Pack {
+        id: "kafkajs",
+        languages: JS,
+        gate: r"subscribe\(|\.send\(|\.sendBatch\(|EventPattern|MessagePattern|\.emit\(",
+        query: include_str!("../../packs/kafkajs.scm"),
+    },
+    Pack {
+        id: "jpa",
+        languages: JAVA,
+        gate: r"@Entity|@Table",
+        query: include_str!("../../packs/jpa.scm"),
+    },
+    Pack {
+        id: "typeorm",
+        languages: TS,
+        gate: r"@Entity",
+        query: include_str!("../../packs/typeorm.scm"),
+    },
+    Pack {
+        id: "sequelize",
+        languages: JS,
+        gate: r"\.define\(|tableName",
+        query: include_str!("../../packs/sequelize.scm"),
+    },
+    Pack {
         id: "spring-clients",
         languages: JAVA,
         gate: r"FeignClient|RestTemplate|restTemplate|WebClient|webClient|RestClient|restClient|MockMvc|WebTestClient",
@@ -90,7 +121,19 @@ static COMPILED: LazyLock<Vec<Compiled>> = LazyLock::new(|| {
     out
 });
 
-const FACT_CAPTURES: &[(&str, &str)] = &[("route", kind::ROUTE), ("client", kind::HTTP_CALL)];
+const FACT_CAPTURES: &[(&str, &str)] = &[
+    ("route", kind::ROUTE),
+    ("client", kind::HTTP_CALL),
+    ("producer", kind::PRODUCER),
+    ("consumer", kind::CONSUMER),
+    ("entity", kind::ENTITY),
+];
+
+static JAVA_CONSTANT: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r#"\b(?:static\s+final|final\s+static)\s+String\s+(\w+)\s*=\s*"([^"]*)""#).unwrap()
+});
+static JS_CONSTANT: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r#"\b(?:const|let|var)\s+(\w+)\s*=\s*['"]([^'"]+)['"]"#).unwrap());
 
 pub fn run(language: Language, source: &str, tree: &Tree) -> Vec<IndexedFact> {
     let mut out: Vec<(IndexedFact, u8)> = Vec::new();
@@ -114,19 +157,256 @@ pub fn run(language: Language, source: &str, tree: &Tree) -> Vec<IndexedFact> {
                 .iter()
                 .filter_map(|p| Some((&*p.key, p.value.as_deref()?)))
                 .collect();
-            if let Some(fact) = fact(compiled.pack.id, source, &captures, &defaults) {
-                out.push(fact);
+            out.extend(facts(
+                compiled.pack.id,
+                language,
+                source,
+                &captures,
+                &defaults,
+            ));
+        }
+    }
+    // Overlapping patterns can match one site; keep the most specific. A
+    // listener can name several topics on one line, so topics stay apart.
+    let site = |f: &IndexedFact| {
+        let topic = if f.kind == kind::PRODUCER || f.kind == kind::CONSUMER {
+            f.key.clone()
+        } else {
+            String::new()
+        };
+        (f.line, f.kind, f.rule, topic)
+    };
+    out.sort_by(|a, b| site(&a.0).cmp(&site(&b.0)).then(b.1.cmp(&a.1)));
+    out.dedup_by(|b, a| site(&a.0) == site(&b.0));
+    out.into_iter().map(|(fact, _)| fact).collect()
+}
+
+/// The facts a match describes: one for a route, request or entity, one
+/// per topic for a listener.
+fn facts(
+    pack: &'static str,
+    language: Language,
+    source: &str,
+    captures: &HashMap<&str, Node<'_>>,
+    defaults: &HashMap<&str, &str>,
+) -> Vec<(IndexedFact, u8)> {
+    let Some((capture, kind)) = FACT_CAPTURES
+        .iter()
+        .find(|(capture, _)| captures.contains_key(capture))
+    else {
+        return Vec::new();
+    };
+    match *kind {
+        kind::PRODUCER | kind::CONSUMER => {
+            topics(pack, language, source, captures, kind, captures[capture])
+        }
+        kind::ENTITY => entity(pack, source, captures, defaults, captures[capture])
+            .into_iter()
+            .collect(),
+        _ => fact(pack, source, captures, defaults).into_iter().collect(),
+    }
+}
+
+fn line_of<'s>(source: &'s str, node: Node<'_>) -> &'s str {
+    source
+        .lines()
+        .nth(node.start_position().row)
+        .unwrap_or_default()
+}
+
+/// String constants in this file: `static final String ORDERS = "orders"`,
+/// `const ORDERS = "orders"`.
+fn constants(language: Language, source: &str) -> HashMap<String, String> {
+    let regex = match language {
+        Language::Java => &JAVA_CONSTANT,
+        _ => &JS_CONSTANT,
+    };
+    regex
+        .captures_iter(source)
+        .map(|c| (c[1].to_string(), c[2].to_string()))
+        .collect()
+}
+
+/// A topic as written: a string, a constant from this file, a property
+/// placeholder, or an array of those.
+fn topic_values(
+    source: &str,
+    node: Node<'_>,
+    constants: &HashMap<String, String>,
+) -> Vec<(String, &'static str)> {
+    match node.kind() {
+        "string" | "string_literal" | "template_string" => {
+            let text = text(source, node)
+                .trim_matches(['"', '\'', '`'])
+                .to_string();
+            if text.is_empty() {
+                Vec::new()
+            } else if text.contains("${") || text.contains("#{") {
+                vec![(text, "low")]
+            } else {
+                vec![(text, "high")]
+            }
+        }
+        "array" | "element_value_array_initializer" => {
+            let mut cursor = node.walk();
+            let children: Vec<Node<'_>> = node.named_children(&mut cursor).collect();
+            children
+                .into_iter()
+                .flat_map(|child| topic_values(source, child, constants))
+                .collect()
+        }
+        "identifier" | "field_access" | "member_expression" => {
+            let name = text(source, node);
+            let last = name.rsplit('.').next().unwrap_or(name);
+            match constants.get(last) {
+                Some(value) => vec![(value.clone(), "high")],
+                // Both sides naming the same constant still link.
+                None => vec![(format!("${name}"), "low")],
+            }
+        }
+        _ => Vec::new(),
+    }
+}
+
+fn topics(
+    pack: &'static str,
+    language: Language,
+    source: &str,
+    captures: &HashMap<&str, Node<'_>>,
+    kind: &'static str,
+    at: Node<'_>,
+) -> Vec<(IndexedFact, u8)> {
+    let constants = constants(language, source);
+    let mut values = Vec::new();
+    if let Some(topic) = captures.get("topic") {
+        values = topic_values(source, *topic, &constants);
+    } else if let Some(args) = captures.get("topic_args") {
+        let mut cursor = args.walk();
+        for child in args.named_children(&mut cursor) {
+            match child.kind() {
+                "element_value_pair" => {
+                    let (Some(key), Some(value)) = (
+                        child.child_by_field_name("key"),
+                        child.child_by_field_name("value"),
+                    ) else {
+                        continue;
+                    };
+                    if matches!(
+                        text(source, key),
+                        "topics" | "queues" | "destination" | "value"
+                    ) {
+                        values.extend(topic_values(source, value, &constants));
+                    } else if text(source, key) == "topicPattern" {
+                        values.extend(
+                            topic_values(source, value, &constants)
+                                .into_iter()
+                                .map(|(topic, _)| (topic, "low")),
+                        );
+                    }
+                }
+                _ => values.extend(topic_values(source, child, &constants)),
             }
         }
     }
-    // Overlapping patterns can match one site; keep the most specific.
-    out.sort_by(|a, b| {
-        (a.0.line, a.0.kind, a.0.rule)
-            .cmp(&(b.0.line, b.0.kind, b.0.rule))
-            .then(b.1.cmp(&a.1))
-    });
-    out.dedup_by(|b, a| a.0.line == b.0.line && a.0.kind == b.0.kind && a.0.rule == b.0.rule);
-    out.into_iter().map(|(fact, _)| fact).collect()
+    values
+        .into_iter()
+        .map(|(topic, confidence)| {
+            let mut fact = IndexedFact::new(
+                kind,
+                format!("topic {}", topic.to_lowercase()),
+                topic.clone(),
+                at.start_position().row + 1,
+                pack,
+                line_of(source, at),
+            );
+            fact.confidence = confidence;
+            (fact, 0)
+        })
+        .collect()
+}
+
+/// `OwnerPet` → `owner_pet`, the table name ORMs derive by default.
+fn snake_case(name: &str) -> String {
+    let mut out = String::new();
+    for (i, c) in name.chars().enumerate() {
+        if c.is_ascii_uppercase() && i > 0 {
+            out.push('_');
+        }
+        out.push(c.to_ascii_lowercase());
+    }
+    out
+}
+
+fn entity(
+    pack: &'static str,
+    source: &str,
+    captures: &HashMap<&str, Node<'_>>,
+    defaults: &HashMap<&str, &str>,
+    at: Node<'_>,
+) -> Option<(IndexedFact, u8)> {
+    let explicit = captures
+        .get("table")
+        .map(|t| text(source, *t).to_string())
+        .or_else(|| {
+            let args = captures.get("table_args")?;
+            let mut cursor = args.walk();
+            let children: Vec<Node<'_>> = args.named_children(&mut cursor).collect();
+            children.into_iter().find_map(|child| match child.kind() {
+                "string" | "string_literal" => Some(text(source, child).to_string()),
+                "element_value_pair" | "pair" => {
+                    let key = text(source, child.child_by_field_name("key")?);
+                    let value = child.child_by_field_name("value")?;
+                    matches!(key, "name" | "tableName").then(|| text(source, value).to_string())
+                }
+                "object" => {
+                    let mut cursor = child.walk();
+                    let pairs: Vec<Node<'_>> = child.named_children(&mut cursor).collect();
+                    pairs.into_iter().find_map(|pair| {
+                        let key = text(source, pair.child_by_field_name("key")?);
+                        let value = pair.child_by_field_name("value")?;
+                        (key == "name").then(|| text(source, value).to_string())
+                    })
+                }
+                _ => None,
+            })
+        })
+        .map(|t| t.trim_matches(['"', '\'', '`']).to_string())
+        .filter(|t| !t.is_empty());
+    let (table, confidence, specific) = match explicit {
+        Some(table) => (table, "high", 2),
+        None if defaults.contains_key("derived") || captures.contains_key("table_args") => (
+            snake_case(text(source, *captures.get("name")?)),
+            "medium",
+            0,
+        ),
+        None => return None,
+    };
+    let table = table_name(&table);
+    let mut fact = IndexedFact::new(
+        kind::ENTITY,
+        format!("table {table}"),
+        table.clone(),
+        at.start_position().row + 1,
+        pack,
+        line_of(source, at),
+    );
+    fact.confidence = confidence;
+    fact.handler = captures.get("name").map(|n| text(source, *n).to_string());
+    Some((fact, specific))
+}
+
+/// `"public"."Users"` → `users`.
+pub fn table_name(raw: &str) -> String {
+    let unquoted: String = raw
+        .chars()
+        .filter(|c| !matches!(c, '"' | '`' | '[' | ']'))
+        .collect();
+    unquoted
+        .rsplit('.')
+        .next()
+        .unwrap_or(&unquoted)
+        .trim()
+        .to_lowercase()
 }
 
 fn text<'s>(source: &'s str, node: Node<'_>) -> &'s str {

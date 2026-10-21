@@ -28,12 +28,12 @@ const MANIFESTS: &[&str] = &[
     "composer.json",
     "Dockerfile",
 ];
-pub const KINDS: &[&str] = &["route", "rpc"];
+pub const KINDS: &[&str] = &["route", "rpc", "topic", "table"];
 
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct MapArgs {
-    /// `route` or `rpc`; `None` for every kind.
+    /// `route`, `rpc`, `topic` or `table`; `None` for every kind.
     pub kind: Option<String>,
     /// Keeps contracts whose name, or a file of theirs, contains this.
     pub query: Option<String>,
@@ -201,6 +201,50 @@ pub fn run(conn: &Connection, root: &Path, args: &MapArgs) -> Result<MapResult> 
     if wants("rpc") {
         contracts.extend(rpc_contracts(&load(conn, "grpc ")?, &mut services));
     }
+    if wants("topic") {
+        let facts = load(conn, "topic ")?;
+        contracts.extend(keyed(
+            "topic",
+            &facts,
+            &[],
+            &[kind::PRODUCER],
+            &[kind::CONSUMER],
+            &mut services,
+        ));
+    }
+    if wants("table") {
+        let mut facts = load(conn, "table ")?;
+        // JPQL and HQL name the entity class (`FROM PetType`), not its table.
+        let tables: BTreeSet<String> = facts
+            .iter()
+            .filter(|f| f.kind == kind::TABLE || f.kind == kind::ENTITY)
+            .map(|f| f.key.clone())
+            .collect();
+        let by_class: HashMap<String, (String, String)> = facts
+            .iter()
+            .filter(|f| f.kind == kind::ENTITY)
+            .filter_map(|f| {
+                let class = f.symbol.as_deref()?.rsplit('.').next()?.to_lowercase();
+                Some((format!("table {class}"), (f.key.clone(), f.name.clone())))
+            })
+            .collect();
+        for fact in facts.iter_mut().filter(|f| f.kind == kind::SQL) {
+            if !tables.contains(&fact.key) {
+                if let Some((key, name)) = by_class.get(&fact.key) {
+                    fact.key = key.clone();
+                    fact.name = name.clone();
+                }
+            }
+        }
+        contracts.extend(keyed(
+            "table",
+            &facts,
+            &[kind::TABLE],
+            &[kind::ENTITY],
+            &[kind::SQL],
+            &mut services,
+        ));
+    }
     if let Some(query) = &args.query {
         let query = query.to_lowercase();
         contracts.retain(|c| {
@@ -312,6 +356,51 @@ fn rpc_contracts(facts: &[Fact], services: &mut Services) -> Vec<Contract> {
         }
     }
     out.sort_by(|a, b| a.name.cmp(&b.name));
+    out
+}
+
+/// Contracts whose sides share a key exactly: topics (producers and
+/// consumers) and tables (migrations, mapped models, SQL in code).
+fn keyed(
+    contract_kind: &str,
+    facts: &[Fact],
+    definitions: &[&str],
+    providers: &[&str],
+    consumers: &[&str],
+    services: &mut Services,
+) -> Vec<Contract> {
+    let mut contracts: BTreeMap<String, Contract> = BTreeMap::new();
+    for fact in facts {
+        let list = if definitions.contains(&fact.kind.as_str()) {
+            0
+        } else if providers.contains(&fact.kind.as_str()) {
+            1
+        } else if consumers.contains(&fact.kind.as_str()) {
+            2
+        } else {
+            continue;
+        };
+        let site = fact.site(services);
+        let contract = contracts
+            .entry(fact.key.clone())
+            .or_insert_with(|| contract(contract_kind, &fact.name, &fact.key));
+        match list {
+            0 => contract.definitions.push(site),
+            1 => contract.providers.push(site),
+            _ => contract.consumers.push(site),
+        }
+    }
+    let mut out: Vec<Contract> = contracts.into_values().collect();
+    for contract in &mut out {
+        for sites in [
+            &mut contract.definitions,
+            &mut contract.providers,
+            &mut contract.consumers,
+        ] {
+            sites.sort();
+            sites.dedup();
+        }
+    }
     out
 }
 
@@ -475,10 +564,15 @@ impl AgentText for MapResult {
         let mut out = String::new();
         for contract in &self.contracts {
             out.push_str(&format!("{} {}\n", contract.kind, contract.name));
+            let labels = match contract.kind.as_str() {
+                "topic" => ["declared", "produced by", "consumed by"],
+                "table" => ["migrated", "mapped by", "queried by"],
+                _ => ["defined", "served by", "called by"],
+            };
             let rows = [
-                ("defined", &contract.definitions),
-                ("served by", &contract.providers),
-                ("called by", &contract.consumers),
+                (labels[0], &contract.definitions),
+                (labels[1], &contract.providers),
+                (labels[2], &contract.consumers),
             ];
             for (label, sites) in rows {
                 for site in sites {
@@ -493,12 +587,15 @@ impl AgentText for MapResult {
                         format!(" ({})", site.confidence)
                     };
                     out.push_str(&format!(
-                        "  {label:<9} {:<14} {}:{}{symbol}{confidence}\n",
+                        "  {label:<11} {:<14} {}:{}{symbol}{confidence}\n",
                         site.service, site.path, site.line
                     ));
                 }
             }
-            if contract.providers.is_empty() && !contract.definitions.is_empty() {
+            if contract.kind == "rpc"
+                && contract.providers.is_empty()
+                && !contract.definitions.is_empty()
+            {
                 out.push_str("  (no server found in this repository)\n");
             }
         }

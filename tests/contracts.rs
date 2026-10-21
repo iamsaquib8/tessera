@@ -151,3 +151,68 @@ fn route_sites_carry_handlers_confidence_and_spec() {
     );
     assert_eq!(orders["consumers"][0]["symbol"], "order");
 }
+
+#[test]
+fn topics_link_producers_and_consumers_across_languages() {
+    let temp = fixture("contracts-data");
+    let got = summary(&map(temp.path(), &["topic"]));
+    for expected in [
+        "orders.created: orders/src/main/java/shop/OrderEvents.java -> notify/src/consumer.ts",
+        "payments.settled: notify/src/consumer.ts -> orders/src/main/java/shop/OrderEvents.java",
+        "payments.failed:  -> notify/src/handlers.ts,orders/src/main/java/shop/OrderEvents.java",
+    ] {
+        assert!(got.contains(expected), "missing {expected:?} in {got:#?}");
+    }
+    assert_eq!(got.len(), 3, "{got:#?}");
+}
+
+#[test]
+fn tables_link_migrations_models_and_queries() {
+    let temp = fixture("contracts-data");
+    let result = map(temp.path(), &["table"]);
+    let tables: BTreeSet<String> = result["contracts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| {
+            let paths = |side: &str| -> String {
+                let mut p: Vec<String> = c[side]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|s| {
+                        s["path"]
+                            .as_str()
+                            .unwrap()
+                            .rsplit('/')
+                            .next()
+                            .unwrap()
+                            .to_string()
+                    })
+                    .collect();
+                p.sort();
+                p.dedup();
+                p.join(",")
+            };
+            format!(
+                "{}: {} | {} | {}",
+                c["name"].as_str().unwrap(),
+                paths("definitions"),
+                paths("providers"),
+                paths("consumers")
+            )
+        })
+        .collect();
+    for expected in [
+        "orders: V1__orders.sql,V2__orders_status.sql | Order.java | OrderRepository.java",
+        "order_line: V1__orders.sql | Order.java | ",
+        "customers:  | schema.prisma | db.ts",
+        "notifications:  | handlers.ts | ",
+    ] {
+        assert!(
+            tables.contains(expected),
+            "missing {expected:?} in {tables:#?}"
+        );
+    }
+    assert_eq!(tables.len(), 4, "{tables:#?}");
+}

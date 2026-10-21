@@ -161,9 +161,9 @@ enum Commands {
         #[arg(long, value_enum, default_value_t = VerifyFormat::Human)]
         format: VerifyFormat,
     },
-    /// Contracts between services: HTTP routes and gRPC methods, with who serves and calls them.
+    /// Contracts between services: routes, gRPC methods, topics and tables, with both sides.
     Map {
-        /// Contract kind: route or rpc.
+        /// Contract kind: route, rpc, topic, or table.
         kind: Option<String>,
         /// Only contracts whose name or files contain this.
         query: Option<String>,

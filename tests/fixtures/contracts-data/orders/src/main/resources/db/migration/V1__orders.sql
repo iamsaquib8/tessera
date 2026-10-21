@@ -1,0 +1,6 @@
+CREATE TABLE orders (
+  id BIGINT PRIMARY KEY,
+  total NUMERIC
+);
+
+CREATE TABLE order_line (id BIGINT PRIMARY KEY);

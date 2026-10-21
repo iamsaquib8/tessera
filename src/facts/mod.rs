@@ -34,6 +34,16 @@ pub mod kind {
     pub const HTTP_CALL: &str = "http_call";
     /// An HTTP operation declared in an OpenAPI document.
     pub const ROUTE_DEF: &str = "route_def";
+    /// Code that publishes to a topic or queue.
+    pub const PRODUCER: &str = "producer";
+    /// Code that listens on a topic or queue.
+    pub const CONSUMER: &str = "consumer";
+    /// A table a migration creates or alters.
+    pub const TABLE: &str = "table";
+    /// An ORM model mapped to a table.
+    pub const ENTITY: &str = "entity";
+    /// A SQL statement in code that reads or writes a table.
+    pub const SQL: &str = "sql";
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -102,9 +112,12 @@ pub fn extract(
     let mut facts = match (language, tree) {
         (Language::Proto, _) => text::proto(content),
         (Language::OpenApi, _) => text::openapi(content),
+        (Language::Sql, _) => text::sql(content),
+        (Language::Prisma, _) => text::prisma(content),
         (_, Some(tree)) => {
             let mut facts = grpc::code(language, content, tree);
             facts.extend(packs::run(language, content, tree));
+            facts.extend(text::sql_strings(content));
             if matches!(
                 language,
                 Language::JavaScript | Language::TypeScript | Language::Tsx
