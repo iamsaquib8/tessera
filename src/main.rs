@@ -611,7 +611,11 @@ fn run() -> Result<u8> {
             let Some(index) = open_fresh(&ws, &out)? else {
                 return Ok(0);
             };
-            out.print(&index.map(&query::MapArgs { kind, query })?)?;
+            out.print(&index.map(&query::MapArgs {
+                kind,
+                query,
+                ..query::MapArgs::default()
+            })?)?;
         }
         Commands::Ui { port, open, export } => match export {
             Some(dir) => {

@@ -86,9 +86,9 @@ static REGISTRY: [ToolSpec; 9] = [
     ToolSpec {
         name: "map",
         title: "Contract map",
-        description: "How services talk to each other: HTTP routes with the requests that reach them, gRPC methods with their servers and clients, Kafka topics with producers and consumers, and tables with their migrations, models and queries. `kind` picks one (`route`, `rpc`, `topic`, `table`); `service` lists what each service serves and calls. `query` filters by name or file. Use before changing an endpoint, a message, or a table to see every other service it affects.",
+        description: "How services talk to each other: HTTP routes with the requests that reach them, gRPC methods with their servers and clients, Kafka topics with producers and consumers, and tables with their migrations, models and queries. `kind` picks one (`route`, `rpc`, `topic`, `table`); `service` lists what each service serves and calls. `query` filters by name or file. Paginated. Use before changing an endpoint, a message, or a table to see every other service it affects.",
         input_schema: map_schema,
-        run: |index, args| run_query(args, false, |a: MapArgs| index.map(&a)),
+        run: |index, args| run_query(args, true, |a: MapArgs| index.map(&a)),
     },
     ToolSpec {
         name: "status",
@@ -343,10 +343,13 @@ fn path_schema() -> Value {
 
 fn map_schema() -> Value {
     schema(
-        json!({
-            "kind": { "type": "string", "enum": ["route", "rpc", "topic", "table", "service"] },
-            "query": { "type": "string" }
-        }),
+        merge(
+            json!({
+                "kind": { "type": "string", "enum": ["route", "rpc", "topic", "table", "service"] },
+                "query": { "type": "string" }
+            }),
+            paging(),
+        ),
         &[],
     )
 }

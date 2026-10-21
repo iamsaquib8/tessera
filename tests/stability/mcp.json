@@ -31,8 +31,10 @@
     ""
   ],
   "map": [
+    "cursor",
     "format",
     "kind",
+    "limit",
     "query"
   ],
   "map required": [

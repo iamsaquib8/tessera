@@ -38,6 +38,9 @@ pub struct MapArgs {
     pub kind: Option<String>,
     /// Keeps contracts whose name, or a file of theirs, contains this.
     pub query: Option<String>,
+    /// Contracts (or services) per page; 0 for all of them.
+    pub limit: usize,
+    pub cursor: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq, PartialOrd, Ord)]
@@ -73,6 +76,9 @@ pub struct MapResult {
     /// With kind `service`: each service and its links to others.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub services: Vec<ServiceView>,
+    /// Present when a `limit` was given.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub page: Option<crate::output::Page>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -302,9 +308,11 @@ pub fn run(conn: &Connection, root: &Path, args: &MapArgs) -> Result<MapResult> 
     let mut services = Services::new(&sources.root);
     if args.kind.as_deref() == Some("service") {
         let contracts = all(&sources, &mut services, None)?;
+        let (services, page) = page_of(service_views(&contracts, args.query.as_deref()), args)?;
         return Ok(MapResult {
             contracts: Vec::new(),
-            services: service_views(&contracts, args.query.as_deref()),
+            services,
+            page,
         });
     }
     let mut contracts = all(&sources, &mut services, args.kind.as_deref())?;
@@ -319,10 +327,20 @@ pub fn run(conn: &Connection, root: &Path, args: &MapArgs) -> Result<MapResult> 
                     .any(|s| s.path.to_lowercase().contains(&query))
         });
     }
+    let (contracts, page) = page_of(contracts, args)?;
     Ok(MapResult {
         contracts,
         services: Vec::new(),
+        page,
     })
+}
+
+fn page_of<T>(items: Vec<T>, args: &MapArgs) -> Result<(Vec<T>, Option<crate::output::Page>)> {
+    if args.limit == 0 {
+        return Ok((items, None));
+    }
+    let (items, page) = crate::output::paginate(items, args.limit, args.cursor.as_deref())?;
+    Ok((items, Some(page)))
 }
 
 /// Caller → callee hops contracts add to the call graph, by symbol id: a
@@ -770,6 +788,16 @@ impl fmt::Display for MapResult {
 
 impl AgentText for MapResult {
     fn agent_text(&self) -> String {
+        let mut out = self.listing();
+        if let Some(page) = &self.page {
+            out.push_str(&super::find::page_footer(page));
+        }
+        out
+    }
+}
+
+impl MapResult {
+    fn listing(&self) -> String {
         if !self.services.is_empty() {
             let mut out = String::new();
             for view in &self.services {

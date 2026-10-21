@@ -613,3 +613,23 @@ mod http {
         assert_eq!(status, 405);
     }
 }
+
+#[test]
+fn map_is_paged_like_the_other_list_tools() {
+    let (_temp, state) = state_for("contracts-grpc");
+    let page = |arguments: Value| -> Value {
+        let reply = call(&state, "map", arguments);
+        serde_json::from_str(reply["result"]["content"][0]["text"].as_str().unwrap()).unwrap()
+    };
+    let first = page(json!({ "kind": "rpc", "limit": 2, "format": "json" }));
+    assert_eq!(first["contracts"].as_array().unwrap().len(), 2, "{first}");
+    assert_eq!(first["page"]["truncated"], true, "{first}");
+    let cursor = first["page"]["next_cursor"].as_str().unwrap().to_string();
+    let second = page(json!({ "kind": "rpc", "limit": 2, "cursor": cursor, "format": "json" }));
+    assert_ne!(first["contracts"][0]["key"], second["contracts"][0]["key"]);
+    let default = page(json!({ "format": "json" }));
+    assert!(
+        default["contracts"].as_array().unwrap().len() <= 25,
+        "{default}"
+    );
+}

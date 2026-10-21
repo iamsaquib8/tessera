@@ -166,10 +166,12 @@ fn api(ws: &Workspace, route: &str, params: &HashMap<String, String>) -> Result<
         "map" => serde_json::to_value(index.map(&MapArgs {
             kind: param("kind"),
             query: param("q"),
+            ..MapArgs::default()
         })?)?,
         "services" => serde_json::to_value(index.map(&MapArgs {
             kind: Some("service".to_string()),
             query: None,
+            ..MapArgs::default()
         })?)?,
         "symbol" => symbol(
             &index,
@@ -252,6 +254,7 @@ pub fn export(ws: &Workspace, dir: &Path) -> Result<()> {
         serde_json::to_value(index.map(&MapArgs {
             kind: Some("service".to_string()),
             query: None,
+            ..MapArgs::default()
         })?)?,
     )?;
     let busy = busiest_symbols(index.connection(), EXPORT_SEARCH)?;
