@@ -744,6 +744,45 @@ fn java_overloads_with_the_same_argument_count_are_ambiguous() {
 }
 
 #[test]
+fn typescript_overload_signatures_are_one_member() {
+    let (_temp, ws) = repo_with(&[
+        (
+            "model.ts",
+            "export interface Model {\n  get(key: \"a\"): string;\n  get(key: \"b\"): number;\n}\n",
+        ),
+        (
+            "main.ts",
+            "import { Model } from \"./model\";\nexport function read(m: Model) {\n  return m.get(\"a\");\n}\n",
+        ),
+    ]);
+    let all = edges(&ws.db_path);
+    let read: Vec<&String> = all.iter().filter(|e| e.starts_with("read -call")).collect();
+    assert_eq!(
+        read,
+        vec![
+            "read -call-> model.ts:Model.get [high/hint]",
+            "read -call-> model.ts:Model.get [high/hint]",
+        ],
+        "{all:#?}"
+    );
+}
+
+#[test]
+fn an_object_literal_method_is_not_a_name_in_scope() {
+    let (_temp, ws) = repo_with(&[(
+        "api.js",
+        "function make() {\n  const api = {\n    save() { return save(); },\n  };\n  function save() { return 2; }\n  return api;\n}\nmodule.exports = { make };\n",
+    )]);
+    let all = edges(&ws.db_path);
+    let save: Vec<&String> = all.iter().filter(|e| e.contains("-call-> ")).collect();
+    assert_eq!(
+        save,
+        vec!["make.save -call-> api.js:make.save [high/local]"],
+        "{all:#?}"
+    );
+}
+
+#[test]
 fn a_namespace_re_export_is_a_module_named_by_its_alias() {
     let (_temp, ws) = repo_with(&[
         ("x.ts", "export function foo() { return 1; }\n"),

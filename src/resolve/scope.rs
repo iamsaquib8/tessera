@@ -591,15 +591,20 @@ impl<'c> Resolver<'c> {
         }
         let arity_mismatch = self.no_arity_fits(&found, arity)?;
         let targets = self.filter_arity(found, arity)?;
-        // Overloads the argument count cannot tell apart (`find(String)` and
-        // `find(Long)`): the call reaches one of them, but not a known one.
+        // Java overloads the argument count cannot tell apart (`find(String)`
+        // and `find(Long)`): the call reaches one of them, but not a known
+        // one. TypeScript overload signatures all declare the same member.
         let overloaded = targets.len() > 1 && {
             let mut qnames = HashSet::new();
             for id in &targets {
-                qnames.insert(self.symbol(*id)?.and_then(|sym| {
-                    matches!(sym.kind.as_str(), "method" | "constructor" | "function")
-                        .then(|| sym.qname.clone())
-                }));
+                let java_method = match self.symbol(*id)? {
+                    Some(sym) if matches!(sym.kind.as_str(), "method" | "constructor") => {
+                        (self.file(sym.file_id)?.language == Language::Java)
+                            .then(|| sym.qname.clone())
+                    }
+                    _ => None,
+                };
+                qnames.insert(java_method);
             }
             qnames.len() == 1 && !qnames.contains(&None)
         };
@@ -791,7 +796,9 @@ impl<'c> Resolver<'c> {
                 .iter()
                 .filter(|sym| sym.name == name && sym.container == *scope)
                 .filter(|sym| !types_only || TYPE_KINDS.contains(&sym.kind.as_str()))
-                .filter(|sym| !self.is_member(file, sym))
+                // A method is reached through its object, never by name; one
+                // outside a class is in an object literal or a type literal.
+                .filter(|sym| sym.kind != "method" && !self.is_member(file, sym))
                 // A module-level `const x = require("./x")` is an import, not
                 // a definition.
                 .filter(|sym| {
