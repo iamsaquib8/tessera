@@ -1,120 +1,379 @@
+//! `tessera init`: wires Tessera into the agents a project uses. It plans
+//! every file change first, so the caller can show the diff and ask before
+//! anything is written.
+
+use std::collections::BTreeMap;
 use std::fmt::{self, Display};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use anyhow::{bail, Result};
-use serde::{Deserialize, Serialize};
+use anyhow::{bail, Context, Result};
+use serde::Serialize;
+
+use crate::agents::edit::{self, Edit, Server};
+use crate::agents::{self, diff, Agent, Instructions, McpTarget};
 
 #[derive(Debug, Clone)]
 pub struct InitOptions {
     pub root: PathBuf,
     pub db_path: PathBuf,
-    pub git_hooks: bool,
-    pub mcp_configs: bool,
-    pub force: bool,
+    /// Agent ids to set up whether or not they are detected; empty means
+    /// every detected agent.
+    pub agents: Vec<String>,
+    /// Also change user-wide config under the home directory.
+    pub global: bool,
+    /// Also add usage instructions to the files each agent reads.
+    pub with_instructions: bool,
+    /// Install a pre-commit hook that runs `verify --staged`.
+    pub git_hook: bool,
+    pub home: Option<PathBuf>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct InitResult {
+#[derive(Debug, Clone, Serialize)]
+pub struct FoundAgent {
+    pub id: String,
+    pub name: String,
+    /// Why it was picked: a project marker, an executable, or `--agent`.
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct Change {
+    /// Relative to the root, or `~/…` for user-wide files.
+    pub path: String,
+    #[serde(skip)]
+    pub absolute: PathBuf,
+    pub created: bool,
+    pub agents: Vec<String>,
+    #[serde(skip)]
+    pub before: Option<String>,
+    #[serde(skip)]
+    pub after: String,
+    #[serde(skip)]
+    pub executable: bool,
+    pub diff: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ManualStep {
+    pub agent: String,
+    pub path: String,
+    pub reason: String,
+    pub snippet: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct Note {
+    pub agent: String,
+    pub text: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct InitPlan {
     pub root: String,
-    pub created: Vec<String>,
-    pub skipped: Vec<String>,
-    pub next_steps: Vec<String>,
+    pub agents: Vec<FoundAgent>,
+    pub changes: Vec<Change>,
+    pub manual: Vec<ManualStep>,
+    pub notes: Vec<Note>,
+    /// `tessera` is not on PATH, and every config runs it by that name.
+    pub not_on_path: bool,
 }
 
-impl Display for InitResult {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        writeln!(f, "Initialized Tessera defaults under {}", self.root)?;
-        if !self.created.is_empty() {
-            writeln!(f, "Created:")?;
-            for path in &self.created {
-                writeln!(f, "  {path}")?;
+struct Pending {
+    absolute: PathBuf,
+    original: Option<String>,
+    current: Option<String>,
+    agents: Vec<String>,
+    executable: bool,
+}
+
+struct Planner<'a> {
+    options: &'a InitOptions,
+    root: PathBuf,
+    files: BTreeMap<String, Pending>,
+    manual: Vec<ManualStep>,
+}
+
+impl Planner<'_> {
+    fn edit(
+        &mut self,
+        display: String,
+        absolute: PathBuf,
+        agent: &str,
+        apply: impl FnOnce(Option<&str>) -> Edit,
+    ) {
+        if !self.files.contains_key(&display) {
+            let original = match fs::read_to_string(&absolute) {
+                Ok(text) => Some(text),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+                Err(error) => {
+                    self.manual.push(ManualStep {
+                        agent: agent.to_string(),
+                        path: display,
+                        reason: format!("it could not be read ({error})"),
+                        snippet: String::new(),
+                    });
+                    return;
+                }
+            };
+            self.files.insert(
+                display.clone(),
+                Pending {
+                    absolute,
+                    current: original.clone(),
+                    original,
+                    agents: Vec::new(),
+                    executable: false,
+                },
+            );
+        }
+        let pending = self.files.get_mut(&display).expect("inserted above");
+        match apply(pending.current.as_deref()) {
+            Edit::Write(text) => {
+                pending.current = Some(text);
+                if !pending.agents.iter().any(|a| a == agent) {
+                    pending.agents.push(agent.to_string());
+                }
+            }
+            Edit::Unchanged => {}
+            Edit::Manual { reason, snippet } => self.manual.push(ManualStep {
+                agent: agent.to_string(),
+                path: display,
+                reason,
+                snippet,
+            }),
+        }
+    }
+
+    fn project(&mut self, rel: &str, agent: &str, apply: impl FnOnce(Option<&str>) -> Edit) {
+        let absolute = self.root.join(rel);
+        self.edit(rel.to_string(), absolute, agent, apply);
+    }
+
+    fn server(&self, target: &McpTarget, global: bool) -> Server {
+        let mut args = vec!["mcp".to_string()];
+        let default_db = self.root.join(".tessera/tessera.db");
+        if !global && self.options.db_path != default_db {
+            args.push("--db".to_string());
+            args.push(self.options.db_path.to_string_lossy().into_owned());
+        } else if !global && target.workspace_variable {
+            args.push("--root".to_string());
+            args.push("${workspaceFolder}".to_string());
+        }
+        Server {
+            command: "tessera".to_string(),
+            args,
+        }
+    }
+
+    fn agent(&mut self, agent: &Agent) {
+        if let Some(target) = agent.mcp {
+            let server = self.server(&target, false);
+            self.project(target.path, agent.id, |text| {
+                edit::mcp(target.format, text, &server)
+            });
+        }
+        if self.options.global {
+            if let (Some(target), Some(home)) = (agent.global_mcp, self.options.home.clone()) {
+                let server = self.server(&target, true);
+                self.edit(
+                    format!("~/{}", target.path),
+                    home.join(target.path),
+                    agent.id,
+                    |text| edit::mcp(target.format, text, &server),
+                );
             }
         }
-        if !self.skipped.is_empty() {
-            writeln!(f, "Skipped existing files:")?;
-            for path in &self.skipped {
-                writeln!(f, "  {path}")?;
+        if agent.hooks {
+            self.project(".claude/settings.local.json", agent.id, |text| {
+                edit::claude_hooks(text, "tessera")
+            });
+        }
+        if self.options.with_instructions {
+            match agent.instructions {
+                Some(Instructions::AgentsMd) => {
+                    self.project("AGENTS.md", agent.id, edit::markdown_block)
+                }
+                Some(Instructions::ClaudeMd) => {
+                    self.project("AGENTS.md", agent.id, edit::markdown_block);
+                    self.project("CLAUDE.md", agent.id, edit::claude_import);
+                }
+                Some(Instructions::Markdown(path)) => {
+                    self.project(path, agent.id, edit::markdown_block)
+                }
+                Some(Instructions::CursorRule) => {
+                    self.project(".cursor/rules/tessera.mdc", agent.id, edit::cursor_rule)
+                }
+                None => {}
             }
         }
-        writeln!(f, "Next:")?;
-        for step in &self.next_steps {
-            writeln!(f, "  {step}")?;
-        }
-        Ok(())
     }
 }
 
-pub fn run(options: InitOptions) -> Result<InitResult> {
+const CONFIG_TOML: &str = "# Tessera project settings. Everything here is optional; see docs/configuration.md.\n\n[index]\n# max_file_bytes = 1_048_576\n\n[include]\n# Only index these path prefixes. Empty means everything.\npaths = []\n\n[exclude]\n# Path prefixes and glob patterns to skip, on top of .gitignore and built-in skips.\npaths = []\nglobs = []\n\n[ignore]\n# Directory or file names to skip anywhere in the tree.\nextra = []\n";
+
+/// Every change `init` would make, and what it cannot do. Writes nothing.
+pub fn plan(options: &InitOptions) -> Result<InitPlan> {
     let root = options
         .root
         .canonicalize()
         .unwrap_or_else(|_| options.root.clone());
-    fs::create_dir_all(root.join(".tessera"))?;
-
-    let mut created = Vec::new();
-    let mut skipped = Vec::new();
-
-    write_file(
-        &root,
-        ".tessera/config.toml",
-        &config_toml(&options.db_path),
-        options.force,
-        &mut created,
-        &mut skipped,
-    )?;
-
-    if options.mcp_configs {
-        write_file(
-            &root,
-            ".tessera/mcp/codex.toml",
-            &codex_mcp(&options.db_path),
-            options.force,
-            &mut created,
-            &mut skipped,
-        )?;
-        write_file(
-            &root,
-            ".tessera/mcp/claude.json",
-            &claude_mcp(&options.db_path),
-            options.force,
-            &mut created,
-            &mut skipped,
-        )?;
-        write_file(
-            &root,
-            ".tessera/mcp/cursor.json",
-            &cursor_mcp(&options.db_path),
-            options.force,
-            &mut created,
-            &mut skipped,
-        )?;
-    }
-
-    if options.git_hooks {
-        let hooks = hooks_dir(&root)?;
-        for name in ["post-merge", "post-checkout"] {
-            let rel = relative_display(&root, &hooks.join(name));
-            if write_file(&root, &rel, HOOK, options.force, &mut created, &mut skipped)? {
-                make_executable(&root.join(&rel))?;
+    let mut found = Vec::new();
+    if options.agents.is_empty() {
+        for agent in agents::AGENTS {
+            if let Some(reason) = agents::detect(agent, &root, options.home.as_deref()) {
+                found.push((agent, reason));
+            }
+        }
+    } else {
+        for id in &options.agents {
+            let Some(agent) = agents::by_id(id) else {
+                bail!(
+                    "unknown agent `{id}`; known agents: {}",
+                    agents::ids().join(", ")
+                );
+            };
+            if !found
+                .iter()
+                .any(|(a, _): &(&Agent, String)| a.id == agent.id)
+            {
+                found.push((agent, "--agent".to_string()));
             }
         }
     }
 
-    Ok(InitResult {
+    let mut planner = Planner {
+        options,
+        root: root.clone(),
+        files: BTreeMap::new(),
+        manual: Vec::new(),
+    };
+    planner.project(".tessera/config.toml", "tessera", |text| match text {
+        Some(_) => Edit::Unchanged,
+        None => Edit::Write(CONFIG_TOML.to_string()),
+    });
+    let mut notes = Vec::new();
+    for (agent, _) in &found {
+        planner.agent(agent);
+        for text in [agent.trust, agent.limits].into_iter().flatten() {
+            notes.push(Note {
+                agent: agent.name.to_string(),
+                text: text.to_string(),
+            });
+        }
+    }
+    if options.git_hook {
+        let hooks = hooks_dir(&root)?;
+        let display = hooks
+            .join("pre-commit")
+            .strip_prefix(&root)
+            .map(|p| p.to_string_lossy().replace('\\', "/"))
+            .unwrap_or_else(|_| hooks.join("pre-commit").to_string_lossy().into_owned());
+        planner.edit(
+            display.clone(),
+            hooks.join("pre-commit"),
+            "git",
+            edit::pre_commit,
+        );
+        if let Some(pending) = planner.files.get_mut(&display) {
+            pending.executable = true;
+        }
+    }
+
+    let changes = planner
+        .files
+        .into_iter()
+        .filter(|(_, p)| p.current != p.original)
+        .map(|(path, p)| {
+            let after = p.current.unwrap_or_default();
+            Change {
+                diff: diff::unified(&path, p.original.as_deref(), &after),
+                created: p.original.is_none(),
+                path,
+                absolute: p.absolute,
+                agents: p.agents,
+                before: p.original,
+                after,
+                executable: p.executable,
+            }
+        })
+        .collect();
+    Ok(InitPlan {
         root: root.display().to_string(),
-        created,
-        skipped,
-        next_steps: vec![
-            "tessera status".to_string(),
-            "tessera find <symbol>".to_string(),
-            "tessera blast <symbol>".to_string(),
-        ],
+        agents: found
+            .into_iter()
+            .map(|(agent, reason)| FoundAgent {
+                id: agent.id.to_string(),
+                name: agent.name.to_string(),
+                reason,
+            })
+            .collect(),
+        changes,
+        manual: planner.manual,
+        notes,
+        not_on_path: agents::on_path("tessera").is_none(),
     })
 }
 
-const HOOK: &str = "#!/bin/sh\n# Added by `tessera init --git-hooks`: refresh the index after git changes files.\ntessera --quiet index >/dev/null 2>&1 || true\n";
+/// Writes the planned changes.
+pub fn apply(plan: &InitPlan) -> Result<()> {
+    for change in &plan.changes {
+        if let Some(parent) = change.absolute.parent() {
+            fs::create_dir_all(parent)
+                .with_context(|| format!("failed to create {}", parent.display()))?;
+        }
+        fs::write(&change.absolute, &change.after)
+            .with_context(|| format!("failed to write {}", change.absolute.display()))?;
+        if change.executable {
+            make_executable(&change.absolute)?;
+        }
+    }
+    Ok(())
+}
+
+impl Display for InitPlan {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if self.agents.is_empty() {
+            writeln!(
+                f,
+                "No agents found in this project or on PATH. Pass --agent <name> to set one up anyway; known agents: {}.",
+                agents::ids().join(", ")
+            )?;
+        } else {
+            writeln!(f, "Agents:")?;
+            for agent in &self.agents {
+                writeln!(f, "  {} ({})", agent.name, agent.reason)?;
+            }
+        }
+        for change in &self.changes {
+            writeln!(f)?;
+            f.write_str(&change.diff)?;
+        }
+        if !self.manual.is_empty() {
+            writeln!(f, "\nAdd by hand:")?;
+            for step in &self.manual {
+                writeln!(f, "  {} ({}): {}", step.path, step.agent, step.reason)?;
+                for line in step.snippet.lines() {
+                    writeln!(f, "    {line}")?;
+                }
+            }
+        }
+        if !self.notes.is_empty() {
+            writeln!(f, "\nNotes:")?;
+            for note in &self.notes {
+                writeln!(f, "  {}: {}", note.agent, note.text)?;
+            }
+        }
+        if self.not_on_path {
+            writeln!(
+                f,
+                "\n`tessera` is not on your PATH, and agents run it by that name. Install it (npm, Homebrew, or cargo) or add it to PATH."
+            )?;
+        }
+        Ok(())
+    }
+}
 
 // `.git` is a file in worktrees and submodules, so ask git where hooks live.
 fn hooks_dir(root: &Path) -> Result<PathBuf> {
@@ -128,17 +387,10 @@ fn hooks_dir(root: &Path) -> Result<PathBuf> {
             String::from_utf8_lossy(&output.stdout).trim(),
         )),
         _ => bail!(
-            "{} is not a git repository; --git-hooks needs one",
+            "{} is not a git repository; --git-hook needs one",
             root.display()
         ),
     }
-}
-
-fn relative_display(root: &Path, path: &Path) -> String {
-    path.strip_prefix(root)
-        .unwrap_or(path)
-        .to_string_lossy()
-        .replace('\\', "/")
 }
 
 #[cfg(unix)]
@@ -151,60 +403,4 @@ fn make_executable(path: &Path) -> Result<()> {
 #[cfg(not(unix))]
 fn make_executable(_path: &Path) -> Result<()> {
     Ok(())
-}
-
-fn write_file(
-    root: &Path,
-    rel_path: &str,
-    content: &str,
-    force: bool,
-    created: &mut Vec<String>,
-    skipped: &mut Vec<String>,
-) -> Result<bool> {
-    let path = root.join(rel_path);
-    if path.exists() && !force {
-        skipped.push(rel_path.to_string());
-        return Ok(false);
-    }
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    fs::write(&path, content)?;
-    created.push(rel_path.to_string());
-    Ok(true)
-}
-
-fn config_toml(_db_path: &Path) -> String {
-    "# Tessera project settings. Everything here is optional; see docs/configuration.md.\n\n[index]\n# max_file_bytes = 1_048_576\n\n[include]\n# Only index these path prefixes. Empty means everything.\npaths = []\n\n[exclude]\n# Path prefixes and glob patterns to skip, on top of .gitignore and built-in skips.\npaths = []\nglobs = []\n\n[ignore]\n# Directory or file names to skip anywhere in the tree.\nextra = []\n".to_string()
-}
-
-// A JSON string is also a valid TOML basic string, so one escaper serves both.
-fn quoted(path: &Path) -> String {
-    serde_json::to_string(&path.to_string_lossy()).unwrap_or_else(|_| "\"\"".to_string())
-}
-
-fn codex_mcp(db_path: &Path) -> String {
-    format!(
-        "[mcp_servers.tessera]\ncommand = \"tessera\"\nargs = [\"mcp\", \"--db\", {}]\n",
-        quoted(db_path)
-    )
-}
-
-fn claude_mcp(db_path: &Path) -> String {
-    let config = serde_json::json!({
-        "mcpServers": {
-            "tessera": {
-                "command": "tessera",
-                "args": ["mcp", "--db", db_path.to_string_lossy()],
-            }
-        }
-    });
-    format!(
-        "{}\n",
-        serde_json::to_string_pretty(&config).unwrap_or_default()
-    )
-}
-
-fn cursor_mcp(db_path: &Path) -> String {
-    claude_mcp(db_path)
 }

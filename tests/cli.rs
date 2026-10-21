@@ -213,17 +213,6 @@ fn watch_once_indexes_and_exits() {
 }
 
 #[test]
-fn init_writes_mcp_snippets() {
-    let temp = repo("go");
-    tessera(temp.path())
-        .args(["init", "--mcp-configs"])
-        .assert()
-        .success();
-    assert!(temp.path().join(".tessera/config.toml").exists());
-    assert!(temp.path().join(".tessera/mcp").is_dir());
-}
-
-#[test]
 fn export_renders_mermaid() {
     let temp = repo("typescript");
     tessera(temp.path())
@@ -497,19 +486,23 @@ fn tessera_db_environment_variable_sets_the_index_path() {
 }
 
 #[test]
-fn init_snippets_are_valid_for_each_client() {
+fn init_names_a_custom_index_in_mcp_configs() {
     let temp = repo("go");
     tessera(temp.path())
-        .args(["--db", "we\"ird\\dir/t.db", "init", "--mcp-configs"])
+        .args([
+            "--db",
+            "we\"ird\\dir/t.db",
+            "init",
+            "--yes",
+            "--agent",
+            "claude",
+        ])
         .assert()
         .success();
-    let codex = fs::read_to_string(temp.path().join(".tessera/mcp/codex.toml")).unwrap();
-    assert!(codex.starts_with("[mcp_servers.tessera]"), "{codex}");
-    let claude: serde_json::Value = serde_json::from_str(
-        &fs::read_to_string(temp.path().join(".tessera/mcp/claude.json")).unwrap(),
-    )
-    .unwrap();
+    let claude: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(temp.path().join(".mcp.json")).unwrap()).unwrap();
     let args = claude["mcpServers"]["tessera"]["args"].as_array().unwrap();
+    assert_eq!(args[1], "--db");
     assert!(args[2].as_str().unwrap().ends_with("we\"ird\\dir/t.db"));
 }
 
@@ -526,7 +519,7 @@ fn init_git_hooks_are_executable_and_work_in_worktrees() {
     git_in(&main, &["worktree", "add", "-q", "../wt"]);
     for dir in [main.clone(), temp.path().join("wt")] {
         tessera(&dir)
-            .args(["init", "--git-hooks"])
+            .args(["init", "--yes", "--git-hook"])
             .assert()
             .success();
         let hooks = StdCommand::new("git")
@@ -535,7 +528,7 @@ fn init_git_hooks_are_executable_and_work_in_worktrees() {
             .output()
             .unwrap();
         let hooks = std::path::PathBuf::from(String::from_utf8_lossy(&hooks.stdout).trim());
-        let mode = fs::metadata(hooks.join("post-merge"))
+        let mode = fs::metadata(hooks.join("pre-commit"))
             .unwrap()
             .permissions()
             .mode();
@@ -547,7 +540,10 @@ fn init_git_hooks_are_executable_and_work_in_worktrees() {
 fn project_config_can_be_committed() {
     let temp = repo("typescript");
     git_in(temp.path(), &["init", "-q"]);
-    tessera(temp.path()).args(["init"]).assert().success();
+    tessera(temp.path())
+        .args(["init", "--yes"])
+        .assert()
+        .success();
     tessera(temp.path())
         .args(["find", "findById"])
         .assert()

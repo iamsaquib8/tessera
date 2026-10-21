@@ -48,17 +48,26 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Commands {
-    /// Write project defaults and agent MCP snippets.
+    /// Wire Tessera into the agents this project uses: shows a diff, then asks.
     Init {
-        /// Create MCP config snippets under .tessera/mcp/.
+        /// Apply without asking.
+        #[arg(long, short = 'y', conflicts_with = "dry_run")]
+        yes: bool,
+        /// Only show what would change.
         #[arg(long)]
-        mcp_configs: bool,
-        /// Create git hooks that refresh the index.
+        dry_run: bool,
+        /// Set up this agent even if it is not detected; repeatable.
+        #[arg(long = "agent", value_name = "NAME")]
+        agents: Vec<String>,
+        /// Also change user-wide config in your home directory.
         #[arg(long)]
-        git_hooks: bool,
-        /// Overwrite files that already exist.
+        global: bool,
+        /// Also add usage instructions to AGENTS.md, CLAUDE.md, and similar files.
         #[arg(long)]
-        force: bool,
+        with_instructions: bool,
+        /// Install a git pre-commit hook that runs `verify --staged`.
+        #[arg(long)]
+        git_hook: bool,
     },
     /// Show index health, freshness, and setup problems.
     Status,
@@ -401,18 +410,32 @@ fn run() -> Result<u8> {
 
     match cli.command {
         Commands::Init {
-            mcp_configs,
-            git_hooks,
-            force,
+            yes,
+            dry_run,
+            agents,
+            global,
+            with_instructions,
+            git_hook,
         } => {
-            let result = init::run(InitOptions {
+            if let Some(unknown) = agents
+                .iter()
+                .find(|id| tessera_codegraph::agents::by_id(id).is_none())
+            {
+                return Err(usage(&format!(
+                    "unknown agent `{unknown}`; known agents: {}",
+                    tessera_codegraph::agents::ids().join(", ")
+                )));
+            }
+            let plan = init::plan(&InitOptions {
                 root: ws.root.clone(),
                 db_path: ws.db_path.clone(),
-                git_hooks,
-                mcp_configs,
-                force,
+                agents,
+                global,
+                with_instructions,
+                git_hook,
+                home: tessera_codegraph::agents::home_dir(),
             })?;
-            out.print(&result)?;
+            return run_init(&plan, yes, dry_run, &out);
         }
         Commands::Status => out.print(&query::status(&ws)?)?,
         Commands::Find {
@@ -661,6 +684,48 @@ impl Output {
             eprintln!("{message}");
         }
     }
+}
+
+fn run_init(plan: &init::InitPlan, yes: bool, dry_run: bool, out: &Output) -> Result<u8> {
+    use std::io::{IsTerminal, Write};
+    if !out.json {
+        print!("{plan}");
+    }
+    let apply = if plan.changes.is_empty() || dry_run {
+        false
+    } else if yes {
+        true
+    } else if !out.json && std::io::stdin().is_terminal() {
+        print!("\nApply these changes? [y/N] ");
+        std::io::stdout().flush()?;
+        let mut answer = String::new();
+        std::io::stdin().read_line(&mut answer)?;
+        matches!(answer.trim().to_ascii_lowercase().as_str(), "y" | "yes")
+    } else {
+        false
+    };
+    if apply {
+        init::apply(plan)?;
+    }
+    if out.json {
+        let mut value = serde_json::to_value(plan)?;
+        value["applied"] = serde_json::Value::Bool(apply);
+        out.print_json(&value)?;
+        return Ok(0);
+    }
+    let summary = if plan.changes.is_empty() {
+        "Nothing to change.".to_string()
+    } else if apply {
+        format!("Wrote {} file(s).", plan.changes.len())
+    } else if dry_run {
+        "Dry run: nothing written.".to_string()
+    } else if yes || std::io::stdin().is_terminal() {
+        "Nothing written.".to_string()
+    } else {
+        "Nothing written: re-run with --yes to apply these changes.".to_string()
+    };
+    println!("\n{summary}");
+    Ok(0)
 }
 
 /// Hooks always exit 0: a Tessera failure prints nothing and never stops the agent.

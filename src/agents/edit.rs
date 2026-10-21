@@ -1,0 +1,464 @@
+//! Adds Tessera to one config file at a time, keeping everything already
+//! there. A file that cannot be changed safely is left alone, and the caller
+//! shows the snippet to add by hand.
+
+use serde_json::{json, Value};
+
+use super::McpFormat;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Edit {
+    /// The file's new content.
+    Write(String),
+    /// Tessera is already set up there.
+    Unchanged,
+    /// Left alone: why, and what to add by hand.
+    Manual { reason: String, snippet: String },
+}
+
+/// The MCP server command an agent should run.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Server {
+    pub command: String,
+    pub args: Vec<String>,
+}
+
+pub fn mcp(format: McpFormat, existing: Option<&str>, server: &Server) -> Edit {
+    let entry = json!({ "command": server.command, "args": server.args });
+    match format {
+        McpFormat::McpServers => json_entry(existing, "mcpServers", entry),
+        McpFormat::AmpMcpServers => json_entry(existing, "amp.mcpServers", entry),
+        McpFormat::ContextServers => json_entry(existing, "context_servers", entry),
+        McpFormat::VsCodeServers => json_entry(
+            existing,
+            "servers",
+            json!({ "type": "stdio", "command": server.command, "args": server.args }),
+        ),
+        McpFormat::OpenCode => {
+            let mut command = vec![server.command.clone()];
+            command.extend(server.args.iter().cloned());
+            json_entry(
+                existing,
+                "mcp",
+                json!({ "type": "local", "command": command, "enabled": true }),
+            )
+        }
+        McpFormat::Toml => toml_entry(existing, server),
+        McpFormat::ContinueYaml => match existing {
+            Some(_) => Edit::Unchanged,
+            None => Edit::Write(continue_yaml(server)),
+        },
+        McpFormat::GooseYaml => goose_entry(existing, server),
+    }
+}
+
+fn manual(reason: impl Into<String>, snippet: String) -> Edit {
+    Edit::Manual {
+        reason: reason.into(),
+        snippet,
+    }
+}
+
+/// Parses `existing` as a JSON object (an absent or empty file is `{}`).
+fn json_object(existing: Option<&str>) -> Result<Value, &'static str> {
+    let text = existing.unwrap_or_default();
+    if text.trim().is_empty() {
+        return Ok(json!({}));
+    }
+    match serde_json::from_str::<Value>(text) {
+        Ok(value) if value.is_object() => Ok(value),
+        Ok(_) => Err("its top level is not a JSON object"),
+        Err(_) => Err("it is not plain JSON (it may have comments or trailing commas)"),
+    }
+}
+
+/// `{key: {"tessera": entry}}` merged into the file's top-level object.
+fn json_entry(existing: Option<&str>, key: &str, entry: Value) -> Edit {
+    let snippet = pretty(&json!({ key: { "tessera": entry } }), "  ");
+    let mut root = match json_object(existing) {
+        Ok(root) => root,
+        Err(reason) => return manual(reason, snippet),
+    };
+    let servers = root
+        .as_object_mut()
+        .expect("checked above")
+        .entry(key)
+        .or_insert_with(|| json!({}));
+    let Some(servers) = servers.as_object_mut() else {
+        return manual(format!("its `{key}` is not an object"), snippet);
+    };
+    if servers.contains_key("tessera") {
+        return Edit::Unchanged;
+    }
+    servers.insert("tessera".to_string(), entry);
+    Edit::Write(pretty(&root, &indent_of(existing.unwrap_or_default())))
+}
+
+/// The indent the file already uses, so a rewrite only adds lines.
+fn indent_of(text: &str) -> String {
+    text.lines()
+        .find_map(|line| {
+            let indent: String = line
+                .chars()
+                .take_while(|c| *c == ' ' || *c == '\t')
+                .collect();
+            (!indent.is_empty() && line.len() > indent.len()).then_some(indent)
+        })
+        .unwrap_or_else(|| "  ".to_string())
+}
+
+fn pretty(value: &Value, indent: &str) -> String {
+    let mut out = Vec::new();
+    let formatter = serde_json::ser::PrettyFormatter::with_indent(indent.as_bytes());
+    let mut serializer = serde_json::Serializer::with_formatter(&mut out, formatter);
+    serde::Serialize::serialize(value, &mut serializer).expect("JSON values serialize");
+    let mut text = String::from_utf8(out).expect("JSON is UTF-8");
+    text.push('\n');
+    text
+}
+
+/// A TOML basic string; JSON string syntax is valid TOML.
+fn quote(text: &str) -> String {
+    serde_json::to_string(text).expect("strings serialize")
+}
+
+fn toml_entry(existing: Option<&str>, server: &Server) -> Edit {
+    let text = existing.unwrap_or_default();
+    let configured = text.lines().any(|line| {
+        let line = line.trim();
+        line.starts_with("[mcp_servers.tessera")
+            || line.starts_with("[mcp_servers.\"tessera\"")
+            || line.starts_with("mcp_servers.tessera")
+    });
+    if configured {
+        return Edit::Unchanged;
+    }
+    let args: Vec<String> = server.args.iter().map(|a| quote(a)).collect();
+    let block = format!(
+        "[mcp_servers.tessera]\ncommand = {}\nargs = [{}]\n",
+        quote(&server.command),
+        args.join(", ")
+    );
+    let mut out = text.to_string();
+    if !out.is_empty() {
+        if !out.ends_with('\n') {
+            out.push('\n');
+        }
+        out.push('\n');
+    }
+    out.push_str(&block);
+    Edit::Write(out)
+}
+
+/// Plain YAML when the value needs no quoting, a double-quoted string otherwise.
+fn yaml(text: &str) -> String {
+    let plain = text
+        .chars()
+        .next()
+        .is_some_and(|c| c.is_ascii_alphanumeric() || c == '_' || c == '/')
+        && text
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || "_./-".contains(c));
+    if plain {
+        text.to_string()
+    } else {
+        quote(text)
+    }
+}
+
+fn continue_yaml(server: &Server) -> String {
+    let mut out = format!(
+        "name: Tessera\nversion: 0.0.1\nschema: v1\nmcpServers:\n  - name: tessera\n    command: {}\n    args:\n",
+        yaml(&server.command)
+    );
+    for arg in &server.args {
+        out.push_str(&format!("      - {}\n", yaml(arg)));
+    }
+    out
+}
+
+fn goose_block(server: &Server, indent: &str) -> String {
+    let inner = format!("{indent}{indent}");
+    let mut out = format!(
+        "{indent}tessera:\n{inner}name: tessera\n{inner}type: stdio\n{inner}cmd: {}\n{inner}args:\n",
+        yaml(&server.command)
+    );
+    for arg in &server.args {
+        out.push_str(&format!("{inner}- {}\n", yaml(arg)));
+    }
+    out.push_str(&format!("{inner}enabled: true\n{inner}timeout: 300\n"));
+    out
+}
+
+fn goose_entry(existing: Option<&str>, server: &Server) -> Edit {
+    let text = existing.unwrap_or_default();
+    let lines: Vec<&str> = text.lines().collect();
+    let Some(at) = lines
+        .iter()
+        .position(|line| line.trim_end() == "extensions:")
+    else {
+        let mut out = text.to_string();
+        if !out.is_empty() && !out.ends_with('\n') {
+            out.push('\n');
+        }
+        out.push_str("extensions:\n");
+        out.push_str(&goose_block(server, "  "));
+        return Edit::Write(out);
+    };
+    let indent: String = lines[at + 1..]
+        .iter()
+        .find(|line| !line.trim().is_empty())
+        .map(|line| line.chars().take_while(|c| *c == ' ').collect())
+        .filter(|indent: &String| !indent.is_empty())
+        .unwrap_or_else(|| "  ".to_string());
+    let configured = lines[at + 1..]
+        .iter()
+        .take_while(|line| line.is_empty() || line.starts_with(' '))
+        .any(|line| *line == format!("{indent}tessera:"));
+    if configured {
+        return Edit::Unchanged;
+    }
+    let mut out: Vec<String> = lines[..=at].iter().map(|l| l.to_string()).collect();
+    out.push(goose_block(server, &indent).trim_end().to_string());
+    out.extend(lines[at + 1..].iter().map(|l| l.to_string()));
+    Edit::Write(out.join("\n") + "\n")
+}
+
+/// Claude Code hooks in a settings file: one entry per event, added next to
+/// whatever hooks are already there.
+pub fn claude_hooks(existing: Option<&str>, command: &str) -> Edit {
+    const EDIT_TOOLS: &str = "Edit|Write|MultiEdit";
+    let events = [
+        ("SessionStart", None, "session-start", 10),
+        ("PreToolUse", Some(EDIT_TOOLS), "pre-edit", 10),
+        ("PostToolUse", Some(EDIT_TOOLS), "post-edit", 30),
+        ("Stop", None, "stop", 60),
+    ];
+    let entry = |matcher: Option<&str>, event: &str, timeout: u64| {
+        let mut entry = json!({
+            "hooks": [{
+                "type": "command",
+                "command": format!("{command} hook claude {event}"),
+                "timeout": timeout,
+            }]
+        });
+        if let Some(matcher) = matcher {
+            let mut with_matcher = json!({ "matcher": matcher });
+            with_matcher["hooks"] = entry["hooks"].take();
+            entry = with_matcher;
+        }
+        entry
+    };
+    let snippet = {
+        let mut hooks = serde_json::Map::new();
+        for (name, matcher, event, timeout) in events {
+            hooks.insert(name.to_string(), json!([entry(matcher, event, timeout)]));
+        }
+        pretty(&json!({ "hooks": hooks }), "  ")
+    };
+    let mut root = match json_object(existing) {
+        Ok(root) => root,
+        Err(reason) => return manual(reason, snippet),
+    };
+    let hooks = root
+        .as_object_mut()
+        .expect("checked above")
+        .entry("hooks")
+        .or_insert_with(|| json!({}));
+    let Some(hooks) = hooks.as_object_mut() else {
+        return manual("its `hooks` is not an object", snippet);
+    };
+    let mut added = false;
+    for (name, matcher, event, timeout) in events {
+        let list = hooks.entry(name).or_insert_with(|| json!([]));
+        let Some(list) = list.as_array_mut() else {
+            return manual(format!("its `hooks.{name}` is not a list"), snippet);
+        };
+        let ours = list.iter().any(|group| {
+            group["hooks"].as_array().is_some_and(|hooks| {
+                hooks.iter().any(|hook| {
+                    hook["command"]
+                        .as_str()
+                        .is_some_and(|c| c.contains("tessera") && c.contains("hook claude"))
+                })
+            })
+        });
+        if !ours {
+            list.push(entry(matcher, event, timeout));
+            added = true;
+        }
+    }
+    if !added {
+        return Edit::Unchanged;
+    }
+    Edit::Write(pretty(&root, &indent_of(existing.unwrap_or_default())))
+}
+
+pub const INSTRUCTIONS: &str = "## Code graph (Tessera)\n\n\
+This repository is indexed by Tessera. Before you rename a function or change \
+its signature or behaviour, run `tessera blast <symbol>` (or the `blast` MCP \
+tool) to see every caller and the tests that reach it. After editing, run \
+`tessera verify --changed` and fix what it reports before you say you are done.\n";
+
+const START: &str = "<!-- tessera:start -->";
+const END: &str = "<!-- tessera:end -->";
+
+/// The instructions inside markers, so a rerun replaces only Tessera's part.
+pub fn markdown_block(existing: Option<&str>) -> Edit {
+    let block = format!("{START}\n{INSTRUCTIONS}{END}\n");
+    let Some(text) = existing else {
+        return Edit::Write(block);
+    };
+    if let (Some(start), Some(end)) = (text.find(START), text.find(END)) {
+        if start < end {
+            let end = end + END.len();
+            let end = if text[end..].starts_with('\n') {
+                end + 1
+            } else {
+                end
+            };
+            let updated = format!("{}{block}{}", &text[..start], &text[end..]);
+            return if updated == text {
+                Edit::Unchanged
+            } else {
+                Edit::Write(updated)
+            };
+        }
+    }
+    let mut out = text.to_string();
+    if !out.is_empty() {
+        if !out.ends_with('\n') {
+            out.push('\n');
+        }
+        out.push('\n');
+    }
+    out.push_str(&block);
+    Edit::Write(out)
+}
+
+/// `@AGENTS.md` in an existing `CLAUDE.md`, which Claude Code reads instead
+/// of `AGENTS.md`.
+pub fn claude_import(existing: Option<&str>) -> Edit {
+    let Some(text) = existing else {
+        return Edit::Unchanged;
+    };
+    if text.lines().any(|line| line.trim() == "@AGENTS.md") {
+        return Edit::Unchanged;
+    }
+    let mut out = text.to_string();
+    if !out.ends_with('\n') {
+        out.push('\n');
+    }
+    out.push_str("\n@AGENTS.md\n");
+    Edit::Write(out)
+}
+
+pub fn cursor_rule(existing: Option<&str>) -> Edit {
+    match existing {
+        Some(_) => Edit::Unchanged,
+        None => Edit::Write(format!(
+            "---\ndescription: Check callers before edits and verify after them with Tessera\nalwaysApply: true\n---\n\n{INSTRUCTIONS}"
+        )),
+    }
+}
+
+pub const PRE_COMMIT_LINE: &str =
+    "tessera verify --staged --format agent --quiet; [ $? -ne 1 ] || exit 1";
+
+/// A pre-commit hook that refuses commits with blocking findings; an
+/// existing hook is never replaced.
+pub fn pre_commit(existing: Option<&str>) -> Edit {
+    match existing {
+        Some(text) if text.contains("tessera") && text.contains("verify") => Edit::Unchanged,
+        Some(_) => manual(
+            "a pre-commit hook already exists; add this line to it",
+            PRE_COMMIT_LINE.to_string(),
+        ),
+        None => Edit::Write(format!(
+            "#!/bin/sh\n# Added by `tessera init --git-hook`: refuses a commit that breaks call sites or\n# imports. Skip it once with `git commit --no-verify`.\ncommand -v tessera >/dev/null 2>&1 || exit 0\n{PRE_COMMIT_LINE}\n"
+        )),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn server() -> Server {
+        Server {
+            command: "tessera".into(),
+            args: vec!["mcp".into()],
+        }
+    }
+
+    #[test]
+    fn json_keeps_key_order_and_indent() {
+        let before = "{\n    \"z\": 1,\n    \"a\": 2\n}\n";
+        let Edit::Write(after) = mcp(McpFormat::McpServers, Some(before), &server()) else {
+            panic!()
+        };
+        assert!(
+            after.starts_with("{\n    \"z\": 1,\n    \"a\": 2,\n    \"mcpServers\""),
+            "{after}"
+        );
+        assert_eq!(
+            mcp(McpFormat::McpServers, Some(&after), &server()),
+            Edit::Unchanged
+        );
+    }
+
+    #[test]
+    fn toml_appends_once() {
+        let Edit::Write(after) = mcp(McpFormat::Toml, Some("model = \"x\""), &server()) else {
+            panic!()
+        };
+        assert_eq!(
+            after,
+            "model = \"x\"\n\n[mcp_servers.tessera]\ncommand = \"tessera\"\nargs = [\"mcp\"]\n"
+        );
+        assert_eq!(
+            mcp(McpFormat::Toml, Some(&after), &server()),
+            Edit::Unchanged
+        );
+    }
+
+    #[test]
+    fn goose_follows_the_existing_indent() {
+        let before = "GOOSE_MODEL: x\nextensions:\n    developer:\n        enabled: true\n";
+        let Edit::Write(after) = mcp(McpFormat::GooseYaml, Some(before), &server()) else {
+            panic!()
+        };
+        assert!(
+            after.contains("extensions:\n    tessera:\n        name: tessera\n"),
+            "{after}"
+        );
+        assert!(
+            after.ends_with("    developer:\n        enabled: true\n"),
+            "{after}"
+        );
+        assert_eq!(
+            mcp(McpFormat::GooseYaml, Some(&after), &server()),
+            Edit::Unchanged
+        );
+    }
+
+    #[test]
+    fn markdown_block_is_replaced_in_place() {
+        let Edit::Write(first) = markdown_block(Some("# A\n")) else {
+            panic!()
+        };
+        assert_eq!(markdown_block(Some(&first)), Edit::Unchanged);
+        let edited = first.replace("tessera blast", "old text");
+        let Edit::Write(again) = markdown_block(Some(&edited)) else {
+            panic!()
+        };
+        assert_eq!(again, first);
+    }
+
+    #[test]
+    fn yaml_quotes_only_when_needed() {
+        assert_eq!(yaml("tessera"), "tessera");
+        assert_eq!(yaml("--db"), "\"--db\"");
+        assert_eq!(yaml("${workspaceFolder}"), "\"${workspaceFolder}\"");
+    }
+}

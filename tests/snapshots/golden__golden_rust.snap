@@ -3,36 +3,6 @@ source: tests/golden.rs
 expression: graph_dump(& db)
 ---
 {
-  "bindings": [],
-  "edges": [
-    "src/api.rs handle -call-> src/api.rs:load [low/name]",
-    "src/api.rs handle -call-> src/store.rs:load [low/name]",
-    "src/api.rs load -call-> is_some [name]",
-    "src/api.rs load -call-> src/store.rs:Store.get [medium/name]",
-    "src/api.rs load -call-> src/store.rs:Store.new [medium/name]",
-    "src/store.rs Store.get -call-> get [name]",
-    "src/store.rs Store.new -call-> new [name]",
-    "src/store.rs load -call-> is_some [name]",
-    "src/store.rs load -call-> src/store.rs:Store.get [medium/name]",
-    "src/store.rs load -call-> src/store.rs:Store.new [high/static]"
-  ],
-  "hints": [],
-  "imports": [
-    "src/api.rs:1 use crate::store::{self, Store}",
-    "src/api.rs:14 use super::*"
-  ],
-  "modules": [],
-  "refs": [
-    "src/api.rs:4:12 call store.load/1 <- handle",
-    "src/api.rs:8:20 call Store.new/0 <- load",
-    "src/api.rs:9:14 call other.is_some/0 <- load",
-    "src/api.rs:9:7 call s.get/1 <- load",
-    "src/store.rs:11:20 call other.get/1 <- Store.get",
-    "src/store.rs:16:12 call Store.new/0 <- load",
-    "src/store.rs:16:18 call other.get/1 <- load",
-    "src/store.rs:16:25 call other.is_some/0 <- load",
-    "src/store.rs:7:28 call Vec.new/0 <- Store.new"
-  ],
   "symbols": [
     "src/api.rs:13-20 module tests | mod tests {",
     "src/api.rs:17-19 function tests.handles | fn handles() {",
@@ -46,5 +16,35 @@ expression: graph_dump(& db)
     "src/store.rs:15-17 function load [exported] | pub fn load(i: usize) -> bool {",
     "src/store.rs:5-13 impl Store | impl Store {",
     "src/store.rs:6-8 function Store.new [exported] | pub fn new() -> Self {"
+  ],
+  "refs": [
+    "src/api.rs:4:12 call store.load/1 <- handle",
+    "src/api.rs:8:20 call Store.new/0 <- load",
+    "src/api.rs:9:14 call other.is_some/0 <- load",
+    "src/api.rs:9:7 call s.get/1 <- load",
+    "src/store.rs:11:20 call other.get/1 <- Store.get",
+    "src/store.rs:16:12 call Store.new/0 <- load",
+    "src/store.rs:16:18 call other.get/1 <- load",
+    "src/store.rs:16:25 call other.is_some/0 <- load",
+    "src/store.rs:7:28 call Vec.new/0 <- Store.new"
+  ],
+  "bindings": [],
+  "hints": [],
+  "modules": [],
+  "imports": [
+    "src/api.rs:1 use crate::store::{self, Store}",
+    "src/api.rs:14 use super::*"
+  ],
+  "edges": [
+    "src/api.rs handle -call-> src/api.rs:load [low/name]",
+    "src/api.rs handle -call-> src/store.rs:load [low/name]",
+    "src/api.rs load -call-> is_some [name]",
+    "src/api.rs load -call-> src/store.rs:Store.get [medium/name]",
+    "src/api.rs load -call-> src/store.rs:Store.new [medium/name]",
+    "src/store.rs Store.get -call-> get [name]",
+    "src/store.rs Store.new -call-> new [name]",
+    "src/store.rs load -call-> is_some [name]",
+    "src/store.rs load -call-> src/store.rs:Store.get [medium/name]",
+    "src/store.rs load -call-> src/store.rs:Store.new [high/static]"
   ]
 }

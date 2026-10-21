@@ -3,31 +3,6 @@ source: tests/golden.rs
 expression: graph_dump(& db)
 ---
 {
-  "bindings": [],
-  "edges": [
-    "src/Users/UserService.cs UserService -new-> src/Users/UserRepository.cs:UserRepository [medium/name]",
-    "src/Users/UserService.cs UserService.Load -call-> src/Users/UserRepository.cs:UserRepository.FindById [medium/name]",
-    "src/Users/UserService.cs UserService.Load -call-> src/Util/Strings.cs:Strings.Trim [medium/name]",
-    "src/Util/Strings.cs Strings.Trim -call-> Trim [name]",
-    "tests/UserServiceTests.cs UserServiceTests.Loads -call-> src/Users/UserService.cs:UserService.Load [low/name]",
-    "tests/UserServiceTests.cs UserServiceTests.Loads -call-> src/Util/Strings.cs:Strings.Load [low/name]",
-    "tests/UserServiceTests.cs UserServiceTests.Loads -new-> src/Users/UserService.cs:UserService [medium/name]"
-  ],
-  "hints": [],
-  "imports": [
-    "src/Users/UserService.cs:1 using Acme.Util",
-    "tests/UserServiceTests.cs:1 using Acme.Users",
-    "tests/UserServiceTests.cs:2 using Xunit"
-  ],
-  "modules": [],
-  "refs": [
-    "src/Users/UserService.cs:11:28 call Strings.Trim/1 <- UserService.Load",
-    "src/Users/UserService.cs:11:39 call _repo.FindById/1 <- UserService.Load",
-    "src/Users/UserService.cs:7:53 new UserRepository/0 <- UserService",
-    "src/Util/Strings.cs:5:50 call s.Trim/0 <- Strings.Trim",
-    "tests/UserServiceTests.cs:9:13 new UserService/0 <- UserServiceTests.Loads",
-    "tests/UserServiceTests.cs:9:27 call new:UserService.Load/1 <- UserServiceTests.Loads"
-  ],
   "symbols": [
     "src/Users/UserRepository.cs:3-6 class UserRepository [exported] | public class UserRepository",
     "src/Users/UserRepository.cs:5-5 method UserRepository.FindById [exported] | public string FindById(string id) => id;",
@@ -40,5 +15,30 @@ expression: graph_dump(& db)
     "src/Util/Strings.cs:7-7 method Strings.Load [exported] | public static string Load(string s) => s;",
     "tests/UserServiceTests.cs:4-11 class UserServiceTests [exported] | public class UserServiceTests",
     "tests/UserServiceTests.cs:6-10 method UserServiceTests.Loads [exported] | [Fact]"
+  ],
+  "refs": [
+    "src/Users/UserService.cs:11:28 call Strings.Trim/1 <- UserService.Load",
+    "src/Users/UserService.cs:11:39 call _repo.FindById/1 <- UserService.Load",
+    "src/Users/UserService.cs:7:53 new UserRepository/0 <- UserService",
+    "src/Util/Strings.cs:5:50 call s.Trim/0 <- Strings.Trim",
+    "tests/UserServiceTests.cs:9:13 new UserService/0 <- UserServiceTests.Loads",
+    "tests/UserServiceTests.cs:9:27 call new:UserService.Load/1 <- UserServiceTests.Loads"
+  ],
+  "bindings": [],
+  "hints": [],
+  "modules": [],
+  "imports": [
+    "src/Users/UserService.cs:1 using Acme.Util",
+    "tests/UserServiceTests.cs:1 using Acme.Users",
+    "tests/UserServiceTests.cs:2 using Xunit"
+  ],
+  "edges": [
+    "src/Users/UserService.cs UserService -new-> src/Users/UserRepository.cs:UserRepository [medium/name]",
+    "src/Users/UserService.cs UserService.Load -call-> src/Users/UserRepository.cs:UserRepository.FindById [medium/name]",
+    "src/Users/UserService.cs UserService.Load -call-> src/Util/Strings.cs:Strings.Trim [medium/name]",
+    "src/Util/Strings.cs Strings.Trim -call-> Trim [name]",
+    "tests/UserServiceTests.cs UserServiceTests.Loads -call-> src/Users/UserService.cs:UserService.Load [low/name]",
+    "tests/UserServiceTests.cs UserServiceTests.Loads -call-> src/Util/Strings.cs:Strings.Load [low/name]",
+    "tests/UserServiceTests.cs UserServiceTests.Loads -new-> src/Users/UserService.cs:UserService [medium/name]"
   ]
 }

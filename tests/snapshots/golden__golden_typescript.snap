@@ -3,39 +3,19 @@ source: tests/golden.rs
 expression: graph_dump(& db)
 ---
 {
-  "bindings": [
-    "src/api/handler.ts:1 named loadUser = loadUser from ../users/repo",
-    "src/api/handler.ts:2 named Request = Request from ./types",
-    "src/users/repo.ts:1 named formatName = formatName from ../util/format",
-    "test/repo.test.ts:1 named loadUser = loadUser from ../src/users/repo"
+  "symbols": [
+    "src/api/handler.ts:4-4 function handler [exported] (1..1) | handler = (req: Request) => loadUser(req.id)",
+    "src/api/types.ts:1-3 interface Request [exported] | interface Request {",
+    "src/users/repo.ts:10-12 method UserRepo.lookup [exported] (1..1) | private lookup(id: string): string {",
+    "src/users/repo.ts:15-18 function loadUser [exported] (1..1) | function loadUser(id: string): string {",
+    "src/users/repo.ts:3-13 class UserRepo [exported] | class UserRepo {",
+    "src/users/repo.ts:6-8 method UserRepo.findById [exported] (1..1) | findById(id: string): string {",
+    "src/util/format.ts:1-3 function formatName [exported] (1..1) | function formatName(name: string): string {",
+    "src/util/format.ts:5-7 function loadUser [exported] (1..1) | function loadUser(id: string): string {",
+    "src/util/i18n.ts:1-3 function greet [exported] (0..0) | function greet(): string { //x ééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééé…",
+    "test/repo.test.ts:3-7 callback describe(\"loadUser\") (0..0) | () => {",
+    "test/repo.test.ts:4-6 callback describe(\"loadUser\").it(\"returns the user\") (0..0) | () => {"
   ],
-  "edges": [
-    "src/api/handler.ts handler -call-> src/users/repo.ts:loadUser [high/import]",
-    "src/api/handler.ts handler -type-> src/api/types.ts:Request [high/import]",
-    "src/users/repo.ts UserRepo -new-> Map [name]",
-    "src/users/repo.ts UserRepo.findById -call-> src/users/repo.ts:UserRepo.lookup [high/this]",
-    "src/users/repo.ts UserRepo.findById -call-> src/util/format.ts:formatName [high/import]",
-    "src/users/repo.ts loadUser -call-> src/users/repo.ts:UserRepo.findById [high/hint]",
-    "src/users/repo.ts loadUser -new-> src/users/repo.ts:UserRepo [high/local]",
-    "src/util/format.ts formatName -call-> trim [name]",
-    "src/util/format.ts loadUser -call-> src/util/format.ts:formatName [high/local]",
-    "test/repo.test.ts describe(\"loadUser\") -call-> it [name]",
-    "test/repo.test.ts describe(\"loadUser\").it(\"returns the user\") -call-> expect [name]",
-    "test/repo.test.ts describe(\"loadUser\").it(\"returns the user\") -call-> src/users/repo.ts:loadUser [high/import]",
-    "test/repo.test.ts describe(\"loadUser\").it(\"returns the user\") -call-> toBe [name]"
-  ],
-  "hints": [
-    "src/api/handler.ts handler::req: Request (param)",
-    "src/users/repo.ts UserRepo::this.cache: Map (field)",
-    "src/users/repo.ts loadUser::repo: UserRepo (new)"
-  ],
-  "imports": [
-    "src/api/handler.ts:1 import ../users/repo",
-    "src/api/handler.ts:2 import ./types",
-    "src/users/repo.ts:1 import ../util/format",
-    "test/repo.test.ts:1 import ../src/users/repo"
-  ],
-  "modules": [],
   "refs": [
     "src/api/handler.ts:4:30 type Request <- handler",
     "src/api/handler.ts:4:42 call loadUser/1 <- handler",
@@ -53,17 +33,37 @@ expression: graph_dump(& db)
     "test/repo.test.ts:5:27 call other.toBe/1 <- describe(\"loadUser\").it(\"returns the user\")",
     "test/repo.test.ts:5:5 call expect/1 <- describe(\"loadUser\").it(\"returns the user\")"
   ],
-  "symbols": [
-    "src/api/handler.ts:4-4 function handler [exported] (1..1) | handler = (req: Request) => loadUser(req.id)",
-    "src/api/types.ts:1-3 interface Request [exported] | interface Request {",
-    "src/users/repo.ts:10-12 method UserRepo.lookup [exported] (1..1) | private lookup(id: string): string {",
-    "src/users/repo.ts:15-18 function loadUser [exported] (1..1) | function loadUser(id: string): string {",
-    "src/users/repo.ts:3-13 class UserRepo [exported] | class UserRepo {",
-    "src/users/repo.ts:6-8 method UserRepo.findById [exported] (1..1) | findById(id: string): string {",
-    "src/util/format.ts:1-3 function formatName [exported] (1..1) | function formatName(name: string): string {",
-    "src/util/format.ts:5-7 function loadUser [exported] (1..1) | function loadUser(id: string): string {",
-    "src/util/i18n.ts:1-3 function greet [exported] (0..0) | function greet(): string { //x ééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééé…",
-    "test/repo.test.ts:3-7 callback describe(\"loadUser\") (0..0) | () => {",
-    "test/repo.test.ts:4-6 callback describe(\"loadUser\").it(\"returns the user\") (0..0) | () => {"
+  "bindings": [
+    "src/api/handler.ts:1 named loadUser = loadUser from ../users/repo",
+    "src/api/handler.ts:2 named Request = Request from ./types",
+    "src/users/repo.ts:1 named formatName = formatName from ../util/format",
+    "test/repo.test.ts:1 named loadUser = loadUser from ../src/users/repo"
+  ],
+  "hints": [
+    "src/api/handler.ts handler::req: Request (param)",
+    "src/users/repo.ts UserRepo::this.cache: Map (field)",
+    "src/users/repo.ts loadUser::repo: UserRepo (new)"
+  ],
+  "modules": [],
+  "imports": [
+    "src/api/handler.ts:1 import ../users/repo",
+    "src/api/handler.ts:2 import ./types",
+    "src/users/repo.ts:1 import ../util/format",
+    "test/repo.test.ts:1 import ../src/users/repo"
+  ],
+  "edges": [
+    "src/api/handler.ts handler -call-> src/users/repo.ts:loadUser [high/import]",
+    "src/api/handler.ts handler -type-> src/api/types.ts:Request [high/import]",
+    "src/users/repo.ts UserRepo -new-> Map [name]",
+    "src/users/repo.ts UserRepo.findById -call-> src/users/repo.ts:UserRepo.lookup [high/this]",
+    "src/users/repo.ts UserRepo.findById -call-> src/util/format.ts:formatName [high/import]",
+    "src/users/repo.ts loadUser -call-> src/users/repo.ts:UserRepo.findById [high/hint]",
+    "src/users/repo.ts loadUser -new-> src/users/repo.ts:UserRepo [high/local]",
+    "src/util/format.ts formatName -call-> trim [name]",
+    "src/util/format.ts loadUser -call-> src/util/format.ts:formatName [high/local]",
+    "test/repo.test.ts describe(\"loadUser\") -call-> it [name]",
+    "test/repo.test.ts describe(\"loadUser\").it(\"returns the user\") -call-> expect [name]",
+    "test/repo.test.ts describe(\"loadUser\").it(\"returns the user\") -call-> src/users/repo.ts:loadUser [high/import]",
+    "test/repo.test.ts describe(\"loadUser\").it(\"returns the user\") -call-> toBe [name]"
   ]
 }

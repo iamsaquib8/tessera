@@ -3,29 +3,6 @@ source: tests/golden.rs
 expression: graph_dump(& db)
 ---
 {
-  "bindings": [],
-  "edges": [
-    "api/handler.go Handle -call-> api/handler.go:Load [low/name]",
-    "api/handler.go Handle -call-> store/store.go:Load [low/name]",
-    "store/store.go Load -call-> store/store.go:New [high/local]",
-    "store/store.go Load -call-> store/store.go:Store.Get [medium/name]",
-    "store/store_test.go TestLoad -call-> Fatal [name]",
-    "store/store_test.go TestLoad -call-> api/handler.go:Load [low/name]",
-    "store/store_test.go TestLoad -call-> store/store.go:Load [low/name]"
-  ],
-  "hints": [],
-  "imports": [
-    "api/handler.go:3 import example.com/app/store",
-    "store/store_test.go:3 import testing"
-  ],
-  "modules": [],
-  "refs": [
-    "api/handler.go:6:15 call store.Load/1 <- Handle",
-    "store/store.go:16:15 call other.Get/1 <- Load",
-    "store/store.go:16:9 call New/0 <- Load",
-    "store/store_test.go:6:5 call Load/1 <- TestLoad",
-    "store/store_test.go:7:5 call t.Fatal/1 <- TestLoad"
-  ],
   "symbols": [
     "api/handler.go:5-7 function Handle [exported] | func Handle(id string) string {",
     "api/handler.go:9-11 function Load [exported] | func Load(id string) string {",
@@ -35,5 +12,28 @@ expression: graph_dump(& db)
     "store/store.go:3-5 struct Store [exported] | Store struct {",
     "store/store.go:7-9 function New [exported] | func New() *Store {",
     "store/store_test.go:5-9 function TestLoad [exported] | func TestLoad(t *testing.T) {"
+  ],
+  "refs": [
+    "api/handler.go:6:15 call store.Load/1 <- Handle",
+    "store/store.go:16:15 call other.Get/1 <- Load",
+    "store/store.go:16:9 call New/0 <- Load",
+    "store/store_test.go:6:5 call Load/1 <- TestLoad",
+    "store/store_test.go:7:5 call t.Fatal/1 <- TestLoad"
+  ],
+  "bindings": [],
+  "hints": [],
+  "modules": [],
+  "imports": [
+    "api/handler.go:3 import example.com/app/store",
+    "store/store_test.go:3 import testing"
+  ],
+  "edges": [
+    "api/handler.go Handle -call-> api/handler.go:Load [low/name]",
+    "api/handler.go Handle -call-> store/store.go:Load [low/name]",
+    "store/store.go Load -call-> store/store.go:New [high/local]",
+    "store/store.go Load -call-> store/store.go:Store.Get [medium/name]",
+    "store/store_test.go TestLoad -call-> Fatal [name]",
+    "store/store_test.go TestLoad -call-> api/handler.go:Load [low/name]",
+    "store/store_test.go TestLoad -call-> store/store.go:Load [low/name]"
   ]
 }

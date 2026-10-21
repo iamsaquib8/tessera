@@ -3,34 +3,16 @@ source: tests/golden.rs
 expression: graph_dump(& db)
 ---
 {
-  "bindings": [
-    "src/App.test.tsx:1 default App = default from ./App",
-    "src/App.tsx:1 named UserCard = UserCard from ./components/UserCard",
-    "src/App.tsx:2 named useUser = useUser from ./hooks/useUser",
-    "src/components/UserCard.tsx:1 default React = default from react",
-    "src/components/UserCard.tsx:2 named Avatar = Avatar from ./Avatar",
-    "src/hooks/useUser.ts:1 named useState = useState from react"
+  "symbols": [
+    "src/App.test.tsx:3-5 callback it(\"renders\") (0..0) | () => {",
+    "src/App.tsx:4-7 function App [exported] [default] (0..0) | function App() {",
+    "src/components/Avatar.tsx:1-3 function Avatar [exported] (1..1) | function Avatar({ name }: { name: string }) {",
+    "src/components/Greeting.tsx:1-3 function Greeting [exported] (0..0) | function Greeting() { //x éééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééé",
+    "src/components/UserCard.tsx:12-12 variable MemoCard [exported] | MemoCard = React.memo(UserCard)",
+    "src/components/UserCard.tsx:4-4 type Props | type Props = { name: string };",
+    "src/components/UserCard.tsx:6-10 function UserCard [exported] (1..1) | UserCard = ({ name }: Props) => (",
+    "src/hooks/useUser.ts:3-6 function useUser [exported] (1..1) | function useUser(id: string) {"
   ],
-  "edges": [
-    "src/App.test.tsx it(\"renders\") -call-> render [name]",
-    "src/App.test.tsx it(\"renders\") -jsx-> src/App.tsx:App [high/import]",
-    "src/App.tsx App -call-> src/hooks/useUser.ts:useUser [high/import]",
-    "src/App.tsx App -jsx-> src/components/UserCard.tsx:UserCard [high/import]",
-    "src/components/UserCard.tsx UserCard -jsx-> src/components/Avatar.tsx:Avatar [high/import]",
-    "src/components/UserCard.tsx UserCard -type-> src/components/UserCard.tsx:Props [high/local]"
-  ],
-  "hints": [
-    "src/App.tsx App::user: call:useUser (return)"
-  ],
-  "imports": [
-    "src/App.test.tsx:1 import ./App",
-    "src/App.tsx:1 import ./components/UserCard",
-    "src/App.tsx:2 import ./hooks/useUser",
-    "src/components/UserCard.tsx:1 import react",
-    "src/components/UserCard.tsx:2 import ./Avatar",
-    "src/hooks/useUser.ts:1 import react"
-  ],
-  "modules": [],
   "refs": [
     "src/App.test.tsx:3:1 call it/2 <- <none>",
     "src/App.test.tsx:4:10 jsx App <- it(\"renders\")",
@@ -42,14 +24,32 @@ expression: graph_dump(& db)
     "src/components/UserCard.tsx:8:5 jsx Avatar <- UserCard",
     "src/hooks/useUser.ts:4:18 call useState/1 <- useUser"
   ],
-  "symbols": [
-    "src/App.test.tsx:3-5 callback it(\"renders\") (0..0) | () => {",
-    "src/App.tsx:4-7 function App [exported] [default] (0..0) | function App() {",
-    "src/components/Avatar.tsx:1-3 function Avatar [exported] (1..1) | function Avatar({ name }: { name: string }) {",
-    "src/components/Greeting.tsx:1-3 function Greeting [exported] (0..0) | function Greeting() { //x éééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééé",
-    "src/components/UserCard.tsx:12-12 variable MemoCard [exported] | MemoCard = React.memo(UserCard)",
-    "src/components/UserCard.tsx:4-4 type Props | type Props = { name: string };",
-    "src/components/UserCard.tsx:6-10 function UserCard [exported] (1..1) | UserCard = ({ name }: Props) => (",
-    "src/hooks/useUser.ts:3-6 function useUser [exported] (1..1) | function useUser(id: string) {"
+  "bindings": [
+    "src/App.test.tsx:1 default App = default from ./App",
+    "src/App.tsx:1 named UserCard = UserCard from ./components/UserCard",
+    "src/App.tsx:2 named useUser = useUser from ./hooks/useUser",
+    "src/components/UserCard.tsx:1 default React = default from react",
+    "src/components/UserCard.tsx:2 named Avatar = Avatar from ./Avatar",
+    "src/hooks/useUser.ts:1 named useState = useState from react"
+  ],
+  "hints": [
+    "src/App.tsx App::user: call:useUser (return)"
+  ],
+  "modules": [],
+  "imports": [
+    "src/App.test.tsx:1 import ./App",
+    "src/App.tsx:1 import ./components/UserCard",
+    "src/App.tsx:2 import ./hooks/useUser",
+    "src/components/UserCard.tsx:1 import react",
+    "src/components/UserCard.tsx:2 import ./Avatar",
+    "src/hooks/useUser.ts:1 import react"
+  ],
+  "edges": [
+    "src/App.test.tsx it(\"renders\") -call-> render [name]",
+    "src/App.test.tsx it(\"renders\") -jsx-> src/App.tsx:App [high/import]",
+    "src/App.tsx App -call-> src/hooks/useUser.ts:useUser [high/import]",
+    "src/App.tsx App -jsx-> src/components/UserCard.tsx:UserCard [high/import]",
+    "src/components/UserCard.tsx UserCard -jsx-> src/components/Avatar.tsx:Avatar [high/import]",
+    "src/components/UserCard.tsx UserCard -type-> src/components/UserCard.tsx:Props [high/local]"
   ]
 }
