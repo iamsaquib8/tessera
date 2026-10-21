@@ -247,6 +247,57 @@ fn comments_typed_arrows_and_tagged_templates_never_make_an_arity_mismatch() {
 }
 
 #[test]
+fn v4_a_barrel_re_exporting_a_renamed_name_is_broken() {
+    let temp = repo();
+    fs::write(
+        temp.path().join("src/util/index.ts"),
+        "export { formatName } from \"./format\";\n",
+    )
+    .unwrap();
+    commit_all(temp.path());
+    edit(
+        temp.path(),
+        "src/util/format.ts",
+        "export function formatName(",
+        "export function formatDisplayName(",
+    );
+    edit(
+        temp.path(),
+        "src/util/format.ts",
+        "return formatName(id);",
+        "return formatDisplayName(id);",
+    );
+    let (code, findings, _) = verify_changed(temp.path());
+    assert_eq!(code, 1);
+    assert!(
+        findings.contains(&"V4 src/util/index.ts:1".to_string()),
+        "{findings:?}"
+    );
+}
+
+fn commit_all(root: &Path) {
+    for args in [
+        &["add", "."][..],
+        &[
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@example.com",
+            "commit",
+            "-qm",
+            "more",
+        ],
+    ] {
+        assert!(StdCommand::new("git")
+            .args(args)
+            .current_dir(root)
+            .status()
+            .unwrap()
+            .success());
+    }
+}
+
+#[test]
 fn imports_of_files_the_index_does_not_hold_are_not_broken() {
     let temp = repo();
     let root = temp.path();

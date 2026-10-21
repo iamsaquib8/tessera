@@ -439,12 +439,26 @@ impl<'c> Resolver<'c> {
                 }
             }
             // Source "." is this file (`export default Panel`), not a path.
-            "re_export" | "re_export_all" if local && binding.source != "." => Ok(
+            "re_export" | "re_export_all" if binding.source != "." => {
                 match self.module(&file.path, &binding.source, file.language) {
-                    ModuleTarget::Unresolved => "missing_module",
-                    _ => "ok",
-                },
-            ),
+                    ModuleTarget::Unresolved if local => Ok("missing_module"),
+                    // `export { formatName } from "./format"` needs the name
+                    // there; `export * as ns` needs only the module.
+                    ModuleTarget::File(target) if binding.kind == "re_export" => {
+                        let export = binding.imported.as_deref().unwrap_or(&binding.local);
+                        if export == "*" {
+                            return Ok("ok");
+                        }
+                        Ok(
+                            match self.export_lookup(target, export, &mut HashSet::new(), 0)? {
+                                Found::Missing => "missing_export",
+                                _ => "ok",
+                            },
+                        )
+                    }
+                    _ => Ok("ok"),
+                }
+            }
             "java_single" => {
                 let package = binding
                     .source
