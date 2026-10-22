@@ -2,7 +2,14 @@
 
 All notable changes to Tessera are documented here.
 
-## 1.0.0 - Unreleased
+## 1.0.1 - 2026-10-21
+
+### Fixed
+
+- The container image builds again: the Dockerfile now copies the
+  framework packs the binary embeds. 1.0.0 shipped everywhere but GHCR.
+
+## 1.0.0 - 2026-10-21
 
 The first full release since 0.4.0. It ships everything in 0.10 to 0.13 below,
 plus a way to see a change's impact, a pull-request report, and a contract
