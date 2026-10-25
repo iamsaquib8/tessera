@@ -821,3 +821,27 @@ fn lockfiles_and_ci_files_above_the_index_root_run_the_full_suite() {
         assert!(reason.contains(shown), "{path} committed: {value:#}");
     }
 }
+
+#[test]
+fn a_shallow_clone_says_it_cannot_read_every_trailer() {
+    let temp = ts_repo();
+    edit(
+        temp.path(),
+        "src/util/i18n.ts",
+        "return \"héllo\";",
+        "return \"hello\";",
+    );
+    git(temp.path(), &["commit", "-q", "-am", "second"]);
+    let clones = temp_dir_outside();
+    let clone = clones.path().join("clone");
+    let url = format!("file://{}", temp.path().display());
+    git(
+        clones.path(),
+        &["clone", "-q", "--depth", "1", &url, clone.to_str().unwrap()],
+    );
+    let value = affected_json(&clone, &["HEAD"]);
+    assert!(value["notes"].to_string().contains("shallow"), "{value:#}");
+    // A full clone has nothing to say.
+    let value = affected_json(temp.path(), &["HEAD~1"]);
+    assert!(!value["notes"].to_string().contains("shallow"), "{value:#}");
+}

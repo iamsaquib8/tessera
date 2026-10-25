@@ -227,6 +227,12 @@ pub fn run(conn: &Connection, root: &Path, args: &AffectedArgs) -> Result<Affect
         choose(&mut chosen, test);
     }
     let full_run = full_run(root, &changed, &changes, &base, walk.capped);
+    let shallow = git(root, &["rev-parse", "--is-shallow-repository"]);
+    if matches!(changes, Changes::Since(_)) && shallow.as_deref().map(str::trim) == Some("true") {
+        notes.push(
+            "this is a shallow clone: Tessera-No-Skip trailers in commits it did not fetch are not read; fetch the history (actions/checkout `fetch-depth: 0`) to honour them".to_string(),
+        );
+    }
     if let Some(reason) = &full_run {
         for path in &suite {
             choose(&mut chosen, plain(path, Kind::FullRun, reason));
