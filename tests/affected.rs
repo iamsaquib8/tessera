@@ -782,3 +782,42 @@ fn a_change_reached_through_test_main_runs_the_whole_go_package() {
     // `-run '^(TestMain)$'` would run no test at all.
     assert_eq!(stdout, "go -C go test ./calc\n");
 }
+
+#[test]
+fn lockfiles_and_ci_files_above_the_index_root_run_the_full_suite() {
+    // A monorepo whose service has its own index: the root lockfile and CI
+    // configuration change what its tests run against; a sibling's do not.
+    let temp = temp();
+    let top = temp.path();
+    let api = top.join("services/api");
+    copy_dir(&fixture_dir("typescript"), &api);
+    fs::create_dir_all(api.join(".tessera")).unwrap();
+    write(top, "pnpm-lock.yaml", "lockfileVersion: 9\n");
+    write(top, ".github/workflows/ci.yml", "on: push\n");
+    write(top, "services/web/package.json", "{}\n");
+    git(top, &["init", "-q"]);
+    git(top, &["add", "."]);
+    git(top, &["commit", "-q", "-m", "base"]);
+
+    write(top, "services/web/package.json", "{ \"name\": \"web\" }\n");
+    let value = affected_json(&api, &[]);
+    assert!(
+        value["full_run"].is_null(),
+        "a sibling's build file: {value:#}"
+    );
+
+    for (path, shown) in [
+        ("pnpm-lock.yaml", "../../pnpm-lock.yaml"),
+        (".github/workflows/ci.yml", "../../.github/workflows/ci.yml"),
+    ] {
+        let before = fs::read_to_string(top.join(path)).unwrap();
+        write(top, path, &format!("{before}# changed\n"));
+        let value = affected_json(&api, &[]);
+        let reason = value["full_run"].as_str().unwrap_or_default();
+        assert!(reason.contains(shown), "{path}: {value:#}");
+        git(top, &["commit", "-q", "-am", "change"]);
+        let value = affected_json(&api, &["HEAD~1"]);
+        let reason = value["full_run"].as_str().unwrap_or_default();
+        assert!(reason.contains(shown), "{path} committed: {value:#}");
+    }
+}

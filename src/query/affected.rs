@@ -652,8 +652,10 @@ fn full_run(
     base: &str,
     capped: bool,
 ) -> Option<String> {
+    let above = above_root(root, changes, base);
     let mut triggers: Vec<(&String, &str)> = changed
         .iter()
+        .chain(&above)
         .filter_map(|path| Some((path, trigger(path)?)))
         .collect();
     triggers.sort();
@@ -683,6 +685,55 @@ fn full_run(
     } else {
         None
     }
+}
+
+/// Changed files above an index root inside a larger repository that still
+/// shape its tests: those in a directory the root is inside (a monorepo's
+/// lockfile or build file) and CI configuration at the top. Each is shown
+/// relative to the root (`../../pnpm-lock.yaml`).
+fn above_root(root: &Path, changes: &Changes, base: &str) -> Vec<String> {
+    let prefix = git(root, &["rev-parse", "--show-prefix"]).unwrap_or_default();
+    let prefix = prefix.trim().trim_end_matches('/');
+    if prefix.is_empty() {
+        return Vec::new();
+    }
+    let since = match changes {
+        Changes::Staged => "--cached",
+        _ => base,
+    };
+    let mut listed = git(
+        root,
+        &["diff", "--name-only", "--no-renames", since, "--", ":(top)"],
+    )
+    .unwrap_or_default();
+    if !matches!(changes, Changes::Staged) {
+        let untracked = [
+            "ls-files",
+            "--others",
+            "--exclude-standard",
+            "--full-name",
+            "--",
+            ":(top)",
+        ];
+        listed.push_str(&git(root, &untracked).unwrap_or_default());
+    }
+    let up = "../".repeat(prefix.split('/').count());
+    let inside = format!("{prefix}/");
+    let mut out: Vec<String> = listed
+        .lines()
+        .map(|line| line.trim().replace('\\', "/"))
+        .filter(|path| !path.is_empty() && !path.starts_with(&inside))
+        .filter(|path| {
+            let dir = path.rsplit_once('/').map_or("", |(dir, _)| dir);
+            dir.is_empty()
+                || inside.starts_with(&format!("{dir}/"))
+                || CONFIG_DIRS.iter().any(|config| path.starts_with(config))
+        })
+        .map(|path| format!("{up}{path}"))
+        .collect();
+    out.sort();
+    out.dedup();
+    out
 }
 
 const LOCKFILES: &[&str] = &[
