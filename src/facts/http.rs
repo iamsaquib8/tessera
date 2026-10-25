@@ -65,6 +65,11 @@ pub fn path(source: &str) -> Option<(String, &'static str)> {
         };
         (text, if holes { "medium" } else { "high" })
     };
+    // A path built only from variables (`${url}?${query}`) names no route.
+    let literal = text.split(['?', '#']).next().unwrap_or_default();
+    if confidence != "high" && !literal.chars().any(|c| c.is_alphanumeric()) {
+        return None;
+    }
     normalise(&text).map(|path| (path, confidence))
 }
 
@@ -312,6 +317,9 @@ mod tests {
             Some(("/users/{}".into(), "low"))
         );
         assert_eq!(path("url"), None);
+        // Nothing literal: the whole path is a variable.
+        assert_eq!(path("`${url}?${params}`"), None);
+        assert_eq!(path("`${base}`"), None);
         assert_eq!(
             path("\"/api/\" + id + \"/items\""),
             Some(("/api/{}/items".into(), "low"))

@@ -614,6 +614,12 @@ fn fact(
         })
         .and_then(|p| http::path(&p))
         .map(|(p, _)| p);
+    let method_list = method_args.clone().filter(|_| {
+        pattern_method.is_none()
+            && !captures
+                .get("method")
+                .is_some_and(|m| http::method(text(source, *m)) != "ANY")
+    });
     let method = pattern_method
         .map(|(method, _)| method)
         .or_else(|| {
@@ -622,7 +628,7 @@ fn fact(
                 .map(|m| http::method(text(source, *m)))
                 .filter(|m| m != "ANY")
         })
-        .or(method_args.map(|m| http::method(&m)))
+        .or(method_args.as_deref().map(http::method))
         .or_else(|| defaults.get("method").map(|m| http::method(m)))
         .unwrap_or_else(|| "ANY".to_string());
     let full = match &prefix {
@@ -679,8 +685,26 @@ fn fact(
                 })
                 .collect()
         }
-        None => vec![site(&method, &full, String::new())],
+        // `method = {RequestMethod.GET, RequestMethod.POST}`: one route each.
+        None => match listed_methods(method_list.as_deref()) {
+            methods if !methods.is_empty() => {
+                methods.iter().map(|m| site(m, &full, m.clone())).collect()
+            }
+            _ => vec![site(&method, &full, String::new())],
+        },
     })
+}
+
+/// `{RequestMethod.GET, RequestMethod.POST}` → `GET`, `POST`.
+fn listed_methods(text: Option<&str>) -> Vec<String> {
+    let Some(inner) = text.and_then(|t| t.trim().strip_prefix('{')?.strip_suffix('}')) else {
+        return Vec::new();
+    };
+    inner
+        .split(',')
+        .map(http::method)
+        .filter(|m| m != "ANY")
+        .collect()
 }
 
 /// The routes Rails' `resources :orders` draws: action, method, path under
@@ -833,7 +857,8 @@ fn arguments(source: &str, args: Node<'_>, keys: ArgKeys) -> (Option<String>, Op
                         path = path.or(value_text);
                     }
                     "path" => path = value_text.or(path),
-                    "method" => method = value_text,
+                    // Every method of `method = {GET, POST}`, not the first.
+                    "method" => method = Some(text(source, value).to_string()),
                     _ => {}
                 }
             }
