@@ -44,12 +44,14 @@ codebase with known problems without turning the merge gate off.
   (default 30): edits checked, notes, reports, blocks, problems the agent
   fixed or was released from, and hook latency. Read from a local log
   that holds no paths, names or code.
-- **Pull-request report**: tests to run in a block to copy, and "test
-  gaps", the changed functions no test reaches.
+- **Pull-request report**: the tests `affected` selects, in a block to
+  copy (or why every test should run), waived findings with the reason,
+  and "test gaps", the changed functions no test reaches.
 - **GitHub Action**: caches the index keyed on the merge base's tree;
   `upload-sarif: true` sends findings to code scanning; outputs `tests`,
   `tests-file` and `full-run` for a test step that runs only what the
-  change reaches.
+  change reaches. `fail-on: new` is accepted (the same as `blocking`), and
+  an unknown `fail-on` value stops the job instead of never failing it.
 
 ### Changed
 

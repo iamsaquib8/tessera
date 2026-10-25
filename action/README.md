@@ -50,6 +50,9 @@ test files, or Tessera could not select. Run everything then; otherwise
 run the list:
 
 ```yaml
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # so a Tessera-No-Skip trailer in the PR counts
       - uses: iamsaquib8/tessera/action@v1
         id: tessera
       - name: Tests

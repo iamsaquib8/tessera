@@ -32,19 +32,33 @@ The whole suite runs, with the reason, when the change touches:
 
 - a lockfile (`package-lock.json`, `pnpm-lock.yaml`, `yarn.lock`,
   `Cargo.lock`, `go.sum`, `poetry.lock`, `uv.lock` and others);
-- a build file (`package.json`, `Cargo.toml`, `go.mod`, `pom.xml`,
-  `build.gradle`, `pyproject.toml`, `requirements*.txt` and others);
+- a build file (`package.json`, `Cargo.toml`, `go.mod`, `pom.xml`, any
+  `*.gradle` or `*.gradle.kts`, Gradle version catalogs, `pyproject.toml`,
+  `requirements*.txt` and `requirements/`, `.npmrc`, `.yarnrc.yml`,
+  `Makefile` and others);
 - test runner, toolchain or CI configuration (`jest.config.*`,
   `vitest.config.*`, `conftest.py`, `pytest.ini`, `.nvmrc`,
-  `rust-toolchain.toml`, `.github/workflows/` and others);
+  `rust-toolchain.toml`, `.github/workflows/`, `.github/actions/` and
+  others);
 - a fixture or snapshot directory (`fixtures/`, `testdata/`,
   `__snapshots__/` and others), since tests read those through no call
   the index sees.
 
+When the index root is a directory inside a larger repository (a
+service with its own `.tessera/`), these files count above it too: the
+monorepo's root lockfile or a build file in a directory the root is
+inside, shown relative to the root (`../../pnpm-lock.yaml`), and CI
+configuration at the top. A sibling service's files do not. A renamed
+file counts as deleted at its old path, so renaming a module selects the
+tests of its importers.
+
 It also runs when a commit in the range has a `Tessera-No-Skip:` trailer,
 or when the change reaches more symbols than Tessera narrows (the
-selection would be most of the suite anyway). When the index holds no
-test files, the output says so and selects nothing: run everything then.
+selection would be most of the suite anyway). Trailers are read from the
+history the clone has: in a shallow clone (`actions/checkout` fetches one
+commit by default) Tessera says so in a note, and `fetch-depth: 0` makes
+the trailer count. When the index holds no test files, the output says
+so and selects nothing: run everything then.
 
 `--format` prints a runner's command line instead of the list:
 
@@ -286,7 +300,10 @@ tessera accept 3f9a0c1e8b2d4471 --reason "orders v1 retired; web moves in #412" 
 Fingerprints come from `verify --json` (every finding has one; it stays the
 same when lines move). The entry goes to `.tessera/accepted.toml`, which is
 committed and reviewed like code. Until it expires, the finding is
-reported with its reason and does not block; after that it blocks again.
+reported with its reason (in the terminal and in the pull-request
+comment) and does not block; after the `expires` day (UTC) it blocks
+again. An `expires` that is not a real date, quoted or bare
+(`2026-12-31`), lapses at once, with a warning naming the entry.
 
 Both files are read leniently in one direction only: a file that cannot be
 read is named on stderr and waives nothing, so a broken file never turns
