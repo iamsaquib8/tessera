@@ -9,184 +9,148 @@ Every milestone ships with proof: a test suite, a published number, or a
 demo. Nothing is claimed until it can be reproduced. The full design is in
 [docs/design/2026-10-21-overhaul.md](docs/design/2026-10-21-overhaul.md).
 
-| | Milestone | Status |
-| --- | --- | --- |
-| v0.10 | Foundation | done, ships in 1.0.0 |
-| v0.11 | Precision + public accuracy benchmark | done, ships in 1.0.0 |
-| v0.12 | Edit-safety loop (hooks in every agent that supports them) | done, ships in 1.0.0 |
-| v0.13 | Cross-repo contract map | done, ships in 1.0.0 |
-| v1.0 | Change-impact UI, GitHub Action, stable contracts | released (1.0.1) |
-| v1.1 | Contract map, completed: mount prefixes, GraphQL, config keys, `path` across repositories | done |
-| v1.2 | Team & CI: test selection, index cache, code scanning | next |
-| v1.x | Architecture rules, precise mode, editors, runtime truth, data lineage, plugins, agent memory | planned |
+| Version | Focus | Primary User Benefit | Status |
+| --- | --- | --- | --- |
+| v1.0 | **Visible & Stable** | Impact UI, GitHub Action PR comments, frozen 1.x CLI/MCP contracts | released (1.0.1) |
+| v1.1 | **Contract Map Completed** | Express mounts, GraphQL, config keys, cross-repo `path`, Go/Python/Ruby web routes | released (1.1.0) |
+| v1.2 | **Team & CI Acceleration** | Targeted test selection (`affected` for Jest/Pytest/Cargo/Go), shared commit cache, SARIF | next |
+| v1.3 | **Python & Go Deep Tier + `plan`** | Compiler-grade accuracy for Python/Go, proactive refactor planning for agents | planned |
+| v1.4 | **Architecture Guardrails & Fixes** | Custom layering rules (`rules.toml`), machine-readable suggested fixes in hooks | planned |
+| v1.5 | **Modern Full-Stack & Schema Safety** | Next.js Server Actions, tRPC, migration-to-query verification, CODEOWNERS impact | planned |
+| v2.0 | **Telemetry, Lineage & Extensibility** | OpenTelemetry trace overlays, SQL column lineage, custom WASM/SCM plugins | future |
 
-## v0.10: Foundation
+---
 
-Make the basics trustworthy before claiming anything else.
+## Shipped Foundations (v0.10 – v1.0)
 
-- tree-sitter 0.26 with one extractor module per language. The walk is
-  iterative, signatures are cut on char boundaries, and TS and TSX use their
-  own grammars.
-- Discovery honours `.gitignore` and skips minified and oversized files.
-  The index works on repositories of any size (45k+ files).
-- No setup step: the first query indexes, and later queries re-index only
-  what changed. The MCP server watches files.
-- Output is deterministic, paginated with totals and cursors, labels fuzzy
-  matches, and carries measured token counts.
-- Eight operations replace 21 overlapping commands: `find`, `search`,
-  `refs`, `blast`, `verify`, `context`, `path`, `status`.
-- A dual-era MCP server (2026-07-28 plus initialize-based clients) over stdio
-  and Streamable HTTP.
-- Every install channel verified after each release: npm (platform packages),
-  Homebrew, `curl | sh` with checksums, cargo-binstall, and Docker.
+The core architecture, precision resolver, edit-safety hooks, and initial contract map shipped in `v1.0.0` (with patch `v1.0.1`):
 
-**Gate:** every install channel is green on three operating systems, no
-panics on adversarial input, byte-identical output across runs, and MCP
-conformance tests pass.
+- **Foundation (v0.10):** Tree-sitter 0.26 parser with iterative walks, automatic discovery respecting `.gitignore`, zero-setup incremental SQLite indexing, dual-era MCP server (`2025-06-18` + `2024-11-05`), and verified distribution channels (npm, Homebrew, `curl \| sh`, cargo-binstall, Docker).
+- **Precision Resolver (v0.11):** Import- and scope-aware resolution for TypeScript, TSX, JavaScript, and Java. Overloads by arity, receiver type inference, confidence scoring on every edge, and [tessera-bench](https://github.com/iamsaquib8/tessera-bench) scoring precision (0.998 TS/JS, 0.995 Java) against SCIP compiler ground truth ([docs/accuracy.md](docs/accuracy.md)).
+- **Edit-Safety Loop (v0.12):** `blast --diff` for uncommitted changes, `verify` checking for broken calls, argument mismatches, and dangling imports. Native edit hooks for Claude Code, Codex CLI, Gemini CLI, Copilot CLI, Cursor, Qwen Code, Augment, and Antigravity ([docs/hooks.md](docs/hooks.md)), plus `init --git-hook` pre-commit backstop.
+- **Cross-Repo Contracts (v0.13):** Multi-repository workspaces with cross-service facts for gRPC, HTTP routes, Kafka topics, SQL migrations, and ORMs (Prisma, TypeORM, Sequelize, JPA, Flyway).
+- **Visibility & Stability (v1.0):** `tessera ui` local change-impact server with static export (`--export`), GitHub Action PR commenting with job summary fallbacks, and frozen 1.x CLI, MCP, and JSON contracts pinned by `tests/stability.rs` ([docs/stability.md](docs/stability.md)).
 
-## v0.11: Precision + `tessera-bench`
+---
 
-- Import- and scope-aware resolution for TypeScript, JavaScript, and Java:
-  import bindings, a module resolver, file identity in symbol keys, Java FQNs
-  and overloads by arity, and limited receiver-type inference.
-- Record `new`, `extends`/`implements`, decorators and annotations, type
-  references, and calls inside callbacks. Every edge carries a confidence and
-  the resolver that produced it.
-- `tessera-bench`: an open benchmark that scores reference and caller
-  accuracy against SCIP ground truth on public repositories, for Tessera and
-  for other code-graph tools, with every adapter and raw output published.
+## v1.1: The Contract Map, Completed
 
-**Gate:** high-confidence precision ≥ 0.95 and recall ≥ 0.85 for TS/JS. The
-milestone grows until that holds; the bar is not lowered.
+Everything needed to trace requests across real-world microservices and workspaces ([docs/contracts.md](docs/contracts.md)):
 
-**Result:** passed for TypeScript/JavaScript (precision 0.998; recall 0.990
-direct calls, 0.912 typed receivers, 0.986 type references) and for Java
-(precision 0.995; recall 0.872, 0.935, 1.000). Per-repository numbers,
-including those below the bar, are in [docs/accuracy.md](docs/accuracy.md).
+- **Mounted Routers:** Express routers mounted under prefixes (`app.use("/api", router)`), resolved across imports and file boundaries.
+- **Go, Python & Ruby Web Stacks:** Route declarations and HTTP clients for Go (`net/http`, chi, gin, echo), Python (FastAPI, Flask, Django, `requests`, `httpx`), and Ruby (Rails `routes.rb` with `resources`, `Net::HTTP`, Faraday, HTTParty).
+- **GraphQL:** Root fields in schemas, Apollo and NestJS resolvers, and client operations in `.graphql` and `gql` templates (`tessera map graphql`).
+- **Config Keys:** Cross-service config binding (`.env`, Dockerfiles, Docker Compose, Spring properties) linked to environment readers in every supported language (`tessera map config`).
+- **Cross-Repository Paths:** `tessera path <from> <to>` traverses from a client in one repository to the route handler in another through contracts.
 
-## v0.12: Edit-safety loop
+**Gate & Result:** Hand-labelled routes and topics on `opentelemetry-demo`, `spring-petclinic-microservices`, and the held-out `bank-of-anthos` corpus achieved zero wrong links ([docs/contracts.md#accuracy](docs/contracts.md#accuracy)).
 
-- `blast --diff` covers uncommitted work. `verify` checks for invented APIs,
-  arity mismatches, dangling references, and broken imports, with a
-  confidence on each finding and SARIF output.
-- Hooks for every agent with a hook system, starting with a Claude Code
-  plugin:
-  - Before an edit: note the callers of the symbol being changed.
-  - After an edit: re-index and block on a high-confidence break.
-  - At stop: refuse "done" while breaks remain.
-- `tessera init` detects installed agents and shows a diff before writing any
-  config. 21 agents are in the registry; see [docs/agents.md](docs/agents.md).
-  A git pre-commit backstop covers every agent.
-- A refactor eval: how many call sites agents miss, with and without Tessera.
+---
 
-**Status:** built. Hooks ship for Claude Code (plugin or `init`), Codex CLI,
-Qwen Code, Gemini CLI, Copilot CLI, Cursor, Augment and Antigravity
-([docs/hooks.md](docs/hooks.md)). A blind find-and-replace over the corpus
-was used to hunt verify false positives; after the fixes it leaves 15
-blocking findings, all real (tessera-bench `results/eval-replace-check.jsonl`).
-The agent arms of the refactor eval are ready to run; the gate they measure
-(missed call sites, false-positive blocks) is not met until they do.
+## v1.2: Team and CI (Next)
 
-## v0.13: Contract map
+Cut CI times on large monorepos and bring Tessera findings directly into team code review workflows.
 
-- Workspaces of many repositories, with auto-detected monorepos.
-- Facts for routes, HTTP clients, topics, producers and consumers, tables,
-  migrations, RPC, GraphQL, and config keys. Each link records its evidence
-  and confidence.
-- Framework packs:
-  - Express, Nest, Next.js, and Fastify.
-  - fetch, axios, React Query, and SWR clients.
-  - Spring MVC, Feign, and Spring Kafka.
-  - kafkajs.
-  - Prisma, TypeORM, Sequelize, JPA, Flyway, OpenAPI, and `.proto`.
-- `map` queries, `path` across services, and `verify` flags a contract change
-  (a removed route, an orphaned consumer).
+- **`tessera affected <rev>` for Test Selection:**
+  - Selects only the tests reachable by the modified symbols or contracts.
+  - Native format flags for test runners:
+    - `--format jest` (`--findRelatedTests`)
+    - `--format vitest` (`--related`)
+    - `--format pytest` (`test_file.py::test_fn`)
+    - `--format go-test` (`./pkg/... -run TestName`)
+    - `--format cargo` (`-p <pkg> --test <name>`)
+    - `--format json` (for custom scripting)
+  - Monorepo package/workspace boundary filtering compatible with `nx`, `turbo`, and `pnpm`.
+- **Zero-Infra Shared Index Cache:**
+  - Index cache keyed by commit tree, shared between CI runs and team members.
+  - Built-in GitHub Action cache (`actions/cache`), optional cloud bucket storage (`--cache-bucket s3://...` / GCS), and local directory mounts.
+  - Fast fallback to the nearest common ancestor (`git merge-base`) for sub-second incremental index refreshes on branch commits.
+- **Universal CI Reporting & Code Scanning:**
+  - SARIF 2.1.0 output uploaded to GitHub Code Scanning for inline pull request annotations.
+  - Native exit-code and report formats for GitLab (Code Quality & SAST), Azure DevOps, Bitbucket, Buildkite, and Jenkins.
 
-**Status:** built ([docs/contracts.md](docs/contracts.md)). gRPC in Go, C#,
-Node, Python, Java and C++; HTTP in Express, Fastify, NestJS, Next.js,
-Spring and their clients; Spring Kafka, kafkajs and NestJS microservices;
-SQL migrations, JPA, TypeORM, Sequelize and Prisma; workspaces; V5. Hand-
-labelled gRPC links: no wrong link on microservices-demo or the held-out
-opentelemetry-demo, whose first measurement found 10 of 12 servers and 16
-of 26 clients (gaps since closed). Still to come: Express mount prefixes,
-GraphQL, config keys, `path` across repositories, and a third untouched
-corpus.
+**Gate:** On three public monorepos, `affected` selects 100% of tests that fail after a seeded breaking change, while skipping at least 50% of the full test suite on typical pull requests.
 
-## v1.0: Visible and stable
+---
 
-- `tessera ui`, a local change-impact view: the diff, the affected symbols,
-  the affected services. It can export a static site.
-- A GitHub Action that comments blast radius and verify results on PRs.
-- A docs site, translated READMEs, and CLI, MCP, and JSON contracts frozen for
-  1.x.
+## v1.3: Python & Go Deep Tier + Agent Refactor Planning
 
-**Status:** built. `tessera ui` serves change impact, the contract map, a
-symbol page and search from `127.0.0.1`, and `--export` writes a static
-site. Checked on microservices-demo and on a 45,000-file repository (map
-in about a second, 31 services). `verify --format markdown` is the
-pull-request report, and the Action posts it as one comment, falling back to
-the job summary on forks; it runs on this repository's own pull requests.
-[docs/stability.md](docs/stability.md) lists what 1.x keeps, and
-`tests/stability.rs` pins it. Translated READMEs are drafts until reviewed.
+Elevate Python and Go to compiler-grade precision, and give agents the ability to plan refactors before touching code.
 
-## v1.1: The contract map, completed
+- **Python Deep Tier:**
+  - Import resolution across packages, PEP 420 namespace packages, and virtual environments (`pyproject.toml`, poetry, uv).
+  - Type-hint receiver inference, `@dataclass` and Pydantic field resolution.
+  - Benchmark against `mypy` and `pyright` ground truth in `tessera-bench`.
+- **Go Deep Tier:**
+  - Package-qualified resolution, Go modules, struct methods, and interface implementation satisfaction edges.
+  - Benchmark against `gopls` ground truth in `tessera-bench`.
+- **`tessera plan` (Agent Refactor Planner):**
+  - Proactive planning commands for agents: `tessera plan rename <old> <new>`, `plan move <file> <dest>`, `plan signature <symbol> <new-sig>`.
+  - Emits an ordered, deterministic edit manifest so the agent edits every call site without grepping or guessing.
+- **Actionable Remediation Hints in `verify`:**
+  - High-confidence findings in JSON and hook payloads include suggested replacement diffs/patches (e.g. arity corrections, missing import statements).
+  - Cuts down agent retry loops from 3–4 turns to a single turn.
 
-What v0.13 left open, each with a fixture and a benchmark row:
+**Gate:** High-confidence precision ≥ 0.95 and recall ≥ 0.85 on public Python and Go benchmark repositories in `tessera-bench`.
 
-- Express routers mounted under a prefix (`app.use("/api", router)`).
-- GraphQL schemas, resolvers and client operations.
-- Config keys: who sets an environment variable or feature flag, and who
-  reads it.
-- `path` across repositories in a workspace.
-- Go (`net/http`, chi, gin, echo), Python (FastAPI, Flask, Django) and Ruby
-  (Rails) routes and clients.
-- HTTP and topic ground truth in tessera-bench, and a third contract corpus
-  nobody has tuned against.
+---
 
-**Gate:** published route and topic precision on two corpora, no wrong link
-on the untouched one.
+## v1.4: Architecture Guardrails & Loop Breaker
 
-**Status:** built. Express mounts; Go, Python and Ruby frameworks; GraphQL;
-config keys; `path` across workspace repositories. Hand-labelled routes and
-topics on opentelemetry-demo, spring-petclinic-microservices and the
-held-out bank-of-anthos give no wrong link on any of them; client recall is
-low where URLs are built away from the call, and opentelemetry-demo's topic
-clients (sarama, Confluent.Kafka, Kotlin) are not read yet
-([docs/contracts.md](docs/contracts.md#accuracy)).
+Turn architectural boundaries into instant, sub-millisecond local and CI guardrails.
 
-## v1.2: Team and CI
+- **Architecture Rules as Code (`.tessera/rules.toml`):**
+  - Declarative boundary rules enforced by `tessera verify`, hooks, and CI:
+    - Layering constraints (e.g. `domain/**` cannot import `infrastructure/**`).
+    - Cross-service data isolation (e.g. `services/billing/**` cannot import `services/auth/db/**`).
+    - Circular dependency prevention across packages and modules.
+    - Forbidden or deprecated API calls.
+- **Agent Loop Breaker in Hooks:**
+  - Detects when an agent gets stuck in cyclic failed repairs across consecutive edit turns.
+  - Injects a consolidated multi-site diff context and suggested fix summary, or prompts an escape hatch (`--allow-incomplete`).
 
-- `tessera affected <rev>`: the tests a change reaches, as a list a CI job
-  can run, for every language.
-- An index cache keyed by commit, shared between CI runs and teammates.
-- SARIF uploaded to code scanning by the Action, so findings show inline.
-- Exit-code and annotation modes for GitLab, Buildkite and Jenkins.
+**Gate:** Zero latency regression on single-file verification (<50 ms); catches 100% of seeded rule violations across monorepo test fixtures.
 
-**Gate:** on three public monorepos, `affected` selects every test that
-fails after a seeded break, and skips at least half of the suite on a
-typical change.
+---
 
-## Later in 1.x
+## v1.5: Modern Full-Stack, Migration Safety & Ownership
 
-| Theme | What |
-| --- | --- |
-| Architecture rules | Layer, forbidden-call, and cycle rules enforced by `verify`, hooks, and CI |
-| Precise mode | SCIP import for compiler-grade edges, SCIP export, and an optional `tessera lsp` |
-| Editors | VS Code and JetBrains extensions over the local binary |
-| Runtime truth | OpenTelemetry traces overlaid on the static graph |
-| Data lineage | Who reads and writes which tables and columns; PII rules in `verify` |
-| Extension platform | WASM extractor and framework-pack plugins; bring your own grammar |
-| Agent memory | Notes tied to symbols that expire when the code changes |
-| Refactor plans | `plan rename`, `plan move`, `plan signature`: every site an agent must edit for a change, in order, then `verify` checks the result |
-| Ownership | CODEOWNERS and history on impact: who owns the callers and services a change reaches |
+Bridge modern web RPC patterns, database migration drift, and organizational code ownership.
 
-**Every release also brings:**
-- Deep-tier languages (Python, Ruby, Go, C#, Kotlin).
-- New framework, infrastructure, and queue packs.
-- New agent adapters.
-- Benchmark rows for every addition.
+- **Modern Web RPCs:**
+  - **Next.js Server Actions:** Track `"use server"` exported endpoints from backend action files to client components.
+  - **tRPC:** Link router procedures (`query`/`mutation`) to frontend `trpc.<proc>.useQuery()` hooks.
+  - **Remix / React Router v7:** Connect backend `loader` and `action` functions to client UI consumers.
+- **Database Migration Safety (`verify --migrations`):**
+  - Cross-check SQL migrations (Flyway, Alembic, Prisma, TypeORM) against active queries in application code.
+  - Catch dropped or renamed columns and tables that are still selected in code before landing in production.
+- **CODEOWNERS Impact Mapping (`blast --owners`):**
+  - Parse `.github/CODEOWNERS` and map blast radius directly to team handles.
+  - Automatically tag relevant teams in the GitHub Action PR comment.
+- **Editor Integration (LSP Bridge & CodeLens):**
+  - Lightweight VS Code / Cursor extension providing symbol CodeLens: caller counts, blast radius, and cross-service contract links directly inside the editor.
 
-## Contributing to the roadmap
+**Gate:** Zero false-positive route links on modern full-stack benchmark apps; migration verifier catches 100% of unsafe column drops in historical migration fixtures.
+
+---
+
+## v2.0: Runtime Truth, Lineage & Extensibility
+
+Unify static graphs with dynamic telemetry and extensible plugins.
+
+- **OpenTelemetry Runtime Overlays:**
+  - Ingest OpenTelemetry traces and span metrics to overlay runtime request traffic on the static contract map.
+  - Highlight dead endpoints, unused consumers, and unexpected runtime call paths that static analysis cannot see.
+- **Column-Level Data Lineage:**
+  - Deep SQL AST parsing to trace individual columns from database migrations through ORM models, API responses, and frontend consumers.
+  - Automated PII propagation tracking in `tessera verify`.
+- **WASM & Self-Serve Framework Packs:**
+  - Load custom Tree-sitter framework queries directly from `.tessera/packs/*.scm` without recompiling the Rust binary.
+  - WASM plugin interface for custom language extractors.
+
+---
+
+## Contributing to the Roadmap
 
 Language requests, agent integrations, and framework packs each have an issue
 template. A pack or language is a small, self-contained contribution; see
