@@ -173,14 +173,17 @@ jobs:
           mkdir -p dist
           gh release download "$TAG" --dir dist --pattern 'tessera-*'
       - run: node npm/scripts/build-platform-packages.js "${TAG#v}" dist
+      # Trusted publishing (OIDC, configured per package on npmjs.com) needs
+      # npm 11.5.1 or later; it needs no token and no 2FA code. NPM_TOKEN, if
+      # set, is the fallback for packages without a trusted publisher.
+      - run: npm install -g npm@11
       - name: Publish platform packages, then the launcher
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
           set -euo pipefail
           if [ -z "${NODE_AUTH_TOKEN:-}" ]; then
-            echo "::notice::NPM_TOKEN not set; skipping npm."
-            exit 0
+            echo "::notice::NPM_TOKEN not set; publishing through trusted publishing only."
           fi
           version="${TAG#v}"
           dist_tag=latest
