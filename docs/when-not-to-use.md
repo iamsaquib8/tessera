@@ -30,10 +30,15 @@ definition; on the benchmark that is right 99.7% of the time. Medium, low, and n
   every read.
 - Dynamic dispatch, reflection, string-based calls, dependency injection by
   name, and code generated at build time.
-- Contracts outside the frameworks `map` reads. Routes, gRPC, topics and
-  tables are linked across services ([contracts](contracts.md)), but not yet
-  Express routers mounted under a prefix, GraphQL, config keys, Go, Python
-  or Ruby web frameworks, or `path` across repositories.
+- Contracts outside what `map` reads. HTTP routes, gRPC methods, GraphQL
+  fields, topics, tables and config keys are linked across services and
+  repositories ([contracts](contracts.md)), with these gaps the ground truth
+  measured: clients whose URL is built away from the call (from app config,
+  `str.format`, or a request wrapper), servers in Rust actix, PHP Slim,
+  Sinatra, Phoenix and ASP.NET minimal APIs, Kafka clients for Go sarama,
+  C# Confluent.Kafka and Kotlin, and Next.js Server Actions and tRPC.
+- Field-level changes. V5 catches a removed route, RPC or topic that a
+  client still uses, not a removed field or a changed type inside one.
 
 ## Use the compiler too
 

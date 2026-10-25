@@ -267,16 +267,16 @@ pins them ([docs/stability.md](docs/stability.md)).
 
 ## Roadmap
 
-| Version | Milestone |
+| Version | Focus |
 | --- | --- |
-| v0.10 | Foundation: index any repo, zero setup, MCP for every agent |
-| v0.11 | Precision: import- and type-aware resolution, public accuracy benchmark |
-| v0.12 | Edit-safety loop: hooks that check every edit, `tessera init`, Claude Code plugin, git backstop |
-| v0.13 | Contract map: routes, gRPC, topics, and tables across services and repositories |
-| v1.0 | Change-impact UI, GitHub Action, stable contracts |
-| v1.1 | Contract map completed: mounted routers, GraphQL, config keys, `path` across repositories, Go/Python/Ruby web frameworks (this release) |
-| v1.2 | Team and CI: test selection, a shared index cache, findings in code scanning |
-| v1.x | Architecture rules, SCIP precise mode, editor extensions, runtime traces, data lineage, refactor plans |
+| v1.0 | Change-impact UI, GitHub Action, stable contracts (released) |
+| v1.1 | Contract map completed: mounted routers, GraphQL, config keys, `path` across repositories, Go/Python/Ruby frameworks |
+| v1.2 | Team and CI: explainable test selection, a shared index cache, code scanning and other review formats, a baseline, a merge gate |
+| v1.3 | Field-level contract breaks joined to the consumers they break, spec drift, payload compatibility |
+| v1.4 | Inside the agent loop: graph context in the agent's own tools, `tessera lsp`, `tessera plan`, the refactor eval published |
+| v1.5 | Deep tier for Python and Go; precise mode with SCIP import and export |
+| v1.6 | Architecture rules across languages and contracts, drafted from your code |
+| v1.7 | Migration checks joined with code usage, CODEOWNERS impact, Backstage export, Server Actions and tRPC |
 
 See [ROADMAP.md](ROADMAP.md) for each theme and what proves it done.
 
