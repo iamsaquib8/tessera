@@ -17,6 +17,7 @@
   <a href="https://crates.io/crates/tessera-codegraph"><img src="https://img.shields.io/crates/v/tessera-codegraph.svg" alt="crates.io"></a>
   <a href="https://www.npmjs.com/package/tessera-codegraph"><img src="https://img.shields.io/npm/v/tessera-codegraph.svg" alt="npm"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-blue.svg" alt="License: Apache-2.0"></a>
+  <a href="https://iamsaquib8.github.io/tessera/"><img src="https://img.shields.io/badge/docs-iamsaquib8.github.io%2Ftessera-2b4bdb.svg" alt="Docs"></a>
 </p>
 
 <p align="center">
@@ -63,18 +64,28 @@ machine.
 
 ## Quick start
 
-Inside any repository:
+Install the binary (macOS, Linux, Windows; checksum-verified, from the
+GitHub release):
 
 ```sh
-npx tessera-codegraph blast <symbol>
+curl -fsSL https://raw.githubusercontent.com/iamsaquib8/tessera/main/install.sh | sh
+```
+
+Then, inside any repository:
+
+```sh
+tessera blast <symbol>
 ```
 
 There is no setup step: the first query builds the index in `.tessera/`, and
 every later query refreshes only what changed. Then wire it into your agents:
 
 ```sh
-npx tessera-codegraph init
+tessera init
 ```
+
+Once the npm package is published, the same commands run without installing
+anything: `npx tessera-codegraph blast <symbol>` and `npx tessera-codegraph init`.
 
 `init` finds the agents you use (Claude Code, Codex, Gemini CLI, Cursor,
 Copilot and 16 more), shows the diff of every config change, and asks before
@@ -87,19 +98,27 @@ instead:
 /plugin install tessera@tessera
 ```
 
-Manual setup for every agent is in [docs/integrations.md](docs/integrations.md).
+Manual setup for every agent is in [docs/integrations.md](docs/integrations.md),
+and everything else is on the [docs site](https://iamsaquib8.github.io/tessera/).
 
 <details>
 <summary>Other ways to install</summary>
 
 ```sh
-npm i -g tessera-codegraph                       # Node 18+, prebuilt binary, no install scripts
-brew install iamsaquib8/tessera/tessera          # macOS and Linux
-curl -fsSL https://raw.githubusercontent.com/iamsaquib8/tessera/main/install.sh | sh   # checksum-verified
 cargo binstall tessera-codegraph                 # prebuilt via cargo-binstall
 cargo install tessera-codegraph                  # from source, Rust 1.90+
+```
+
+Coming with the next release (the pipeline is built; publishing is pending):
+
+```sh
+npm i -g tessera-codegraph                       # Node 18+, prebuilt binary, no install scripts
+brew install iamsaquib8/tessera/tessera          # macOS and Linux
 docker run --rm -v "$PWD:/work" ghcr.io/iamsaquib8/tessera status
 ```
+
+Prebuilt binaries for every platform are also on the
+[releases page](https://github.com/iamsaquib8/tessera/releases).
 
 </details>
 
