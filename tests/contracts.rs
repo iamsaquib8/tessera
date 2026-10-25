@@ -403,3 +403,35 @@ fn a_route_is_served_by_its_handler_not_the_next_function() {
         "{handlers:?}"
     );
 }
+
+#[test]
+fn go_routes_link_to_their_clients() {
+    let temp = fixture("contracts-go");
+    let got = summary(&map(temp.path(), &["route"]));
+    for expected in [
+        "GET /users/{}: users/main.go -> frontend/client.go",
+        "ANY /health: users/main.go -> frontend/client.go",
+        "ANY /metrics: users/main.go -> ",
+        "ANY /legacy/users: users/main.go -> ",
+        "GET /carts/{}: users/main.go -> ",
+        "POST /api/carts: users/main.go -> frontend/client.go",
+        "GET /orders/{}: orders/main.go -> frontend/client.go",
+        "POST /api/orders: orders/main.go -> ",
+        "GET /items/{}: orders/main.go -> ",
+        "DELETE /admin/items/{}: orders/main.go -> frontend/client.go",
+    ] {
+        assert!(got.contains(expected), "missing {expected:?} in {got:#?}");
+    }
+    assert_eq!(got.len(), 10, "{got:#?}");
+}
+
+#[test]
+fn go_route_handlers_are_the_functions_they_name() {
+    let temp = fixture("contracts-go");
+    let result = map(temp.path(), &["route", "/users/{}"]);
+    let users = &result["contracts"][0];
+    assert_eq!(users["name"], "GET /users/{}", "{result}");
+    assert_eq!(users["providers"][0]["symbol"], "getUser", "{result}");
+    assert_eq!(users["consumers"][0]["symbol"], "user", "{result}");
+    assert_eq!(users["consumers"][0]["confidence"], "low", "{result}");
+}
