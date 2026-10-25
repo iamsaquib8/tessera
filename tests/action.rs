@@ -329,3 +329,35 @@ fn the_action_outputs_the_tests_to_run_and_when_to_run_them_all() {
     let out = affected_step(bare.path(), &head);
     assert!(out["full-run"].contains("no test files"), "{out:?}");
 }
+
+fn run_step(id: &str, env: &[(&str, &str)]) -> std::process::Output {
+    let (script, _) = step(id);
+    let mut command = std::process::Command::new("bash");
+    command.args(["-e", "-c", &script]);
+    for (key, value) in env {
+        command.env(key, value);
+    }
+    command.output().unwrap()
+}
+
+#[test]
+fn an_unknown_fail_on_stops_the_job_instead_of_never_failing() {
+    for value in ["never", "blocking", "new"] {
+        let run = run_step("inputs", &[("FAIL_ON", value)]);
+        assert!(run.status.success(), "{value}");
+    }
+    let run = run_step("inputs", &[("FAIL_ON", "blockng")]);
+    assert!(!run.status.success());
+    assert!(String::from_utf8_lossy(&run.stderr).contains("blockng"));
+    // The input check runs before anything else.
+    let action = repo_file("action/action.yml");
+    let docs = yaml_rust2::YamlLoader::load_from_str(&action).unwrap();
+    assert_eq!(docs[0]["runs"]["steps"][0]["id"].as_str(), Some("inputs"));
+
+    // `new` is `blocking`: baselined and accepted findings never block.
+    let (_, gate_if) = step("gate");
+    assert_eq!(
+        gate_if.as_deref(),
+        Some("inputs.fail-on != 'never' && steps.report.outputs.blocking == 'true'")
+    );
+}

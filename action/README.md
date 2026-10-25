@@ -26,7 +26,7 @@ jobs:
 | `version` | the release this action ships with | Release to install, or `latest` |
 | `binary` | | A tessera binary to use instead (for example one built in the job) |
 | `base` | the pull request's base | Revision to compare against |
-| `fail-on` | `never` | `blocking` fails the job on high-confidence problems |
+| `fail-on` | `never` | `blocking` fails the job on high-confidence problems; `new` is the same, since baselined and accepted findings never block. Any other value stops the job |
 | `comment` | `true` | Post or update the comment; forks fall back to the job summary |
 | `token` | `github.token` | Token used to comment |
 | `upload-sarif` | `false` | `true` also uploads the findings to code scanning (needs `security-events: write`) |

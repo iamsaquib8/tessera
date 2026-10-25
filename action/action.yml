@@ -16,7 +16,7 @@ inputs:
     description: Revision to compare against. Defaults to the pull request's base commit.
     default: ""
   fail-on:
-    description: "`blocking` fails the job when the report has blocking problems; `never` only comments."
+    description: "`blocking` fails the job when the report has blocking problems; `never` only comments. `new` is the same as `blocking`: findings in the baseline or accepted with a reason never block."
     default: never
   comment:
     description: Post (or update) one comment on the pull request. Falls back to the job summary when the token cannot write.
@@ -45,6 +45,21 @@ outputs:
 runs:
   using: composite
   steps:
+    - name: Check inputs
+      id: inputs
+      shell: bash
+      env:
+        FAIL_ON: ${{ inputs.fail-on }}
+      run: |
+        # A misspelt value would otherwise never fail the job.
+        case "$FAIL_ON" in
+          never | blocking | new) ;;
+          *)
+            echo "fail-on is \`$FAIL_ON\`; use never, blocking or new." >&2
+            exit 1
+            ;;
+        esac
+
     - name: Install Tessera
       if: inputs.binary == ''
       shell: bash
@@ -212,7 +227,8 @@ runs:
       run: cat "$RUNNER_TEMP/tessera-report.md" >> "$GITHUB_STEP_SUMMARY"
 
     - name: Fail on blocking problems
-      if: inputs.fail-on == 'blocking' && steps.report.outputs.blocking == 'true'
+      id: gate
+      if: inputs.fail-on != 'never' && steps.report.outputs.blocking == 'true'
       shell: bash
       run: |
         echo "Tessera found blocking problems; see the comment or the job summary." >&2
