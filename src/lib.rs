@@ -31,6 +31,7 @@
 //! The library binary `tessera` is also built from this crate; see the README.
 
 pub mod agents;
+pub mod cache;
 pub mod config;
 pub mod db;
 pub mod extract;

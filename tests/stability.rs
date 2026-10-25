@@ -134,13 +134,12 @@ fn help(args: &[&str]) -> String {
     String::from_utf8(output.stdout).unwrap()
 }
 
-#[test]
-fn commands_and_flags() {
-    let top = help(&[]);
-    let commands: Vec<String> = top
-        .split("Commands:")
-        .nth(1)
-        .unwrap()
+/// The subcommands a help text lists.
+fn subcommands(help: &str) -> Vec<String> {
+    let Some(listed) = help.split("Commands:").nth(1) else {
+        return Vec::new();
+    };
+    listed
         .split("Options:")
         .next()
         .unwrap()
@@ -148,35 +147,52 @@ fn commands_and_flags() {
         .filter_map(|line| line.split_whitespace().next())
         .filter(|name| *name != "help")
         .map(str::to_string)
-        .collect();
-    let mut pins = Pins::new();
-    for command in &commands {
-        let mut flags = BTreeSet::new();
-        for line in help(&[command]).lines() {
-            let line = line.trim_start();
-            if !line.starts_with('-') {
-                continue;
-            }
-            let names: Vec<&str> = line
-                .split_whitespace()
-                .take_while(|word| word.starts_with('-'))
-                .map(|word| word.trim_end_matches(','))
-                .collect();
-            let Some(flag) = names.iter().find(|name| name.starts_with("--")) else {
-                continue;
-            };
-            flags.extend(names.iter().map(|name| name.to_string()));
-            if let Some(values) = line
-                .split("[possible values: ")
-                .nth(1)
-                .and_then(|rest| rest.split(']').next())
-            {
-                for value in values.split(", ") {
-                    flags.insert(format!("{flag}={value}"));
-                }
+        .collect()
+}
+
+/// Every flag a help text lists, and each value of an enum flag.
+fn flags(help: &str) -> BTreeSet<String> {
+    let mut flags = BTreeSet::new();
+    for line in help.lines() {
+        let line = line.trim_start();
+        if !line.starts_with('-') {
+            continue;
+        }
+        let names: Vec<&str> = line
+            .split_whitespace()
+            .take_while(|word| word.starts_with('-'))
+            .map(|word| word.trim_end_matches(','))
+            .collect();
+        let Some(flag) = names.iter().find(|name| name.starts_with("--")) else {
+            continue;
+        };
+        flags.extend(names.iter().map(|name| name.to_string()));
+        if let Some(values) = line
+            .split("[possible values: ")
+            .nth(1)
+            .and_then(|rest| rest.split(']').next())
+        {
+            for value in values.split(", ") {
+                flags.insert(format!("{flag}={value}"));
             }
         }
-        pins.insert(command.clone(), flags);
+    }
+    flags
+}
+
+#[test]
+fn commands_and_flags() {
+    let mut pins = Pins::new();
+    for command in subcommands(&help(&[])) {
+        let text = help(&[&command]);
+        pins.insert(command.clone(), flags(&text));
+        // Nested commands (`cache export`) are pinned as `cache export`.
+        for nested in subcommands(&text) {
+            pins.insert(
+                format!("{command} {nested}"),
+                flags(&help(&[&command, &nested])),
+            );
+        }
     }
     check("cli", pins);
 }
@@ -221,6 +237,18 @@ fn json_fields() {
     let http = repo("contracts-http");
     pin("map", json(http.path(), &["map"]));
     pin("map service", json(http.path(), &["map", "service"]));
+
+    let caches = TempDir::new().unwrap();
+    let cache = caches.path().join("index.cache");
+    let cache = cache.to_str().unwrap();
+    pin(
+        "cache export",
+        json(http.path(), &["cache", "export", cache]),
+    );
+    pin(
+        "cache import",
+        json(http.path(), &["cache", "import", cache]),
+    );
     check("json", pins);
 }
 

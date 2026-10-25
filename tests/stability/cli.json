@@ -13,6 +13,33 @@
     "-h",
     "-q"
   ],
+  "cache": [
+    "--db",
+    "--help",
+    "--json",
+    "--quiet",
+    "--root",
+    "-h",
+    "-q"
+  ],
+  "cache export": [
+    "--db",
+    "--help",
+    "--json",
+    "--quiet",
+    "--root",
+    "-h",
+    "-q"
+  ],
+  "cache import": [
+    "--db",
+    "--help",
+    "--json",
+    "--quiet",
+    "--root",
+    "-h",
+    "-q"
+  ],
   "completions": [
     "--db",
     "--help",

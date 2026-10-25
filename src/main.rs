@@ -7,6 +7,7 @@ use anyhow::{anyhow, Result};
 use clap::{CommandFactory, Parser, Subcommand, ValueEnum};
 use serde::Serialize;
 
+use tessera_codegraph::cache;
 use tessera_codegraph::db;
 use tessera_codegraph::fresh::{self, Freshness, Refresh};
 use tessera_codegraph::hook::{self, HookOptions};
@@ -264,10 +265,29 @@ enum Commands {
         #[arg(long, value_name = "ADDR")]
         http: Option<String>,
     },
+    /// Save the index to one file, or load it from one, for a CI cache.
+    Cache {
+        #[command(subcommand)]
+        action: CacheAction,
+    },
     /// Print a shell completion script.
     Completions {
         #[arg(value_enum)]
         shell: clap_complete::Shell,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum CacheAction {
+    /// Write the index, brought up to date, to FILE: a compressed snapshot that another checkout can import.
+    Export {
+        /// Cache file to write.
+        file: PathBuf,
+    },
+    /// Install the index from FILE, then re-index the files that differ from the working tree. Exits 3 when the cache is from another Tessera version, configuration or repository.
+    Import {
+        /// Cache file to read.
+        file: PathBuf,
     },
 }
 
@@ -710,6 +730,21 @@ fn run() -> Result<u8> {
         Commands::Mcp { http } => match http {
             Some(addr) => mcp::serve_http(ws, &addr)?,
             None => mcp::serve_stdio(ws)?,
+        },
+        Commands::Cache { action } => match action {
+            CacheAction::Export { file } => out.print(&cache::export(&ws, &file)?)?,
+            CacheAction::Import { file } => match cache::import(&ws, &file) {
+                Ok(report) => out.print(&report)?,
+                Err(error) => {
+                    if out.json {
+                        out.print_json(&serde_json::json!({
+                            "imported": false,
+                            "reason": format!("{error:#}"),
+                        }))?;
+                    }
+                    return Err(error);
+                }
+            },
         },
         Commands::Completions { shell } => {
             clap_complete::generate(

@@ -66,6 +66,26 @@
     "target",
     "tests"
   ],
+  "cache export": [
+    "bytes",
+    "exported",
+    "files",
+    "root",
+    "schema",
+    "tree",
+    "version"
+  ],
+  "cache import": [
+    "file",
+    "files",
+    "imported",
+    "reindexed",
+    "removed",
+    "schema",
+    "tree",
+    "unchanged",
+    "version"
+  ],
   "context": [
     "body",
     "callers",
