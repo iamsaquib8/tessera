@@ -5,6 +5,80 @@ it runs in any CI. The [GitHub Action](../action/README.md) wires up
 everything on this page for GitHub; the sections below are for other CI
 systems, or for doing it by hand.
 
+## Test selection: `tessera affected`
+
+`tessera affected [REV]` lists the test files a change reaches, each with
+the reason it runs. The change is the working tree against `REV` (default
+`HEAD`), or the staged files with `--staged`.
+
+```text
+$ tessera affected origin/main
+1 of 40 test files selected (39 skipped) for changes since origin/main
+test/repo.test.ts
+$ tessera affected origin/main --explain test/repo.test.ts
+test/repo.test.ts is selected (reached): describe("loadUser").it("returns the user") → loadUser → UserRepo
+```
+
+A test is selected when:
+
+| Kind | Why |
+| --- | --- |
+| `changed` | The change adds or edits the test file |
+| `always` | It is listed in the file given to `--failed` (tests that failed in an earlier run, one path per line) |
+| `reached` | It reaches changed code through calls, references, imports, or a contract the [contract map](contracts.md) links (a client in one service, the handler in another) within `--depth` steps (default 6). Removing or renaming a function selects the tests of its callers; deleting a file selects the tests of its importers; changing a contract definition (`.proto`, OpenAPI, GraphQL schema, SQL, configuration) selects the tests on both sides of each contract it declares |
+| `full-run` | The whole suite runs; the reason says why |
+
+The whole suite runs, with the reason, when the change touches:
+
+- a lockfile (`package-lock.json`, `pnpm-lock.yaml`, `yarn.lock`,
+  `Cargo.lock`, `go.sum`, `poetry.lock`, `uv.lock` and others);
+- a build file (`package.json`, `Cargo.toml`, `go.mod`, `pom.xml`,
+  `build.gradle`, `pyproject.toml`, `requirements*.txt` and others);
+- test runner, toolchain or CI configuration (`jest.config.*`,
+  `vitest.config.*`, `conftest.py`, `pytest.ini`, `.nvmrc`,
+  `rust-toolchain.toml`, `.github/workflows/` and others);
+- a fixture or snapshot directory (`fixtures/`, `testdata/`,
+  `__snapshots__/` and others), since tests read those through no call
+  the index sees.
+
+It also runs when a commit in the range has a `Tessera-No-Skip:` trailer,
+or when the change reaches more symbols than Tessera narrows (the
+selection would be most of the suite anyway). When the index holds no
+test files, the output says so and selects nothing: run everything then.
+
+`--format` prints a runner's command line instead of the list:
+
+| Format | Prints |
+| --- | --- |
+| `list` (default) | One test path per line |
+| `json` | Every test with its kind, reason, package and the chain from the test to the changed code |
+| `jest`, `vitest` | `jest --runTestsByPath …`, `vitest run …` |
+| `pytest` | `pytest file::Class::test …`, narrowed to the test functions that reach the change |
+| `go-test` | `go test <packages> -run '^(TestA\|TestB)$'` per module |
+| `cargo` | `cargo test -p <package> --test <target>` |
+
+`--package <name>` restricts the selection to one workspace package (npm,
+pnpm or yarn workspaces, Cargo, Go or Maven modules). The summary goes to
+stderr, so stdout is only the list or the command. The exit code is 0
+whatever is selected; 2 for a usage error (no git repository, an unknown
+revision).
+
+The [GitHub Action](../action/README.md#running-only-the-tests-the-change-reaches)
+exposes the selection as outputs (`tests`, `tests-file`, `full-run`). In
+another CI:
+
+```sh
+# Run everything when Tessera says so, knows no tests, or fails.
+if ! tessera affected "$BASE" > tests.txt 2> affected.log ||
+   grep -q -e '^full run: ' -e '^0 of 0 test files' affected.log; then
+  npx jest
+elif [ -s tests.txt ]; then
+  xargs npx jest --runTestsByPath < tests.txt
+fi
+```
+
+Over MCP the same selection is the `affected` tool.
+
 ## Index cache
 
 Building the index is the slow part of a CI run; checking a change

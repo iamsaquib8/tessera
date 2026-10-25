@@ -14,6 +14,7 @@ const pages = {
   "first-five-minutes.md": "Look before you edit, check after you edit, with real output.",
   "integrations.md": "Connect Tessera to 24 coding agents.",
   "hooks.md": "Checks before and after every edit, and at the end of each turn.",
+  "ci.md": "Test selection, index cache, review formats and baselines in any CI.",
   "contracts.md": "Routes, gRPC, GraphQL, topics, tables and config keys across services.",
   "configuration.md": "What gets indexed, and how to change it.",
   "troubleshooting.md": "Fixes for the problems status reports.",

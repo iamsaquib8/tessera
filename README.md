@@ -121,7 +121,9 @@ docker run --rm -v "$PWD:/work" ghcr.io/iamsaquib8/tessera status
 | `tessera search <pattern>` / `--unused` | Which symbols match? Which functions are never called? |
 | `tessera path <from> <to>` | Does A reach B, and how? Follows routes and gRPC calls across services |
 | `tessera map <route\|rpc\|graphql\|topic\|table\|config\|service> [query]` | Which services call this endpoint, method, field, or topic? Who sets the config key this code reads? |
+| `tessera affected <rev>` | Which tests does this change reach, and why? |
 | `tessera ui` | What does my working tree change, and how do the services connect? In the browser |
+| `tessera stats` | What did the edit hooks catch, and did the agent fix it? |
 | `tessera status` | Is the index fresh? Is anything misconfigured? |
 | `tessera init` | Wire Tessera into the agents this project uses |
 
@@ -170,13 +172,24 @@ jobs:
 ```
 
 One comment per pull request, updated on every push: problems to fix,
-contracts the change touches, callers of the changed code, and tests to
-run. On forks it writes the job summary instead. The same report is
-`tessera verify --diff <base> --format markdown` for any other CI.
-[action/README.md](action/README.md) lists the inputs, including
-`upload-sarif` for code scanning. GitLab Code Quality, Azure DevOps,
-Bitbucket Code Insights and NDJSON formats, and an index cache for any
-CI (`tessera cache export` / `import`), are in [docs/ci.md](docs/ci.md).
+contracts the change touches, callers of the changed code, tests to run,
+and changed functions no test reaches. On forks it writes the job summary
+instead. The same report is `tessera verify --diff <base> --format
+markdown` for any other CI. [action/README.md](action/README.md) lists the
+inputs, including `upload-sarif` for code scanning.
+
+- **Run only the tests the change reaches.** `tessera affected origin/main`
+  lists them, each with the chain from the test to the changed code;
+  lockfile, build-file and CI-configuration changes run everything and
+  say why. `--format jest | vitest | pytest | go-test | cargo` prints the
+  command. The Action exposes the list as an output.
+- **Adopt it on a codebase with known problems.** `tessera baseline`
+  records today's findings so only new ones block; `tessera accept
+  <fingerprint> --reason …` records an intended break, with an optional
+  expiry.
+- **Any CI, any review tool.** GitLab Code Quality, Azure DevOps,
+  Bitbucket Code Insights, SARIF and NDJSON formats, and an index cache
+  file (`tessera cache export` / `import`). See [docs/ci.md](docs/ci.md).
 
 ## Works with every agent and every model
 

@@ -262,7 +262,11 @@ fn affected_step(root: &std::path::Path, base: &str) -> std::collections::BTreeM
     let mut values = outputs(&fs::read_to_string(&output).unwrap());
     let file = values.get("tests-file").cloned().unwrap_or_default();
     let listed = fs::read_to_string(&file).unwrap_or_else(|_| panic!("tests-file {file}"));
-    assert_eq!(listed.trim_end(), values["tests"], "the file and the output agree");
+    assert_eq!(
+        listed.trim_end(),
+        values["tests"],
+        "the file and the output agree"
+    );
     values.remove("tests-file");
     values
 }
@@ -271,7 +275,10 @@ fn affected_step(root: &std::path::Path, base: &str) -> std::collections::BTreeM
 fn the_action_outputs_the_tests_to_run_and_when_to_run_them_all() {
     let action = repo_file("action/action.yml");
     for output in ["tests:", "tests-file:", "full-run:"] {
-        assert!(action.contains(&format!("\n  {output}\n")), "output {output}");
+        assert!(
+            action.contains(&format!("\n  {output}\n")),
+            "output {output}"
+        );
     }
 
     let temp = tempfile::TempDir::new().unwrap();
@@ -292,7 +299,11 @@ fn the_action_outputs_the_tests_to_run_and_when_to_run_them_all() {
 
     let file = root.join("src/users/repo.ts");
     let source = fs::read_to_string(&file).unwrap();
-    fs::write(&file, source.replacen("findById(id: string)", "findOne(id: string)", 1)).unwrap();
+    fs::write(
+        &file,
+        source.replacen("findById(id: string)", "findOne(id: string)", 1),
+    )
+    .unwrap();
     let out = affected_step(root, &base);
     assert_eq!(out["tests"], "test/repo.test.ts", "{out:?}");
     assert_eq!(out["full-run"], "", "{out:?}");

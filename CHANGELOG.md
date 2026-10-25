@@ -2,6 +2,61 @@
 
 All notable changes to Tessera are documented here.
 
+## 1.2.0 - 2026-10-26
+
+Team and CI: run only the tests a change reaches, share the index between
+CI runs, report in every review tool's format, and adopt Tessera on a
+codebase with known problems without turning the merge gate off.
+
+### Added
+
+- **`tessera affected [REV]`**: the test files a change reaches, each with
+  the reason it runs (the chain from the test to the changed code, through
+  calls, imports and contracts between services). `--explain <test>` says
+  why a test is or is not selected; `--failed <file>` always runs earlier
+  failures; `--package` restricts to one npm, pnpm, yarn, Cargo, Go or
+  Maven package. Lockfile, build-file, CI-configuration and fixture
+  changes, or a `Tessera-No-Skip` commit trailer, select the whole suite
+  and say why. `--format jest | vitest | pytest | go-test | cargo` prints
+  the runner's command line. Also an MCP tool, `affected`
+  ([docs/ci.md](docs/ci.md#test-selection-tessera-affected)).
+- **Index cache files**: `tessera cache export <file>` and `tessera cache
+  import <file>` move the index between CI runs as one compressed file. A
+  cache from another Tessera version, configuration or repository is
+  refused; after an import, only the files that differ are re-indexed.
+- **Review formats**: `verify --format gitlab` (Code Quality), `azure`
+  (logging commands), `bitbucket` (Code Insights report and annotations)
+  and `ndjson` (one finding per line). SARIF results carry
+  `partialFingerprints`.
+- **Finding fingerprints**: every finding has a `fingerprint` that stays
+  the same when lines move, used by the baseline, accepted breaks, SARIF
+  and GitLab.
+- **Baseline**: `tessera baseline` records today's blocking findings in
+  `.tessera/baseline.json`; `verify`, the hooks and CI then treat them as
+  advisory, so only new problems block. `--prune` drops entries that no
+  longer fire; `verify --no-baseline` shows everything.
+- **Accepted breaks**: `tessera accept <fingerprint> --reason … [--expires
+  YYYY-MM-DD] [--by …]` records an intended break in
+  `.tessera/accepted.toml`. The finding stays visible with its reason and
+  blocks again after it expires. An unreadable baseline or accepted file
+  waives nothing and says so.
+- **`tessera stats`**: what the edit hooks did over the last `--days N`
+  (default 30): edits checked, notes, reports, blocks, problems the agent
+  fixed or was released from, and hook latency. Read from a local log
+  that holds no paths, names or code.
+- **Pull-request report**: tests to run in a block to copy, and "test
+  gaps", the changed functions no test reaches.
+- **GitHub Action**: caches the index keyed on the merge base's tree;
+  `upload-sarif: true` sends findings to code scanning; outputs `tests`,
+  `tests-file` and `full-run` for a test step that runs only what the
+  change reaches.
+
+### Changed
+
+- `.tessera/.gitignore` now lets `config.toml`, `baseline.json` and
+  `accepted.toml` be committed; an older Tessera-written `.gitignore` is
+  upgraded in place.
+
 ## 1.1.0 - 2026-10-25
 
 The contract map, completed: more frameworks, two new contract kinds, and
