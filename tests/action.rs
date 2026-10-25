@@ -223,3 +223,98 @@ fn the_action_uploads_sarif_to_code_scanning_when_asked() {
     assert!(readme.contains("`upload-sarif`"));
     assert!(readme.contains("security-events: write"));
 }
+
+/// `GITHUB_OUTPUT` as the runner reads it: `name=value` lines and
+/// `name<<DELIMITER` blocks.
+fn outputs(text: &str) -> std::collections::BTreeMap<String, String> {
+    let mut out = std::collections::BTreeMap::new();
+    let mut lines = text.lines();
+    while let Some(line) = lines.next() {
+        if let Some((name, delimiter)) = line.split_once("<<") {
+            let value: Vec<&str> = lines.by_ref().take_while(|l| *l != delimiter).collect();
+            out.insert(name.to_string(), value.join("\n"));
+        } else if let Some((name, value)) = line.split_once('=') {
+            out.insert(name.to_string(), value.to_string());
+        }
+    }
+    out
+}
+
+/// Runs the `affected` step against `base` in `root`.
+fn affected_step(root: &std::path::Path, base: &str) -> std::collections::BTreeMap<String, String> {
+    let (script, _) = step("affected");
+    let runner_temp = tempfile::TempDir::new().unwrap();
+    let output = runner_temp.path().join("outputs");
+    let run = std::process::Command::new("bash")
+        .args(["-e", "-c", &script])
+        .current_dir(root)
+        .env("BASE", base)
+        .env("TESSERA", env!("CARGO_BIN_EXE_tessera"))
+        .env("RUNNER_TEMP", runner_temp.path())
+        .env("GITHUB_OUTPUT", &output)
+        .output()
+        .unwrap();
+    assert!(
+        run.status.success(),
+        "{}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    let mut values = outputs(&fs::read_to_string(&output).unwrap());
+    let file = values.get("tests-file").cloned().unwrap_or_default();
+    let listed = fs::read_to_string(&file).unwrap_or_else(|_| panic!("tests-file {file}"));
+    assert_eq!(listed.trim_end(), values["tests"], "the file and the output agree");
+    values.remove("tests-file");
+    values
+}
+
+#[test]
+fn the_action_outputs_the_tests_to_run_and_when_to_run_them_all() {
+    let action = repo_file("action/action.yml");
+    for output in ["tests:", "tests-file:", "full-run:"] {
+        assert!(action.contains(&format!("\n  {output}\n")), "output {output}");
+    }
+
+    let temp = tempfile::TempDir::new().unwrap();
+    let root = temp.path();
+    let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/typescript");
+    let copy = std::process::Command::new("cp")
+        .arg("-R")
+        .arg(fixture.join("."))
+        .arg(root)
+        .status()
+        .unwrap();
+    assert!(copy.success());
+    fs::write(root.join("package-lock.json"), "{}\n").unwrap();
+    git(root, &["init", "-q"]);
+    git(root, &["add", "."]);
+    git(root, &["commit", "-q", "-m", "base"]);
+    let base = git(root, &["rev-parse", "HEAD"]);
+
+    let file = root.join("src/users/repo.ts");
+    let source = fs::read_to_string(&file).unwrap();
+    fs::write(&file, source.replacen("findById(id: string)", "findOne(id: string)", 1)).unwrap();
+    let out = affected_step(root, &base);
+    assert_eq!(out["tests"], "test/repo.test.ts", "{out:?}");
+    assert_eq!(out["full-run"], "", "{out:?}");
+
+    fs::write(root.join("package-lock.json"), "{ \"v\": 2 }\n").unwrap();
+    let out = affected_step(root, &base);
+    assert!(out["full-run"].contains("lockfile"), "{out:?}");
+    assert!(out["tests"].contains("test/repo.test.ts"), "{out:?}");
+
+    // Tessera failing never skips tests: it says to run them all.
+    let out = affected_step(root, "no-such-revision");
+    assert_eq!(out["tests"], "", "{out:?}");
+    assert!(out["full-run"].contains("could not select"), "{out:?}");
+
+    // Nor does a repository whose tests Tessera does not know.
+    let bare = tempfile::TempDir::new().unwrap();
+    fs::write(bare.path().join("a.ts"), "export const a = 1;\n").unwrap();
+    git(bare.path(), &["init", "-q"]);
+    git(bare.path(), &["add", "."]);
+    git(bare.path(), &["commit", "-q", "-m", "base"]);
+    let head = git(bare.path(), &["rev-parse", "HEAD"]);
+    fs::write(bare.path().join("a.ts"), "export const a = 2;\n").unwrap();
+    let out = affected_step(bare.path(), &head);
+    assert!(out["full-run"].contains("no test files"), "{out:?}");
+}

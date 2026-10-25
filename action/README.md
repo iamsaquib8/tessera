@@ -31,7 +31,45 @@ jobs:
 | `token` | `github.token` | Token used to comment |
 | `upload-sarif` | `false` | `true` also uploads the findings to code scanning (needs `security-events: write`) |
 
-Output `blocking` is `true` when the report has blocking problems.
+Findings in the baseline (`tessera baseline`) or accepted with a reason
+(`tessera accept`) never count as blocking, so `fail-on: blocking` fails
+only on problems the pull request introduced.
+
+| Output | |
+| --- | --- |
+| `blocking` | `true` when the report has blocking problems |
+| `tests` | The test files the change reaches, one path per line (`tessera affected`) |
+| `tests-file` | A file holding the same list |
+| `full-run` | Why every test should run, when one should; empty otherwise |
+
+## Running only the tests the change reaches
+
+`full-run` is set when a lockfile, build file or CI configuration
+changed, a commit carries a `Tessera-No-Skip` trailer, the index holds no
+test files, or Tessera could not select. Run everything then; otherwise
+run the list:
+
+```yaml
+      - uses: iamsaquib8/tessera/action@v1
+        id: tessera
+      - name: Tests
+        env:
+          FULL_RUN: ${{ steps.tessera.outputs.full-run }}
+          TESTS: ${{ steps.tessera.outputs.tests-file }}
+        run: |
+          if [ -n "$FULL_RUN" ]; then
+            echo "Running every test: $FULL_RUN"
+            npx jest
+          elif [ -s "$TESTS" ]; then
+            xargs npx jest --runTestsByPath < "$TESTS"
+          else
+            echo "The change reaches no test."
+          fi
+```
+
+`tessera affected --format jest | vitest | pytest | go-test | cargo`
+prints the runner's command line instead; [docs/ci.md](../docs/ci.md)
+has the details and the safety rails.
 
 ## Code scanning
 

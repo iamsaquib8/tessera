@@ -32,6 +32,15 @@ outputs:
   blocking:
     description: "`true` when the report has blocking problems."
     value: ${{ steps.report.outputs.blocking }}
+  tests:
+    description: The test files the change reaches, one path per line (`tessera affected`).
+    value: ${{ steps.affected.outputs.tests }}
+  tests-file:
+    description: A file holding the same list, for `xargs` or a runner's own file option.
+    value: ${{ steps.affected.outputs.tests-file }}
+  full-run:
+    description: Why every test should run, when one should (a lockfile, build file or CI configuration changed, a `Tessera-No-Skip` trailer, no test files in the index, or Tessera could not select); empty otherwise.
+    value: ${{ steps.affected.outputs.full-run }}
 
 runs:
   using: composite
@@ -101,6 +110,39 @@ runs:
           exit "$code"
         fi
         if [ "$code" -eq 1 ]; then echo "blocking=true" >> "$GITHUB_OUTPUT"; else echo "blocking=false" >> "$GITHUB_OUTPUT"; fi
+
+    - name: Tests to run
+      id: affected
+      shell: bash
+      env:
+        BASE: ${{ inputs.base || github.event.pull_request.base.sha }}
+        TESSERA: ${{ inputs.binary || 'tessera' }}
+      run: |
+        tests="$RUNNER_TEMP/tessera-tests.txt"
+        log="$RUNNER_TEMP/tessera-affected.log"
+        set +e
+        "$TESSERA" affected "$BASE" > "$tests" 2> "$log"
+        code=$?
+        set -e
+        cat "$log" >&2
+        # A selection Tessera cannot vouch for never skips a test.
+        if [ "$code" -ne 0 ]; then
+          : > "$tests"
+          full="Tessera could not select tests (exit $code); run them all"
+        else
+          full=$(sed -n 's/^full run: //p' "$log" | head -n1)
+          if [ -z "$full" ] && grep -q '^0 of 0 test files selected' "$log"; then
+            full="no test files in the index; run them all"
+          fi
+        fi
+        delimiter="tessera_$(od -An -N8 -tx1 /dev/urandom | tr -d ' \n')"
+        {
+          echo "tests-file=$tests"
+          echo "full-run=$full"
+          echo "tests<<$delimiter"
+          cat "$tests"
+          echo "$delimiter"
+        } >> "$GITHUB_OUTPUT"
 
     - name: Export the index
       id: export
