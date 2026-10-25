@@ -33,6 +33,7 @@ const TS: &[Language] = &[Language::TypeScript, Language::Tsx];
 const JAVA: &[Language] = &[Language::Java];
 const GO: &[Language] = &[Language::Go];
 const PYTHON: &[Language] = &[Language::Python];
+const RUBY: &[Language] = &[Language::Ruby];
 
 pub const PACKS: &[Pack] = &[
     Pack {
@@ -130,6 +131,18 @@ pub const PACKS: &[Pack] = &[
         languages: PYTHON,
         gate: r"\b(requests|httpx|client|session|http|sess|\w+_client|\w+_session)\.(get|post|put|patch|delete|head|options|request)\(|\b(Client|AsyncClient|Session)\(\)\.",
         query: include_str!("../../packs/python-http-clients.scm"),
+    },
+    Pack {
+        id: "rails",
+        languages: RUBY,
+        gate: r"\broutes\.draw\b",
+        query: include_str!("../../packs/rails.scm"),
+    },
+    Pack {
+        id: "ruby-http-clients",
+        languages: RUBY,
+        gate: r"Net::HTTP|\b(Faraday|HTTParty|RestClient|HTTPX)\.|\b(conn|connection|faraday|http|client|\w+_client|\w+_conn|\w+_connection)\.(get|post|put|patch|delete|head|options)\b",
+        query: include_str!("../../packs/ruby-http-clients.scm"),
     },
 ];
 

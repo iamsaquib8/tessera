@@ -466,3 +466,43 @@ fn python_route_handlers_are_the_decorated_functions() {
     assert_eq!(orders["consumers"][0]["symbol"], "get_order", "{result}");
     assert_eq!(orders["consumers"][0]["confidence"], "medium", "{result}");
 }
+
+#[test]
+fn rails_routes_link_to_ruby_clients() {
+    let temp = fixture("contracts-ruby");
+    let got = summary(&map(temp.path(), &["route"]));
+    let routes = "shop/config/routes.rb";
+    let client = "client/lib/shop_client.rb";
+    for expected in [
+        format!("GET /: {routes} -> "),
+        format!("GET /users/{{}}: {routes} -> {client}"),
+        format!("POST /users: {routes} -> {client}"),
+        format!("GET /orders: {routes} -> "),
+        format!("POST /orders: {routes} -> "),
+        format!("GET /orders/{{}}: {routes} -> {client}"),
+        format!("GET /orders/{{}}/edit: {routes} -> "),
+        format!("PATCH /orders/{{}}: {routes} -> "),
+        format!("PUT /orders/{{}}: {routes} -> "),
+        format!("DELETE /orders/{{}}: {routes} -> "),
+        format!("GET /reviews: {routes} -> {client}"),
+        format!("GET /reviews/{{}}: {routes} -> "),
+        format!("GET /api/status: {routes} -> "),
+        format!("GET /api/carts: {routes} -> "),
+        format!("POST /api/carts: {routes} -> "),
+        format!("GET /api/carts/{{}}: {routes} -> "),
+        format!("DELETE /api/carts/{{}}: {routes} -> {client}"),
+    ] {
+        assert!(got.contains(&expected), "missing {expected:?} in {got:#?}");
+    }
+    assert!(
+        got.iter().any(|c| c.starts_with("GET /orders/new: ")),
+        "{got:#?}"
+    );
+    assert!(
+        !got.iter().any(|c| c.contains("/api/carts/new")
+            || c.contains("/api/carts/{}/edit")
+            || c.contains("/reviews/new")),
+        "{got:#?}"
+    );
+    assert_eq!(got.len(), 20, "{got:#?}");
+}
