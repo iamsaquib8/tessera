@@ -488,3 +488,209 @@ fn graphql_schemas_resolvers_and_operations_link_by_root_field() {
     );
     assert_eq!(user["definitions"][0]["line"], 8, "{user}");
 }
+
+/// Repositories, each its own git repository, listed in one workspace.
+fn workspace(repos: &[(&str, &[(&str, &str)])]) -> TempDir {
+    let temp = tempfile::Builder::new()
+        .prefix("tessera-xpath-")
+        .tempdir()
+        .unwrap();
+    let mut listed = String::new();
+    for (repo, files) in repos {
+        let dir = temp.path().join(repo);
+        for (path, text) in *files {
+            let file = dir.join(path);
+            std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+            std::fs::write(file, text).unwrap();
+        }
+        assert!(std::process::Command::new("git")
+            .args(["init", "-q"])
+            .current_dir(&dir)
+            .status()
+            .unwrap()
+            .success());
+        listed.push_str(&format!("[[repo]]\npath = \"{repo}\"\n\n"));
+    }
+    std::fs::write(temp.path().join("tessera.workspace.toml"), listed).unwrap();
+    temp
+}
+
+fn http_workspace() -> TempDir {
+    let temp = tempfile::Builder::new()
+        .prefix("tessera-xpath-http-")
+        .tempdir()
+        .unwrap();
+    let http = fixture_dir("contracts-http");
+    for repo in ["api", "web"] {
+        let dir = temp.path().join(repo);
+        copy_dir(&http.join(repo), &dir);
+        assert!(std::process::Command::new("git")
+            .args(["init", "-q"])
+            .current_dir(&dir)
+            .status()
+            .unwrap()
+            .success());
+    }
+    std::fs::write(
+        temp.path().join("tessera.workspace.toml"),
+        "[[repo]]\npath = \"api\"\n\n[[repo]]\npath = \"web\"\n",
+    )
+    .unwrap();
+    temp
+}
+
+/// `name path:line via ...` for each hop of a path result.
+fn hops(result: &Value) -> Vec<String> {
+    result["path"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|n| {
+            format!(
+                "{} {}:{}{}",
+                n["qualified_name"].as_str().unwrap(),
+                n["path"].as_str().unwrap(),
+                n["line"],
+                n["via"]
+                    .as_str()
+                    .map(|v| format!(" via {v}"))
+                    .unwrap_or_default()
+            )
+        })
+        .collect()
+}
+
+#[test]
+fn path_follows_a_contract_into_another_repository() {
+    let temp = http_workspace();
+    for (from, to) in [("loadUser", "getUser"), ("web/loadUser", "api/getUser")] {
+        let result = tessera(&temp.path().join("web"), &["path", from, to]);
+        assert_eq!(result["found"], true, "{from} -> {to}: {result}");
+        assert_eq!(
+            hops(&result),
+            vec![
+                "loadUser web/src/client.ts:7",
+                "getUser api/src/app.js:10 via route GET /api/users/{}",
+            ],
+            "{result}"
+        );
+    }
+    // From the other repository, too.
+    let result = tessera(&temp.path().join("api"), &["path", "saveUser", "create"]);
+    assert_eq!(result["found"], true, "{result}");
+    assert_eq!(
+        hops(&result).pop().unwrap(),
+        "create api/src/app.js:14",
+        "{result}"
+    );
+
+    let output = Command::cargo_bin("tessera")
+        .unwrap()
+        .current_dir(temp.path().join("web"))
+        .args(["--quiet", "path", "loadUser", "getUser"])
+        .output()
+        .unwrap();
+    let text = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        text.contains("getUser @ api/src/app.js:10 (via route GET /api/users/{})"),
+        "{text}"
+    );
+}
+
+#[test]
+fn path_across_repositories_terminates_on_a_cycle() {
+    let temp = workspace(&[
+        (
+            "ping",
+            &[
+                ("package.json", "{ \"name\": \"ping\" }\n"),
+                (
+                    "src/server.js",
+                    "const express = require('express');\nconst app = express();\n\
+                     app.get('/ping', ping);\n\n\
+                     function ping(req, res) {\n  return askPong();\n}\n\n\
+                     function askPong() {\n  return fetch('/pong');\n}\n\n\
+                     function lonely() {\n  return 1;\n}\n",
+                ),
+            ],
+        ),
+        (
+            "pong",
+            &[
+                ("package.json", "{ \"name\": \"pong\" }\n"),
+                (
+                    "src/server.js",
+                    "const express = require('express');\nconst app = express();\n\
+                     app.get('/pong', pong);\n\n\
+                     function pong(req, res) {\n  return askPing();\n}\n\n\
+                     function askPing() {\n  return fetch('/ping');\n}\n",
+                ),
+            ],
+        ),
+    ]);
+    let root = temp.path().join("ping");
+    let result = tessera(&root, &["path", "ping", "askPing"]);
+    assert_eq!(result["found"], true, "{result}");
+    assert_eq!(
+        hops(&result),
+        vec![
+            "ping ping/src/server.js:5",
+            "askPong ping/src/server.js:9",
+            "pong pong/src/server.js:5 via route GET /pong",
+            "askPing pong/src/server.js:9",
+        ],
+        "{result}"
+    );
+    // ping -> pong -> ping ... never reaches `lonely`; the search still ends.
+    let result = tessera(&root, &["path", "ping", "lonely", "--depth", "12"]);
+    assert_eq!(result["found"], false, "{result}");
+    let result = tessera(&root, &["path", "pong/pong", "ping/ping"]);
+    assert_eq!(result["found"], true, "{result}");
+    assert_eq!(
+        hops(&result).last().unwrap(),
+        "ping ping/src/server.js:5 via route GET /ping",
+        "{result}"
+    );
+}
+
+#[test]
+fn path_in_a_workspace_reports_unknown_symbols_as_before() {
+    let temp = http_workspace();
+    let web = temp.path().join("web");
+    let result = tessera(&web, &["path", "noSuchThing", "getUser"]);
+    assert_eq!(result["found"], false, "{result}");
+    assert_eq!(result["path"].as_array().unwrap().len(), 0, "{result}");
+    // A repository prefix names only that repository's symbols.
+    let result = tessera(&web, &["path", "loadUser", "web/getUser"]);
+    assert_eq!(result["found"], false, "{result}");
+    let output = Command::cargo_bin("tessera")
+        .unwrap()
+        .current_dir(&web)
+        .args(["--quiet", "path", "noSuchThing", "getUser"])
+        .output()
+        .unwrap();
+    let text = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        text.contains("No call path from noSuchThing to getUser"),
+        "{text}"
+    );
+}
+
+#[test]
+fn path_in_one_repository_names_the_contract_it_crosses() {
+    let temp = fixture("contracts-grpc");
+    let result = tessera(
+        temp.path(),
+        &[
+            "path",
+            "frontendServer.currencies",
+            "getSupportedCurrencies",
+        ],
+    );
+    let path = result["path"].as_array().unwrap();
+    assert!(path[0].get("via").is_none(), "{result}");
+    assert_eq!(
+        path[1]["via"], "rpc CurrencyService/GetSupportedCurrencies",
+        "{result}"
+    );
+}

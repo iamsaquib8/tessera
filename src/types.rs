@@ -1102,6 +1102,10 @@ pub struct PathNode {
     pub kind: String,
     pub path: String,
     pub line: usize,
+    /// The contract this hop crosses (`route GET /api/users/{}`), when the
+    /// previous symbol reaches this one through a contract, not a call.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub via: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1133,10 +1137,15 @@ impl Display for ConnectResult {
         )?;
         for (i, node) in self.path.iter().enumerate() {
             let arrow = if i == 0 { "  " } else { "  ↳ " };
+            let via = node
+                .via
+                .as_ref()
+                .map(|v| format!(" (via {v})"))
+                .unwrap_or_default();
             writeln!(
                 f,
-                "{}{} @ {}:{}",
-                arrow, node.qualified_name, node.path, node.line
+                "{}{} @ {}:{}{}",
+                arrow, node.qualified_name, node.path, node.line, via
             )?;
         }
         Ok(())

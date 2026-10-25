@@ -58,10 +58,24 @@ Generated code (protobuf stubs and anything marked generated) is skipped.
 
 - `tessera path <from> <to>` follows contracts as call edges, so a path can
   run from a client through a gRPC method into the handler of another
-  service, even when the two share no name.
+  service, even when the two share no name. A hop reached through a
+  contract names it (`via` in JSON).
 - A `tessera.workspace.toml` at or above a repository lists repositories
   mapped together; `map`, run from any of them, combines their contracts.
   Each repository keeps its own index, built on demand.
+- In a workspace, `path` crosses repositories too: it follows each
+  repository's call graph, and a client in one repository whose contract
+  another repository serves leads into that repository's handler. `from`
+  and `to` may name a symbol in any of them; prefix one with its
+  repository (`web/loadUser`) to pick it. Paths in the result carry the
+  repository, and each symbol is visited once, so calls that cycle
+  between repositories still end.
+
+  ```text
+  Call path loadUser → getUser (1 hops)
+    loadUser @ web/src/client.ts:7
+    ↳ getUser @ api/src/app.js:10 (via route GET /api/users/{})
+  ```
 
   ```toml
   [[repo]]
@@ -109,7 +123,6 @@ but it is no longer held out.
   followed yet, so their routes miss clients that include the prefix.
 - Go, Python and Ruby HTTP frameworks, GraphQL, and queues other than the
   ones above come in later packs.
-- `path` follows contracts within one repository; `map` covers workspaces.
 
 ## Adding a framework
 

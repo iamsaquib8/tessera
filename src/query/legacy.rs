@@ -10,10 +10,10 @@ use strsim::jaro_winkler;
 use crate::db;
 use crate::output::MatchKind;
 use crate::types::{
-    ConnectResult, DefinitionResult, DiffChangedSymbol, DiffImpactResult, DiffImpactedSymbol,
-    ExportResult, ImportRecord, ImportsResult, KindCount, LanguageCount, OutlineResult, PathNode,
-    QueryMeta, SearchHit, SearchOptions, SearchResult, Sibling, SiblingsResult, SignatureLine,
-    SignatureResult, StatsResult, SymbolRecord, SymbolSuggestion, TopFanout, ValidateResult,
+    DefinitionResult, DiffChangedSymbol, DiffImpactResult, DiffImpactedSymbol, ExportResult,
+    ImportRecord, ImportsResult, KindCount, LanguageCount, OutlineResult, QueryMeta, SearchHit,
+    SearchOptions, SearchResult, Sibling, SiblingsResult, SignatureLine, SignatureResult,
+    StatsResult, SymbolRecord, SymbolSuggestion, TopFanout, ValidateResult,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -618,116 +618,6 @@ pub fn search_conn(
     })
 }
 
-pub fn connect_conn(
-    conn: &Connection,
-    from: &str,
-    to: &str,
-    max_depth: usize,
-) -> Result<ConnectResult> {
-    let max_depth = max_depth.clamp(1, 12);
-
-    let to_node = |s: &SymbolRecord| PathNode {
-        qualified_name: s.qualified_name.clone(),
-        kind: s.kind.clone(),
-        path: s.path.clone(),
-        line: s.start_line,
-    };
-
-    let starts = exact_symbols(conn, from, 25)?;
-    let targets = exact_symbols(conn, to, 50)?;
-    if starts.is_empty() || targets.is_empty() {
-        return Ok(ConnectResult {
-            from: from.to_string(),
-            to: to.to_string(),
-            found: false,
-            path: Vec::new(),
-            meta: meta(40),
-        });
-    }
-    let target_ids: HashSet<i64> = targets.iter().map(|s| s.id).collect();
-
-    // Trivial: `from` already resolves to a target symbol.
-    if let Some(s) = starts.iter().find(|s| target_ids.contains(&s.id)) {
-        return Ok(ConnectResult {
-            from: from.to_string(),
-            to: to.to_string(),
-            found: true,
-            path: vec![to_node(s)],
-            meta: meta(40),
-        });
-    }
-
-    // BFS forward over the call graph (caller -> callee), tracking a predecessor
-    // by symbol id so the path can be reconstructed. `prev` absent ⇒ a start node.
-    const MAX_VISITED: usize = 5000;
-    let mut visited: HashSet<i64> = HashSet::new();
-    let mut prev: HashMap<i64, i64> = HashMap::new();
-    let mut record: HashMap<i64, SymbolRecord> = HashMap::new();
-    let mut queue: VecDeque<(SymbolRecord, usize)> = VecDeque::new();
-
-    for s in &starts {
-        if visited.insert(s.id) {
-            record.insert(s.id, s.clone());
-            queue.push_back((s.clone(), 0));
-        }
-    }
-
-    // Contracts add hops across services: a client to the server's handler.
-    let links = super::map::links(conn)?;
-    let mut hit: Option<i64> = None;
-    'bfs: while let Some((node, depth)) = queue.pop_front() {
-        if depth >= max_depth {
-            continue;
-        }
-        let mut callees = callees_for_symbol(conn, &node, 200)?;
-        for id in links.get(&node.id).into_iter().flatten() {
-            if let Some(target) = super::graph::symbol_by_id(conn, *id)? {
-                callees.push(target);
-            }
-        }
-        for callee in callees {
-            if !visited.insert(callee.id) {
-                continue;
-            }
-            prev.insert(callee.id, node.id);
-            record.insert(callee.id, callee.clone());
-            if target_ids.contains(&callee.id) {
-                hit = Some(callee.id);
-                break 'bfs;
-            }
-            queue.push_back((callee.clone(), depth + 1));
-            if visited.len() >= MAX_VISITED {
-                break 'bfs;
-            }
-        }
-    }
-
-    let mut path_nodes = Vec::new();
-    if let Some(target_id) = hit {
-        let mut chain = vec![target_id];
-        let mut cur = target_id;
-        while let Some(&p) = prev.get(&cur) {
-            chain.push(p);
-            cur = p;
-        }
-        chain.reverse();
-        for id in chain {
-            if let Some(rec) = record.get(&id) {
-                path_nodes.push(to_node(rec));
-            }
-        }
-    }
-
-    let tokens = estimate_tokens(&path_nodes).max(40);
-    Ok(ConnectResult {
-        from: from.to_string(),
-        to: to.to_string(),
-        found: hit.is_some(),
-        path: path_nodes,
-        meta: meta(tokens),
-    })
-}
-
 pub fn export_conn_with_options(conn: &Connection, options: ExportOptions) -> Result<ExportResult> {
     let fmt = if options.format.eq_ignore_ascii_case("dot") {
         "dot"
@@ -883,7 +773,7 @@ pub fn export_conn_with_options(conn: &Connection, options: ExportOptions) -> Re
 /// like `loadUser` would fan out to every `loadUser` across the index and the
 /// forward subgraph would explode across unrelated files — defeating the point
 /// of a precise graph.
-fn callees_for_symbol(
+pub(super) fn callees_for_symbol(
     conn: &Connection,
     caller: &SymbolRecord,
     limit: usize,
@@ -941,7 +831,11 @@ fn resolve_callee(
 /// `LIKE` clause it is case-sensitive — `connect` and `export` need precise
 /// endpoints. (SQLite `LIKE` is case-insensitive by default, which would cross
 /// `FindByID` with `findById`; `=` uses the BINARY collation, which does not.)
-fn exact_symbols(conn: &Connection, symbol: &str, limit: usize) -> Result<Vec<SymbolRecord>> {
+pub(super) fn exact_symbols(
+    conn: &Connection,
+    symbol: &str,
+    limit: usize,
+) -> Result<Vec<SymbolRecord>> {
     let mut stmt = conn.prepare(
         "
         SELECT s.id, s.name, s.qualified_name, s.kind, s.file_id, f.path, f.language,
