@@ -716,3 +716,106 @@ fn config_keys_link_who_sets_them_to_who_reads_them() {
         assert!(!text.contains(secret), "a value leaked: {secret}");
     }
 }
+
+#[test]
+fn go_routes_link_to_their_clients() {
+    let temp = fixture("contracts-go");
+    let got = summary(&map(temp.path(), &["route"]));
+    for expected in [
+        "GET /users/{}: users/main.go -> frontend/client.go",
+        "ANY /health: users/main.go -> frontend/client.go",
+        "ANY /metrics: users/main.go -> ",
+        "ANY /legacy/users: users/main.go -> ",
+        "GET /carts/{}: users/main.go -> ",
+        "POST /api/carts: users/main.go -> frontend/client.go",
+        "GET /orders/{}: orders/main.go -> frontend/client.go",
+        "POST /api/orders: orders/main.go -> ",
+        "GET /items/{}: orders/main.go -> ",
+        "DELETE /admin/items/{}: orders/main.go -> frontend/client.go",
+    ] {
+        assert!(got.contains(expected), "missing {expected:?} in {got:#?}");
+    }
+    assert_eq!(got.len(), 10, "{got:#?}");
+}
+
+#[test]
+fn go_route_handlers_are_the_functions_they_name() {
+    let temp = fixture("contracts-go");
+    let result = map(temp.path(), &["route", "/users/{}"]);
+    let users = &result["contracts"][0];
+    assert_eq!(users["name"], "GET /users/{}", "{result}");
+    assert_eq!(users["providers"][0]["symbol"], "getUser", "{result}");
+    assert_eq!(users["consumers"][0]["symbol"], "user", "{result}");
+    assert_eq!(users["consumers"][0]["confidence"], "low", "{result}");
+}
+
+#[test]
+fn python_routes_link_to_their_clients() {
+    let temp = fixture("contracts-python");
+    let got = summary(&map(temp.path(), &["route"]));
+    for expected in [
+        "GET /users/{}: api/app.py -> client/client.py",
+        "POST /api/orders: api/app.py -> client/client.py",
+        "GET /api/orders/{}: api/app.py -> client/client.py",
+        "POST /carts/{}: web/app.py -> client/client.py",
+        "GET /carts: web/app.py -> ",
+        "GET /items/{}: web/app.py -> ",
+        "DELETE /items/{}: web/app.py -> client/client.py",
+        "ANY /accounts/{}: shop/shop/urls.py -> client/client.py",
+        "ANY /accounts: shop/shop/urls.py -> ",
+    ] {
+        assert!(got.contains(expected), "missing {expected:?} in {got:#?}");
+    }
+    assert_eq!(got.len(), 9, "{got:#?}");
+}
+
+#[test]
+fn python_route_handlers_are_the_decorated_functions() {
+    let temp = fixture("contracts-python");
+    let result = map(temp.path(), &["route", "/api/orders/{}"]);
+    let orders = &result["contracts"][0];
+    assert_eq!(orders["name"], "GET /api/orders/{}", "{result}");
+    assert_eq!(orders["providers"][0]["symbol"], "get_order", "{result}");
+    assert_eq!(orders["consumers"][0]["symbol"], "get_order", "{result}");
+    assert_eq!(orders["consumers"][0]["confidence"], "medium", "{result}");
+}
+
+#[test]
+fn rails_routes_link_to_ruby_clients() {
+    let temp = fixture("contracts-ruby");
+    let got = summary(&map(temp.path(), &["route"]));
+    let routes = "shop/config/routes.rb";
+    let client = "client/lib/shop_client.rb";
+    for expected in [
+        format!("GET /: {routes} -> "),
+        format!("GET /users/{{}}: {routes} -> {client}"),
+        format!("POST /users: {routes} -> {client}"),
+        format!("GET /orders: {routes} -> "),
+        format!("POST /orders: {routes} -> "),
+        format!("GET /orders/{{}}: {routes} -> {client}"),
+        format!("GET /orders/{{}}/edit: {routes} -> "),
+        format!("PATCH /orders/{{}}: {routes} -> "),
+        format!("PUT /orders/{{}}: {routes} -> "),
+        format!("DELETE /orders/{{}}: {routes} -> "),
+        format!("GET /reviews: {routes} -> {client}"),
+        format!("GET /reviews/{{}}: {routes} -> "),
+        format!("GET /api/status: {routes} -> "),
+        format!("GET /api/carts: {routes} -> "),
+        format!("POST /api/carts: {routes} -> "),
+        format!("GET /api/carts/{{}}: {routes} -> "),
+        format!("DELETE /api/carts/{{}}: {routes} -> {client}"),
+    ] {
+        assert!(got.contains(&expected), "missing {expected:?} in {got:#?}");
+    }
+    assert!(
+        got.iter().any(|c| c.starts_with("GET /orders/new: ")),
+        "{got:#?}"
+    );
+    assert!(
+        !got.iter().any(|c| c.contains("/api/carts/new")
+            || c.contains("/api/carts/{}/edit")
+            || c.contains("/reviews/new")),
+        "{got:#?}"
+    );
+    assert_eq!(got.len(), 20, "{got:#?}");
+}
