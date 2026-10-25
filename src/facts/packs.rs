@@ -702,7 +702,7 @@ fn listed_methods(text: Option<&str>) -> Vec<String> {
     };
     inner
         .split(',')
-        .map(http::method)
+        .map(|m| http::method(m.trim()))
         .filter(|m| m != "ANY")
         .collect()
 }

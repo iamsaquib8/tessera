@@ -827,7 +827,7 @@ fn a_spring_mapping_with_several_methods_serves_each() {
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(
         dir.join("FallbackController.java"),
-        "package app;\n\nimport org.springframework.web.bind.annotation.*;\n\n@RestController\npublic class FallbackController {\n    @RequestMapping(value = \"/fallback\", method = {RequestMethod.GET, RequestMethod.POST})\n    public String fallback() { return \"\"; }\n}\n",
+        "package app;\n\nimport org.springframework.web.bind.annotation.*;\n\n@RestController\npublic class FallbackController {\n    @RequestMapping(value = \"/fallback\", method = {\n        RequestMethod.GET, RequestMethod.POST })\n    public String fallback() { return \"\"; }\n}\n",
     )
     .unwrap();
     let got = summary(&map(temp.path(), &["route"]));
