@@ -233,6 +233,23 @@ fn json_fields() {
         "the rename should leave a broken call"
     );
     pin("verify", verify);
+    // Review formats are contracts with other tools: pinned like --json.
+    let report = |format: &str| -> String {
+        let output = tessera(root)
+            .args(["verify", "--changed", "--format", format])
+            .output()
+            .unwrap();
+        String::from_utf8(output.stdout).unwrap()
+    };
+    for format in ["sarif", "gitlab", "bitbucket"] {
+        let value = serde_json::from_str(&report(format)).unwrap();
+        pin(&format!("verify --format {format}"), value);
+    }
+    let lines = report("ndjson")
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    pin("verify --format ndjson", Value::Array(lines));
 
     let http = repo("contracts-http");
     pin("map", json(http.path(), &["map"]));

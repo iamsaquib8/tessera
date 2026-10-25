@@ -2,6 +2,7 @@ mod blast;
 pub mod common;
 mod context;
 mod find;
+mod formats;
 pub mod graph;
 mod legacy;
 pub mod map;

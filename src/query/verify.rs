@@ -1353,10 +1353,12 @@ impl VerifyResult {
             ),
             ("V6", "Test that reaches the changed code"),
         ];
+        let ids = super::formats::occurrence_ids(&self.findings);
         let results: Vec<serde_json::Value> = self
             .findings
             .iter()
-            .map(|f| {
+            .zip(ids)
+            .map(|(f, id)| {
                 let level = if f.blocking {
                     "error"
                 } else if f.id == "V6" {
@@ -1368,9 +1370,12 @@ impl VerifyResult {
                     "ruleId": f.id,
                     "level": level,
                     "message": { "text": f.message },
+                    "partialFingerprints": { "tesseraFingerprint/v1": id },
                     "locations": [{
                         "physicalLocation": {
-                            "artifactLocation": { "uri": f.path.clone().unwrap_or_default() },
+                            "artifactLocation": {
+                                "uri": super::formats::uri(f.path.as_deref().unwrap_or_default())
+                            },
                             "region": { "startLine": f.line.unwrap_or(1) }
                         }
                     }]

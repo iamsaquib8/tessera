@@ -158,7 +158,7 @@ enum Commands {
         /// Check the working tree against this git revision.
         #[arg(long, value_name = "REV", conflicts_with_all = ["symbol", "snippet"])]
         diff: Option<String>,
-        /// Output: human (default), agent (one line per blocking problem), json, sarif, or markdown (a pull-request comment).
+        /// Output: human (default), agent (one line per blocking problem), json, sarif, markdown (a pull-request comment), gitlab (Code Quality), azure (logging commands), bitbucket (Code Insights), or ndjson (one finding per line).
         #[arg(long, value_enum, default_value_t = VerifyFormat::Human)]
         format: VerifyFormat,
     },
@@ -369,6 +369,14 @@ enum VerifyFormat {
     Sarif,
     /// A pull-request comment: findings, callers, contracts, tests to run.
     Markdown,
+    /// GitLab Code Quality report (JSON array).
+    Gitlab,
+    /// Azure DevOps logging commands, one per problem.
+    Azure,
+    /// Bitbucket Code Insights report and annotations (JSON).
+    Bitbucket,
+    /// One finding per line, then a summary line.
+    Ndjson,
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
@@ -621,6 +629,14 @@ fn run() -> Result<u8> {
                 VerifyFormat::Sarif => {
                     println!("{}", serde_json::to_string_pretty(&result.sarif())?)
                 }
+                VerifyFormat::Gitlab => {
+                    println!("{}", serde_json::to_string_pretty(&result.gitlab())?)
+                }
+                VerifyFormat::Azure => print!("{}", result.azure()),
+                VerifyFormat::Bitbucket => {
+                    println!("{}", serde_json::to_string_pretty(&result.bitbucket())?)
+                }
+                VerifyFormat::Ndjson => print!("{}", result.ndjson()),
                 VerifyFormat::Markdown => unreachable!("handled above"),
             }
             if !result.ok {
