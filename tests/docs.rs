@@ -38,7 +38,7 @@ fn concrete(command: &str) -> Option<Vec<String>> {
         .replace("<pattern>", "load*")
         .replace("<from> <to>", "handler formatName")
         .replace("<lang>", "typescript")
-        .replace("<route|rpc|topic|table|service>", "route")
+        .replace("<route|rpc|graphql|topic|table|config|service>", "route")
         .replace(" [query]", "");
     assert!(
         !filled.contains('<'),

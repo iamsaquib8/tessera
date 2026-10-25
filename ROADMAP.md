@@ -15,9 +15,9 @@ demo. Nothing is claimed until it can be reproduced. The full design is in
 | v0.11 | Precision + public accuracy benchmark | done, ships in 1.0.0 |
 | v0.12 | Edit-safety loop (hooks in every agent that supports them) | done, ships in 1.0.0 |
 | v0.13 | Cross-repo contract map | done, ships in 1.0.0 |
-| v1.0 | Change-impact UI, GitHub Action, stable contracts | done, release pending |
-| v1.1 | Contract map, completed: mount prefixes, GraphQL, config keys, `path` across repositories | next |
-| v1.2 | Team & CI: test selection, index cache, code scanning | planned |
+| v1.0 | Change-impact UI, GitHub Action, stable contracts | released (1.0.1) |
+| v1.1 | Contract map, completed: mount prefixes, GraphQL, config keys, `path` across repositories | done |
+| v1.2 | Team & CI: test selection, index cache, code scanning | next |
 | v1.x | Architecture rules, precise mode, editors, runtime truth, data lineage, plugins, agent memory | planned |
 
 ## v0.10: Foundation
@@ -145,6 +145,14 @@ What v0.13 left open, each with a fixture and a benchmark row:
 
 **Gate:** published route and topic precision on two corpora, no wrong link
 on the untouched one.
+
+**Status:** built. Express mounts; Go, Python and Ruby frameworks; GraphQL;
+config keys; `path` across workspace repositories. Hand-labelled routes and
+topics on opentelemetry-demo, spring-petclinic-microservices and the
+held-out bank-of-anthos give no wrong link on any of them; client recall is
+low where URLs are built away from the call, and opentelemetry-demo's topic
+clients (sarama, Confluent.Kafka, Kotlin) are not read yet
+([docs/contracts.md](docs/contracts.md#accuracy)).
 
 ## v1.2: Team and CI
 

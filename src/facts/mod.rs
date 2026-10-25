@@ -3,6 +3,7 @@
 //! at index time; two facts with the same key are a link, joined at query
 //! time, so incremental indexing needs no link pass.
 
+pub mod config;
 pub mod grpc;
 pub mod http;
 pub mod packs;
@@ -44,6 +45,20 @@ pub mod kind {
     pub const ENTITY: &str = "entity";
     /// A SQL statement in code that reads or writes a table.
     pub const SQL: &str = "sql";
+    /// A GraphQL root field in a schema: `type Query { user }`.
+    pub const GQL_DEF: &str = "graphql_def";
+    /// A resolver for a root field.
+    pub const GQL_RESOLVER: &str = "graphql_resolver";
+    /// An operation that selects a root field.
+    pub const GQL_OP: &str = "graphql_op";
+    /// A file that sets a configuration key (`.env`, Compose, Dockerfile,
+    /// Spring properties). The value is never kept.
+    pub const CONFIG_SET: &str = "config_set";
+    /// Code that reads a configuration key.
+    pub const CONFIG_READ: &str = "config_read";
+    /// A router mounted under a path (`app.use("/api", users)`): key
+    /// `mount <local name>`, name the prefix.
+    pub const MOUNT: &str = "mount";
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -114,10 +129,14 @@ pub fn extract(
         (Language::OpenApi, _) => text::openapi(content),
         (Language::Sql, _) => text::sql(content),
         (Language::Prisma, _) => text::prisma(content),
+        (Language::GraphQl, _) => text::graphql(content, 0),
+        (Language::Config, _) => config::file(path, content),
         (_, Some(tree)) => {
             let mut facts = grpc::code(language, content, tree);
             facts.extend(packs::run(language, content, tree));
             facts.extend(text::sql_strings(content));
+            facts.extend(text::graphql_in_code(content));
+            facts.extend(config::reads(content));
             if matches!(
                 language,
                 Language::JavaScript | Language::TypeScript | Language::Tsx

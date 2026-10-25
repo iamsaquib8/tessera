@@ -28,6 +28,10 @@ pub enum Language {
     Sql,
     OpenApi,
     Prisma,
+    GraphQl,
+    /// Files that set configuration: `.env*`, Dockerfiles, Compose files,
+    /// Spring `application*.yml`/`.properties`.
+    Config,
 }
 
 impl Language {
@@ -50,6 +54,7 @@ impl Language {
             "proto" => Some(Self::Proto),
             "sql" => Some(Self::Sql),
             "prisma" => Some(Self::Prisma),
+            "graphql" | "gql" | "graphqls" => Some(Self::GraphQl),
             _ => None,
         }
     }
@@ -57,6 +62,10 @@ impl Language {
     /// The language of a file by name: OpenAPI documents are YAML or JSON
     /// named after the spec (`openapi.yaml`, `petstore-swagger.json`).
     pub fn from_path(path: &std::path::Path) -> Option<Self> {
+        let name = path.file_name()?.to_string_lossy().to_lowercase();
+        if is_config_file(&name) {
+            return Some(Self::Config);
+        }
         let ext = path.extension()?.to_str()?;
         let stem = path.file_stem()?.to_string_lossy().to_lowercase();
         if matches!(ext, "yaml" | "yml" | "json")
@@ -69,7 +78,10 @@ impl Language {
 
     /// Read for contract facts only; no grammar, no symbols.
     pub fn is_data(&self) -> bool {
-        matches!(self, Self::Proto | Self::Sql | Self::OpenApi | Self::Prisma)
+        matches!(
+            self,
+            Self::Proto | Self::Sql | Self::OpenApi | Self::Prisma | Self::GraphQl | Self::Config
+        )
     }
 
     pub fn from_name(name: &str) -> Option<Self> {
@@ -109,8 +121,26 @@ impl Language {
             Self::Sql => "sql",
             Self::OpenApi => "openapi",
             Self::Prisma => "prisma",
+            Self::GraphQl => "graphql",
+            Self::Config => "config",
         }
     }
+}
+
+/// `.env`, `.env.example`, `prod.env`, `Dockerfile`, `api.Dockerfile`,
+/// `docker-compose.yml`, `compose.prod.yaml`, `application-dev.yml`,
+/// `bootstrap.properties`.
+pub fn is_config_file(name: &str) -> bool {
+    let yaml = name.ends_with(".yml") || name.ends_with(".yaml");
+    name == ".env"
+        || name.starts_with(".env.")
+        || name.ends_with(".env")
+        || name == "dockerfile"
+        || name.starts_with("dockerfile.")
+        || name.ends_with(".dockerfile")
+        || (yaml && (name.starts_with("docker-compose") || name.starts_with("compose")))
+        || ((yaml || name.ends_with(".properties"))
+            && (name.starts_with("application") || name.starts_with("bootstrap")))
 }
 
 impl Display for Language {
@@ -1096,6 +1126,10 @@ pub struct PathNode {
     pub kind: String,
     pub path: String,
     pub line: usize,
+    /// The contract this hop crosses (`route GET /api/users/{}`), when the
+    /// previous symbol reaches this one through a contract, not a call.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub via: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1127,10 +1161,15 @@ impl Display for ConnectResult {
         )?;
         for (i, node) in self.path.iter().enumerate() {
             let arrow = if i == 0 { "  " } else { "  ↳ " };
+            let via = node
+                .via
+                .as_ref()
+                .map(|v| format!(" (via {v})"))
+                .unwrap_or_default();
             writeln!(
                 f,
-                "{}{} @ {}:{}",
-                arrow, node.qualified_name, node.path, node.line
+                "{}{} @ {}:{}{}",
+                arrow, node.qualified_name, node.path, node.line, via
             )?;
         }
         Ok(())

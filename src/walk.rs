@@ -124,7 +124,8 @@ pub fn discover(root: &Path, config: &TesseraConfig, opts: &WalkOptions) -> Resu
 
     let mut builder = WalkBuilder::new(root);
     builder
-        .hidden(true)
+        // Hidden entries are skipped below, except committed `.env*` files.
+        .hidden(false)
         .git_ignore(true)
         .git_exclude(true)
         .git_global(true)
@@ -141,7 +142,11 @@ pub fn discover(root: &Path, config: &TesseraConfig, opts: &WalkOptions) -> Resu
             if skip_names.iter().any(|skip| skip == name.as_ref()) {
                 return false;
             }
-            if !entry.file_type().is_some_and(|t| t.is_dir()) {
+            let is_dir = entry.file_type().is_some_and(|t| t.is_dir());
+            if name.starts_with('.') {
+                return !is_dir && is_env_file(&name);
+            }
+            if !is_dir {
                 return true;
             }
             !(ALWAYS_SKIP.contains(&name.as_ref())
@@ -210,6 +215,12 @@ pub fn describe(
     .map_err(|warning| anyhow::anyhow!("{}: {}", warning.path, warning.message))
 }
 
+/// `.env` and `.env.example`: the one kind of hidden file read, for the
+/// configuration keys it sets (never its values).
+fn is_env_file(name: &str) -> bool {
+    name == ".env" || name.starts_with(".env.")
+}
+
 /// Whether `discover` would visit `rel_path`: the same hidden-name, skip-list,
 /// ignore-file and symlink rules, for paths that arrive one at a time (watcher
 /// events, hook-supplied paths).
@@ -226,7 +237,7 @@ pub fn admits(root: &Path, rel_path: &str, config: &TesseraConfig) -> bool {
     };
     for (depth, name) in names.iter().enumerate() {
         let is_dir = depth < last;
-        if name.starts_with('.')
+        if (name.starts_with('.') && (is_dir || !is_env_file(name)))
             || config.ignore_names.iter().any(|skip| skip == name)
             || (is_dir && ALWAYS_SKIP.contains(&name.as_str()))
             || (is_dir && depth == 0 && ROOT_SKIP.contains(&name.as_str()))

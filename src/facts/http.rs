@@ -13,7 +13,14 @@ static PARAM: LazyLock<Regex> = LazyLock::new(|| {
 /// `GET`, `POST`, … from a method name, an annotation, or a decorator;
 /// `ANY` for `all`, `RequestMapping` and anything unknown.
 pub fn method(text: &str) -> String {
-    let text = text.trim_matches(['"', '\'', '`']);
+    let text = text.trim_matches(['"', '\'', '`', ':']);
+    // Go's `http.MethodPost`.
+    let text = match text.rsplit_once(".Method") {
+        Some((_, verb)) => verb,
+        None => text,
+    };
+    // Ruby's `get_response`, `post_form`: the verb leads.
+    let text = text.split('_').next().unwrap_or(text);
     // `getForObject`, `postForEntity`: the verb leads.
     let text = match text.find(|c: char| c.is_ascii_uppercase()) {
         Some(at) if at > 0 && text.starts_with(|c: char| c.is_ascii_lowercase()) => &text[..at],
@@ -41,13 +48,73 @@ pub fn path(source: &str) -> Option<(String, &'static str)> {
         let (text, holes) = concatenation(&parts)?;
         (text, if holes { "low" } else { "high" })
     } else if let Some(inner) = quoted(source, '`') {
-        let (text, holes) = template(inner);
+        let (text, holes) = template(inner, "${");
         (text, if holes { "medium" } else { "high" })
     } else {
-        let inner = quoted(source, '"').or_else(|| quoted(source, '\''))?;
-        (inner.to_string(), "high")
+        let (prefix, rest) = string_prefix(source);
+        let double = quoted(rest, '"');
+        let inner = double.or_else(|| quoted(rest, '\''))?;
+        let (text, holes) = if prefix.contains(['f', 'F']) {
+            // Python f-string: `f"{BASE}/users/{id}"`.
+            template(inner, "{")
+        } else if double.is_some() && prefix.is_empty() && inner.contains("#{") {
+            // Ruby interpolation: `"#{BASE}/users/#{id}"`.
+            template(inner, "#{")
+        } else {
+            printf(inner)
+        };
+        (text, if holes { "medium" } else { "high" })
     };
+    // A path built only from variables (`${url}?${query}`) names no route.
+    let literal = text.split(['?', '#']).next().unwrap_or_default();
+    if confidence != "high" && !literal.chars().any(|c| c.is_alphanumeric()) {
+        return None;
+    }
     normalise(&text).map(|path| (path, confidence))
+}
+
+/// Python's string prefix (`f`, `r`, `rb`, …) and the quoted rest.
+fn string_prefix(source: &str) -> (&str, &str) {
+    let at = source
+        .find(|c: char| !matches!(c, 'f' | 'F' | 'r' | 'R' | 'b' | 'B' | 'u' | 'U'))
+        .unwrap_or(source.len());
+    if at <= 2 && source[at..].starts_with(['"', '\'']) {
+        (&source[..at], &source[at..])
+    } else {
+        ("", source)
+    }
+}
+
+/// `"%s/items/%d"` (a `Sprintf` format) becomes `/items/{}`; a leading verb
+/// is a base URL.
+fn printf(inner: &str) -> (String, bool) {
+    if !PRINTF.is_match(inner) {
+        return (inner.to_string(), false);
+    }
+    let mut out = String::new();
+    let mut last = 0;
+    for verb in PRINTF.find_iter(inner) {
+        out.push_str(&inner[last..verb.start()]);
+        if verb.start() > 0 {
+            out.push_str("{}");
+        }
+        last = verb.end();
+    }
+    out.push_str(&inner[last..]);
+    (out, true)
+}
+
+static PRINTF: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"%[sdvq]").unwrap());
+
+/// A Go 1.22 pattern's method: `"GET /users/{id}"` is `GET` and
+/// `"/users/{id}"`.
+pub fn method_pattern(source: &str) -> Option<(String, String)> {
+    let quote = source.chars().next().filter(|c| matches!(c, '"' | '`'))?;
+    let inner = &source[1..];
+    let (verb, rest) = inner.split_once(' ')?;
+    let rest = rest.trim_start();
+    (!verb.is_empty() && verb.chars().all(|c| c.is_ascii_uppercase()) && rest.starts_with('/'))
+        .then(|| (verb.to_string(), format!("{quote}{rest}")))
 }
 
 fn quoted(text: &str, quote: char) -> Option<&str> {
@@ -55,11 +122,13 @@ fn quoted(text: &str, quote: char) -> Option<&str> {
 }
 
 /// `/users/${id}` becomes `/users/{}`; a leading `${BASE}` is a base URL.
-fn template(inner: &str) -> (String, bool) {
+/// `open` starts a hole: `${` in JavaScript, `{` in a Python f-string,
+/// `#{` in Ruby.
+fn template(inner: &str, open: &str) -> (String, bool) {
     let mut out = String::new();
     let mut holes = false;
     let mut rest = inner;
-    while let Some(start) = rest.find("${") {
+    while let Some(start) = rest.find(open) {
         out.push_str(&rest[..start]);
         let Some(end) = rest[start..].find('}') else {
             break;
@@ -248,6 +317,9 @@ mod tests {
             Some(("/users/{}".into(), "low"))
         );
         assert_eq!(path("url"), None);
+        // Nothing literal: the whole path is a variable.
+        assert_eq!(path("`${url}?${params}`"), None);
+        assert_eq!(path("`${base}`"), None);
         assert_eq!(
             path("\"/api/\" + id + \"/items\""),
             Some(("/api/{}/items".into(), "low"))
@@ -264,6 +336,57 @@ mod tests {
         );
         assert_eq!(join("/owners", ""), "/owners");
         assert_eq!(join("users", ":id"), "/users/{}");
+    }
+
+    #[test]
+    fn go_python_and_ruby_paths() {
+        // Django and Flask parameters.
+        assert_eq!(
+            path("\"accounts/<int:account_id>/\""),
+            Some(("/accounts/{}".into(), "high"))
+        );
+        assert_eq!(path("'/<item_id>'"), Some(("/{}".into(), "high")));
+        // Python f-strings, raw strings; a leading hole is a base URL.
+        assert_eq!(
+            path("f\"{BASE}/users/{user_id}\""),
+            Some(("/users/{}".into(), "medium"))
+        );
+        assert_eq!(
+            path("f'/api/orders/{order_id}'"),
+            Some(("/api/orders/{}".into(), "medium"))
+        );
+        assert_eq!(path("r\"/raw\""), Some(("/raw".into(), "high")));
+        // Ruby interpolation.
+        assert_eq!(
+            path("\"#{BASE}/users/#{id}\""),
+            Some(("/users/{}".into(), "medium"))
+        );
+        assert_eq!(path("'/a/#{id}'"), Some(("/a".into(), "high")));
+        // Go `Sprintf` formats and raw strings.
+        assert_eq!(
+            path("\"http://orders/orders/%d\""),
+            Some(("/orders/{}".into(), "medium"))
+        );
+        assert_eq!(
+            path("\"%s/items/%s\""),
+            Some(("/items/{}".into(), "medium"))
+        );
+        assert_eq!(path("`/raw/{id}`"), Some(("/raw/{}".into(), "high")));
+        assert_eq!(
+            path("usersURL + \"/users/\" + id"),
+            Some(("/users/{}".into(), "low"))
+        );
+    }
+
+    #[test]
+    fn go_method_patterns() {
+        assert_eq!(
+            method_pattern("\"GET /users/{id}\""),
+            Some(("GET".into(), "\"/users/{id}\"".into()))
+        );
+        assert_eq!(method_pattern("\"/users/{id}\""), None);
+        assert_eq!(method_pattern("\"GET\""), None);
+        assert_eq!(method_pattern("\"hello world\""), None);
     }
 
     #[test]
@@ -301,5 +424,13 @@ mod tests {
         assert_eq!(method("all"), "ANY");
         assert_eq!(method("getForObject"), "GET");
         assert_eq!(method("exchange"), "ANY");
+        assert_eq!(method("http.MethodPost"), "POST");
+        assert_eq!(method("\"DELETE\""), "DELETE");
+        assert_eq!(method("get_response"), "GET");
+        assert_eq!(method("post_form"), "POST");
+        assert_eq!(method(":patch"), "PATCH");
+        assert_eq!(method("Get"), "GET");
+        assert_eq!(method("HandleFunc"), "ANY");
+        assert_eq!(method("api_route"), "ANY");
     }
 }

@@ -234,6 +234,194 @@ pub fn openapi(content: &str) -> Vec<IndexedFact> {
     out
 }
 
+/// `graphql query user`: the key a root field, its resolvers and the
+/// operations selecting it share.
+pub fn graphql_key(root: &str, field: &str) -> String {
+    format!("graphql {} {field}", root.to_lowercase())
+}
+
+/// `Query` for `query`, `Mutation` for `mutation`.
+fn root_type(operation: &str) -> String {
+    let mut chars = operation.chars();
+    chars
+        .next()
+        .map(|c| c.to_ascii_uppercase().to_string() + chars.as_str())
+        .unwrap_or_default()
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Block {
+    Schema,
+    Operation,
+}
+
+/// Root fields a GraphQL document declares (`type Query { user }`) or
+/// selects (`query { user { id } }`). `first_line` is the document's line
+/// in its file, for documents embedded in code.
+pub fn graphql(content: &str, first_line: usize) -> Vec<IndexedFact> {
+    let lines: Vec<&str> = content.lines().collect();
+    let chars: Vec<char> = content.chars().collect();
+    let mut out = Vec::new();
+    let (mut depth, mut parens, mut line) = (0usize, 0usize, 0usize);
+    let mut header: Vec<String> = Vec::new();
+    let mut block: Option<(Block, String)> = None;
+    let mut after_colon = false;
+    let mut spread = false;
+    let mut i = 0;
+    while i < chars.len() {
+        let c = chars[i];
+        match c {
+            '\n' => line += 1,
+            '#' => {
+                while i < chars.len() && chars[i] != '\n' {
+                    i += 1;
+                }
+                continue;
+            }
+            '"' => {
+                // A string or a block string: skip to its end.
+                let triple = chars.get(i..i + 3) == Some(&['"', '"', '"']);
+                i += if triple { 3 } else { 1 };
+                while i < chars.len() {
+                    if chars[i] == '\n' {
+                        line += 1;
+                    }
+                    if triple && chars.get(i..i + 3) == Some(&['"', '"', '"']) {
+                        i += 3;
+                        break;
+                    }
+                    if !triple && chars[i] == '\\' {
+                        i += 2;
+                        continue;
+                    }
+                    if !triple && chars[i] == '"' {
+                        i += 1;
+                        break;
+                    }
+                    i += 1;
+                }
+                continue;
+            }
+            '(' => parens += 1,
+            ')' => parens = parens.saturating_sub(1),
+            '{' if parens == 0 => {
+                if depth == 0 {
+                    block = graphql_block(&header);
+                    header.clear();
+                }
+                depth += 1;
+                after_colon = false;
+            }
+            '}' if parens == 0 => {
+                depth = depth.saturating_sub(1);
+                if depth == 0 {
+                    block = None;
+                }
+            }
+            ':' => after_colon = true,
+            '.' => spread = true,
+            _ if c.is_alphabetic() || c == '_' => {
+                let start = i;
+                while i < chars.len() && (chars[i].is_alphanumeric() || chars[i] == '_') {
+                    i += 1;
+                }
+                let word: String = chars[start..i].iter().collect();
+                let before = start.checked_sub(1).map(|b| chars[b]);
+                let next = chars[i..].iter().find(|c| !c.is_whitespace()).copied();
+                if depth == 0 && parens == 0 {
+                    if before != Some('$') {
+                        header.push(word);
+                    }
+                } else if depth == 1 && parens == 0 {
+                    let field = match &block {
+                        Some((Block::Schema, _)) => !after_colon && matches!(next, Some('(' | ':')),
+                        Some((Block::Operation, _)) => {
+                            !spread
+                                && before != Some('@')
+                                && next != Some(':')
+                                && !word.starts_with("__")
+                        }
+                        None => false,
+                    };
+                    if let (true, Some((kind_of, root))) = (field, &block) {
+                        let (fact_kind, rule) = match kind_of {
+                            Block::Schema => (kind::GQL_DEF, "graphql.schema"),
+                            Block::Operation => (kind::GQL_OP, "graphql.operation"),
+                        };
+                        out.push(IndexedFact::new(
+                            fact_kind,
+                            graphql_key(root, &word),
+                            format!("{root}.{word}"),
+                            first_line + line + 1,
+                            rule,
+                            lines.get(line).copied().unwrap_or_default(),
+                        ));
+                    }
+                    if next != Some(':') {
+                        after_colon = false;
+                    }
+                    spread = false;
+                }
+                continue;
+            }
+            _ if !c.is_whitespace() && !matches!(c, ',' | '!' | '[' | ']' | '=') => {
+                after_colon = false;
+            }
+            _ => {}
+        }
+        if c == '\n' && depth == 1 {
+            after_colon = false;
+        }
+        i += 1;
+    }
+    out
+}
+
+/// What a top-level `{` opens, from the words before it.
+fn graphql_block(header: &[String]) -> Option<(Block, String)> {
+    let words: Vec<&str> = header.iter().map(String::as_str).collect();
+    match words.as_slice() {
+        [] => Some((Block::Operation, "Query".to_string())),
+        ["type" | "extend", ..] => {
+            let name = words.iter().find(|w| !matches!(**w, "extend" | "type"))?;
+            matches!(*name, "Query" | "Mutation" | "Subscription")
+                .then(|| (Block::Schema, name.to_string()))
+        }
+        [op @ ("query" | "mutation" | "subscription"), ..] => {
+            Some((Block::Operation, root_type(op)))
+        }
+        _ => None,
+    }
+}
+
+static GQL_TAG: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\b(?:gql|graphql)\s*(?:\(\s*)?`").expect("valid regex"));
+
+/// GraphQL documents in `gql` and `graphql` tagged templates.
+pub fn graphql_in_code(content: &str) -> Vec<IndexedFact> {
+    let mut out = Vec::new();
+    for found in GQL_TAG.find_iter(content) {
+        let start = found.end();
+        let Some(length) = content[start..].find('`') else {
+            continue;
+        };
+        let document = &content[start..start + length];
+        let first_line = content[..start].matches('\n').count();
+        out.extend(graphql(document, first_line).into_iter().map(|mut fact| {
+            fact.rule = if fact.kind == kind::GQL_DEF {
+                "graphql.js.schema"
+            } else {
+                "graphql.js.operation"
+            };
+            // The evidence is the file's line, not the document's.
+            fact.evidence =
+                super::trim_evidence(content.lines().nth(fact.line - 1).unwrap_or_default());
+            fact
+        }));
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -291,5 +479,30 @@ mod tests {
         );
         let keys: Vec<(&str, usize)> = facts.iter().map(|f| (f.key.as_str(), f.line)).collect();
         assert_eq!(keys, vec![("grpc cart/get", 3), ("grpc ads/list", 10)]);
+    }
+
+    #[test]
+    fn graphql_documents_name_root_fields() {
+        let names = |doc: &str| -> Vec<String> {
+            graphql(doc, 0)
+                .into_iter()
+                .map(|f| format!("{} {}", f.kind, f.name))
+                .collect()
+        };
+        assert_eq!(
+            names("\"\"\"Root { not: a field }\"\"\"\nextend type Query {\n  # comment: x\n  me: User @auth\n  search(q: String = \"a:b\"): [Hit!]!\n}\ntype User { id: ID! }\n"),
+            ["graphql_def Query.me", "graphql_def Query.search"]
+        );
+        assert_eq!(
+            names("{ me { id } }\nquery Q($id: ID!) { u: user(id: $id) { ...F } __typename }\nfragment F on User { id }\n"),
+            ["graphql_op Query.me", "graphql_op Query.user"]
+        );
+        assert_eq!(
+            names("mutation { a: createUser(x: 1) { id } deleteUser }"),
+            [
+                "graphql_op Mutation.createUser",
+                "graphql_op Mutation.deleteUser"
+            ]
+        );
     }
 }

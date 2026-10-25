@@ -31,12 +31,15 @@ pub struct Pack {
 const JS: &[Language] = &[Language::JavaScript, Language::TypeScript, Language::Tsx];
 const TS: &[Language] = &[Language::TypeScript, Language::Tsx];
 const JAVA: &[Language] = &[Language::Java];
+const GO: &[Language] = &[Language::Go];
+const PYTHON: &[Language] = &[Language::Python];
+const RUBY: &[Language] = &[Language::Ruby];
 
 pub const PACKS: &[Pack] = &[
     Pack {
         id: "express",
         languages: JS,
-        gate: r"\b(app|router|server|routes?|\w*Router|fastify|App)\s*\.\s*(get|post|put|patch|delete|head|options|all|route)\s*\(",
+        gate: r"\b(app|router|server|routes?|\w*Router|fastify|App)\s*\.\s*(get|post|put|patch|delete|head|options|all|route|use)\s*\(",
         query: include_str!("../../packs/express.scm"),
     },
     Pack {
@@ -88,10 +91,70 @@ pub const PACKS: &[Pack] = &[
         query: include_str!("../../packs/sequelize.scm"),
     },
     Pack {
+        id: "graphql",
+        languages: JS,
+        gate: r"\b(Query|Mutation|Subscription)\b",
+        query: include_str!("../../packs/graphql.scm"),
+    },
+    Pack {
+        id: "nestjs-graphql",
+        languages: TS,
+        gate: r"@(Query|Mutation|Subscription)\(",
+        query: include_str!("../../packs/nestjs-graphql.scm"),
+    },
+    Pack {
         id: "spring-clients",
         languages: JAVA,
         gate: r"FeignClient|RestTemplate|restTemplate|WebClient|webClient|RestClient|restClient|MockMvc|WebTestClient",
         query: include_str!("../../packs/spring-clients.scm"),
+    },
+    Pack {
+        id: "go-http",
+        languages: GO,
+        gate: r#"\.(HandleFunc|Handle|Get|Post|Put|Patch|Delete|Head|Options|Connect|Trace|GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS|Any)\(\s*["`]([A-Z]+ +)?/"#,
+        query: include_str!("../../packs/go-http.scm"),
+    },
+    Pack {
+        id: "go-http-clients",
+        languages: GO,
+        gate: r"\bhttp\.(Get|Head|Post|PostForm|NewRequest|NewRequestWithContext)\(|[Cc]lient\.(Get|Head|Post|PostForm)\(",
+        query: include_str!("../../packs/go-http-clients.scm"),
+    },
+    Pack {
+        id: "fastapi",
+        languages: PYTHON,
+        gate: r"@\s*\w+\.(get|post|put|patch|delete|head|options|api_route)\(",
+        query: include_str!("../../packs/fastapi.scm"),
+    },
+    Pack {
+        id: "flask",
+        languages: PYTHON,
+        gate: r"@\s*\w+\.route\(",
+        query: include_str!("../../packs/flask.scm"),
+    },
+    Pack {
+        id: "django",
+        languages: PYTHON,
+        gate: r"\burlpatterns\b",
+        query: include_str!("../../packs/django.scm"),
+    },
+    Pack {
+        id: "python-http-clients",
+        languages: PYTHON,
+        gate: r"\b(requests|httpx|client|session|http|sess|\w+_client|\w+_session)\.(get|post|put|patch|delete|head|options|request)\(|\b(Client|AsyncClient|Session)\(\)\.",
+        query: include_str!("../../packs/python-http-clients.scm"),
+    },
+    Pack {
+        id: "rails",
+        languages: RUBY,
+        gate: r"\broutes\.draw\b",
+        query: include_str!("../../packs/rails.scm"),
+    },
+    Pack {
+        id: "ruby-http-clients",
+        languages: RUBY,
+        gate: r"Net::HTTP|\b(Faraday|HTTParty|RestClient|HTTPX)\.|\b(conn|connection|faraday|http|client|\w+_client|\w+_conn|\w+_connection)\.(get|post|put|patch|delete|head|options)\b",
+        query: include_str!("../../packs/ruby-http-clients.scm"),
     },
 ];
 
@@ -136,6 +199,8 @@ const FACT_CAPTURES: &[(&str, &str)] = &[
     ("producer", kind::PRODUCER),
     ("consumer", kind::CONSUMER),
     ("entity", kind::ENTITY),
+    ("mount", kind::MOUNT),
+    ("resolver", kind::GQL_RESOLVER),
 ];
 
 static JAVA_CONSTANT: LazyLock<Regex> = LazyLock::new(|| {
@@ -145,7 +210,7 @@ static JS_CONSTANT: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r#"\b(?:const|let|var)\s+(\w+)\s*=\s*['"]([^'"]+)['"]"#).unwrap());
 
 pub fn run(language: Language, source: &str, tree: &Tree) -> Vec<IndexedFact> {
-    let mut out: Vec<(IndexedFact, u8)> = Vec::new();
+    let mut out: Vec<Found> = Vec::new();
     for compiled in COMPILED.iter().filter(|c| c.language == language) {
         if !compiled.gate.is_match(source) {
             continue;
@@ -177,18 +242,23 @@ pub fn run(language: Language, source: &str, tree: &Tree) -> Vec<IndexedFact> {
     }
     // Overlapping patterns can match one site; keep the most specific. A
     // listener can name several topics on one line, so topics stay apart.
-    let site = |f: &IndexedFact| {
+    // One `resources` line draws several routes, told apart by action.
+    let site = |(f, _, variant): &Found| {
         let topic = if f.kind == kind::PRODUCER || f.kind == kind::CONSUMER {
             f.key.clone()
         } else {
-            String::new()
+            variant.clone()
         };
         (f.line, f.kind, f.rule, topic)
     };
-    out.sort_by(|a, b| site(&a.0).cmp(&site(&b.0)).then(b.1.cmp(&a.1)));
-    out.dedup_by(|b, a| site(&a.0) == site(&b.0));
-    out.into_iter().map(|(fact, _)| fact).collect()
+    out.sort_by(|a, b| site(a).cmp(&site(b)).then(b.1.cmp(&a.1)));
+    out.dedup_by(|b, a| site(a) == site(b));
+    out.into_iter().map(|(fact, _, _)| fact).collect()
 }
+
+/// A fact, how specific its match is (a method and a prefix make it more
+/// so), and what tells it apart from other facts on its line.
+type Found = (IndexedFact, u8, String);
 
 /// The facts a match describes: one for a route, request or entity, one
 /// per topic for a listener.
@@ -198,7 +268,7 @@ fn facts(
     source: &str,
     captures: &HashMap<&str, Node<'_>>,
     defaults: &HashMap<&str, &str>,
-) -> Vec<(IndexedFact, u8)> {
+) -> Vec<Found> {
     let Some((capture, kind)) = FACT_CAPTURES
         .iter()
         .find(|(capture, _)| captures.contains_key(capture))
@@ -212,7 +282,15 @@ fn facts(
         kind::ENTITY => entity(pack, source, captures, defaults, captures[capture])
             .into_iter()
             .collect(),
-        _ => fact(pack, source, captures, defaults).into_iter().collect(),
+        kind::MOUNT => mount(pack, source, captures)
+            .map(|(fact, specific)| (fact, specific, String::new()))
+            .into_iter()
+            .collect(),
+        kind::GQL_RESOLVER => resolver(pack, source, captures)
+            .map(|(fact, specific)| (fact, specific, String::new()))
+            .into_iter()
+            .collect(),
+        _ => fact(pack, source, captures, defaults).unwrap_or_default(),
     }
 }
 
@@ -284,7 +362,7 @@ fn topics(
     captures: &HashMap<&str, Node<'_>>,
     kind: &'static str,
     at: Node<'_>,
-) -> Vec<(IndexedFact, u8)> {
+) -> Vec<Found> {
     let constants = constants(language, source);
     let mut values = Vec::new();
     if let Some(topic) = captures.get("topic") {
@@ -329,9 +407,77 @@ fn topics(
                 line_of(source, at),
             );
             fact.confidence = confidence;
-            (fact, 0)
+            (fact, 0, String::new())
         })
         .collect()
+}
+
+/// A resolver for `Query.user`: the field is the method's name, or the
+/// decorator's `name` option.
+fn resolver(
+    pack: &'static str,
+    source: &str,
+    captures: &HashMap<&str, Node<'_>>,
+) -> Option<(IndexedFact, u8)> {
+    let at = *captures.get("resolver")?;
+    let root = text(source, *captures.get("root")?);
+    let renamed = captures.get("args").and_then(|args| {
+        let mut cursor = args.walk();
+        let children: Vec<Node<'_>> = args.named_children(&mut cursor).collect();
+        children.into_iter().find_map(|child| {
+            let mut cursor = child.walk();
+            let pairs: Vec<Node<'_>> = if child.kind() == "object" {
+                child.named_children(&mut cursor).collect()
+            } else {
+                Vec::new()
+            };
+            pairs.into_iter().find_map(|pair| {
+                let key = text(source, pair.child_by_field_name("key")?);
+                let value = text(source, pair.child_by_field_name("value")?);
+                (key == "name").then(|| value.trim_matches(['"', '\'', '`']).to_string())
+            })
+        })
+    });
+    let field = renamed.unwrap_or_else(|| {
+        captures
+            .get("field")
+            .map(|f| text(source, *f).to_string())
+            .unwrap_or_default()
+    });
+    if field.is_empty() {
+        return None;
+    }
+    let mut fact = IndexedFact::new(
+        kind::GQL_RESOLVER,
+        super::text::graphql_key(root, &field),
+        format!("{root}.{field}"),
+        at.start_position().row + 1,
+        pack,
+        line_of(source, at),
+    );
+    fact.handler = captures.get("field").map(|f| text(source, *f).to_string());
+    Some((fact, 0))
+}
+
+/// `app.use("/api", users)`: the prefix, keyed by the mounted name.
+fn mount(
+    pack: &'static str,
+    source: &str,
+    captures: &HashMap<&str, Node<'_>>,
+) -> Option<(IndexedFact, u8)> {
+    let at = *captures.get("mount")?;
+    let (prefix, confidence) = http::path(text(source, *captures.get("path")?))?;
+    let local = text(source, *captures.get("handler")?).to_string();
+    let mut fact = IndexedFact::new(
+        kind::MOUNT,
+        format!("mount {local}"),
+        prefix,
+        at.start_position().row + 1,
+        pack,
+        line_of(source, at),
+    );
+    fact.confidence = confidence;
+    Some((fact, 0))
 }
 
 /// `OwnerPet` → `owner_pet`, the table name ORMs derive by default.
@@ -352,7 +498,7 @@ fn entity(
     captures: &HashMap<&str, Node<'_>>,
     defaults: &HashMap<&str, &str>,
     at: Node<'_>,
-) -> Option<(IndexedFact, u8)> {
+) -> Option<Found> {
     let explicit = captures
         .get("table")
         .map(|t| text(source, *t).to_string())
@@ -401,7 +547,7 @@ fn entity(
     );
     fact.confidence = confidence;
     fact.handler = captures.get("name").map(|n| text(source, *n).to_string());
-    Some((fact, specific))
+    Some((fact, specific, String::new()))
 }
 
 /// `"public"."Users"` → `users`.
@@ -429,7 +575,7 @@ fn fact(
     source: &str,
     captures: &HashMap<&str, Node<'_>>,
     defaults: &HashMap<&str, &str>,
-) -> Option<(IndexedFact, u8)> {
+) -> Option<Vec<Found>> {
     let (capture, kind) = FACT_CAPTURES
         .iter()
         .find(|(capture, _)| captures.contains_key(capture))?;
@@ -438,10 +584,15 @@ fn fact(
         .get("args")
         .map(|args| arguments(source, *args, ArgKeys::ValueOrPath))
         .unwrap_or_default();
-    let path_text = captures
+    let mut path_text = captures
         .get("path")
-        .map(|p| text(source, *p).to_string())
+        .map(|p| literal(source, *p))
         .or(path_args);
+    // Go 1.22: `mux.HandleFunc("GET /users/{id}", h)`.
+    let pattern_method = path_text.as_deref().and_then(http::method_pattern);
+    if let Some((_, rest)) = &pattern_method {
+        path_text = Some(rest.clone());
+    }
     let (path, confidence) = match path_text {
         Some(text) => http::path(&text)?,
         // `@GetMapping` or `@Get()` with no path: the prefix itself.
@@ -450,7 +601,7 @@ fn fact(
     };
     let prefix = captures
         .get("prefix")
-        .map(|p| text(source, *p).to_string())
+        .map(|p| literal(source, *p))
         .or_else(|| {
             captures
                 .get("prefix_args")
@@ -463,37 +614,189 @@ fn fact(
         })
         .and_then(|p| http::path(&p))
         .map(|(p, _)| p);
-    let method = captures
-        .get("method")
-        .map(|m| http::method(text(source, *m)))
-        .filter(|m| m != "ANY")
-        .or(method_args.map(|m| http::method(&m)))
+    let method_list = method_args.clone().filter(|_| {
+        pattern_method.is_none()
+            && !captures
+                .get("method")
+                .is_some_and(|m| http::method(text(source, *m)) != "ANY")
+    });
+    let method = pattern_method
+        .map(|(method, _)| method)
+        .or_else(|| {
+            captures
+                .get("method")
+                .map(|m| http::method(text(source, *m)))
+                .filter(|m| m != "ANY")
+        })
+        .or(method_args.as_deref().map(http::method))
         .or_else(|| defaults.get("method").map(|m| http::method(m)))
         .unwrap_or_else(|| "ANY".to_string());
     let full = match &prefix {
         Some(prefix) => http::join(prefix, &path),
         None => path,
     };
-    let specific = u8::from(prefix.is_some()) + u8::from(method != "ANY");
+    let priority: u8 = defaults
+        .get("priority")
+        .and_then(|p| p.parse().ok())
+        .unwrap_or(0);
+    let specific = u8::from(prefix.is_some()) + u8::from(method != "ANY") + priority;
     let line_text = source
         .lines()
         .nth(at.start_position().row)
         .unwrap_or_default();
-    let mut fact = IndexedFact::new(
-        kind,
-        http::key(&method, &full),
-        format!("{method} {full}"),
-        at.start_position().row + 1,
-        pack,
-        line_text,
-    );
-    fact.confidence = confidence;
-    fact.handler = captures
+    let handler = captures
         .get("handler")
         .copied()
-        .or_else(|| last_identifier_argument(at))
-        .map(|h| text(source, h).to_string());
-    Some((fact, specific))
+        .or_else(|| {
+            (*kind == kind::ROUTE)
+                .then(|| last_identifier_argument(at))
+                .flatten()
+        })
+        .and_then(|h| handler_name(text(source, h)));
+    let site = |method: &str, path: &str, variant: String| {
+        let mut fact = IndexedFact::new(
+            kind,
+            http::key(method, path),
+            format!("{method} {path}"),
+            at.start_position().row + 1,
+            pack,
+            line_text,
+        );
+        fact.confidence = confidence;
+        fact.handler.clone_from(&handler);
+        (fact, specific, variant)
+    };
+    Some(match captures.get("resources") {
+        Some(resources) => {
+            let only = captures
+                .get("resource_args")
+                .map(|a| resource_filter(source, *a))
+                .unwrap_or_default();
+            let singular = text(source, *resources) == "resource";
+            rest_routes(singular)
+                .iter()
+                .filter(|(action, _, _)| only.allows(action))
+                .map(|(action, method, suffix)| {
+                    site(
+                        method,
+                        &http::join(&full, suffix),
+                        format!("{action} {method}"),
+                    )
+                })
+                .collect()
+        }
+        // `method = {RequestMethod.GET, RequestMethod.POST}`: one route each.
+        None => match listed_methods(method_list.as_deref()) {
+            methods if !methods.is_empty() => {
+                methods.iter().map(|m| site(m, &full, m.clone())).collect()
+            }
+            _ => vec![site(&method, &full, String::new())],
+        },
+    })
+}
+
+/// `{RequestMethod.GET, RequestMethod.POST}` → `GET`, `POST`.
+fn listed_methods(text: Option<&str>) -> Vec<String> {
+    let Some(inner) = text.and_then(|t| t.trim().strip_prefix('{')?.strip_suffix('}')) else {
+        return Vec::new();
+    };
+    inner
+        .split(',')
+        .map(|m| http::method(m.trim()))
+        .filter(|m| m != "ANY")
+        .collect()
+}
+
+/// The routes Rails' `resources :orders` draws: action, method, path under
+/// the resource. A singular `resource :profile` has no index and no id.
+fn rest_routes(singular: bool) -> &'static [(&'static str, &'static str, &'static str)] {
+    if singular {
+        &[
+            ("new", "GET", "new"),
+            ("create", "POST", ""),
+            ("show", "GET", ""),
+            ("edit", "GET", "edit"),
+            ("update", "PATCH", ""),
+            ("update", "PUT", ""),
+            ("destroy", "DELETE", ""),
+        ]
+    } else {
+        &[
+            ("index", "GET", ""),
+            ("new", "GET", "new"),
+            ("create", "POST", ""),
+            ("show", "GET", ":id"),
+            ("edit", "GET", ":id/edit"),
+            ("update", "PATCH", ":id"),
+            ("update", "PUT", ":id"),
+            ("destroy", "DELETE", ":id"),
+        ]
+    }
+}
+
+/// `only: [:index, :show]` or `except: :destroy` on a `resources` call.
+#[derive(Default)]
+struct ResourceFilter {
+    only: Option<Vec<String>>,
+    except: Vec<String>,
+}
+
+impl ResourceFilter {
+    fn allows(&self, action: &str) -> bool {
+        self.only
+            .as_ref()
+            .is_none_or(|only| only.iter().any(|a| a == action))
+            && !self.except.iter().any(|a| a == action)
+    }
+}
+
+fn resource_filter(source: &str, args: Node<'_>) -> ResourceFilter {
+    let mut filter = ResourceFilter::default();
+    let mut cursor = args.walk();
+    for pair in args.named_children(&mut cursor) {
+        let (Some(key), Some(value)) = (
+            pair.child_by_field_name("key"),
+            pair.child_by_field_name("value"),
+        ) else {
+            continue;
+        };
+        let actions: Vec<String> = text(source, value)
+            .split(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+            .filter(|a| !a.is_empty() && *a != "w" && *a != "i")
+            .map(str::to_string)
+            .collect();
+        match text(source, key)
+            .trim_end_matches(':')
+            .trim_start_matches(':')
+        {
+            "only" => filter.only = Some(actions),
+            "except" => filter.except = actions,
+            _ => {}
+        }
+    }
+    filter
+}
+
+/// A capture's text as a path: a Ruby symbol (`:api`) is the string `"api"`.
+fn literal(source: &str, node: Node<'_>) -> String {
+    let raw = text(source, node);
+    match node.kind() {
+        "simple_symbol" => format!("\"{}\"", raw.trim_start_matches(':')),
+        _ => raw.to_string(),
+    }
+}
+
+/// `users.getUser` → `getUser`, `UserView.as_view()` → `UserView`: the name
+/// a handler expression refers to.
+fn handler_name(expression: &str) -> Option<String> {
+    let name = expression
+        .split('(')
+        .next()
+        .unwrap_or(expression)
+        .trim_end_matches(".as_view");
+    let last = name.rsplit(['.', ':']).next().unwrap_or(name).trim();
+    (!last.is_empty() && last.chars().all(|c| c.is_alphanumeric() || c == '_'))
+        .then(|| last.to_string())
 }
 
 /// `getUser` in `app.get("/u", auth, getUser)` or in
@@ -507,6 +810,8 @@ fn last_identifier_argument(node: Node<'_>) -> Option<Node<'_>> {
     match last.kind() {
         "identifier" => Some(last),
         "member_expression" => last.child_by_field_name("property"),
+        // Go's `s.handleUsers`.
+        "selector_expression" => last.child_by_field_name("field"),
         _ => None,
     }
 }
@@ -552,7 +857,8 @@ fn arguments(source: &str, args: Node<'_>, keys: ArgKeys) -> (Option<String>, Op
                         path = path.or(value_text);
                     }
                     "path" => path = value_text.or(path),
-                    "method" => method = value_text,
+                    // Every method of `method = {GET, POST}`, not the first.
+                    "method" => method = Some(text(source, value).to_string()),
                     _ => {}
                 }
             }

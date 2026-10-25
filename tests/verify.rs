@@ -985,3 +985,34 @@ fn v5_is_silent_when_a_route_is_still_served_for_any_method() {
         "{findings:?}"
     );
 }
+
+#[test]
+fn changed_fixtures_and_snapshots_are_not_tests_to_run() {
+    let temp = repo();
+    for (path, text) in [
+        ("test/fixtures/app/server.js", "module.exports = 1;\n"),
+        ("test/fixtures/app/.env.example", "PORT=1\n"),
+        (
+            "test/__snapshots__/repo.test.ts.snap",
+            "exports[`a`] = 1;\n",
+        ),
+        ("tests/snapshots/golden.snap", "---\n"),
+    ] {
+        let file = temp.path().join(path);
+        fs::create_dir_all(file.parent().unwrap()).unwrap();
+        fs::write(file, text).unwrap();
+    }
+    let (_, _, value) = verify_changed(temp.path());
+    let tests: Vec<&str> = value["tests"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|t| t.as_str())
+        .collect();
+    assert!(
+        tests
+            .iter()
+            .all(|t| !t.contains("fixtures/") && !t.contains("snapshots")),
+        "{tests:?}"
+    );
+}

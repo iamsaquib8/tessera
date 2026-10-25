@@ -403,3 +403,437 @@ fn a_route_is_served_by_its_handler_not_the_next_function() {
         "{handlers:?}"
     );
 }
+
+#[test]
+fn routes_on_a_mounted_router_carry_the_mount_prefix() {
+    let temp = TempDir::new().unwrap();
+    let files = [
+        (
+            "app.js",
+            "const express = require('express');\n\
+             const users = require('./routes/users');\n\
+             const { ordersRouter } = require('./routes/orders');\n\
+             const app = express();\n\
+             const adminRouter = express.Router();\n\
+             adminRouter.get('/stats', (req, res) => res.send({}));\n\
+             app.use('/api/users', users);\n\
+             app.use('/api', ordersRouter);\n\
+             app.use('/admin', adminRouter);\n\
+             app.get('/health', (req, res) => res.send('ok'));\n",
+        ),
+        (
+            "routes/users.js",
+            "const router = require('express').Router();\n\
+             router.get('/:id', (req, res) => res.send(req.params.id));\n\
+             module.exports = router;\n",
+        ),
+        (
+            "routes/orders.js",
+            "const ordersRouter = require('express').Router();\n\
+             ordersRouter.post('/orders', (req, res) => res.send(req.body));\n\
+             module.exports = { ordersRouter };\n",
+        ),
+        (
+            "web/client.js",
+            "export const user = (id) => fetch(`/api/users/${id}`);\n\
+             export const order = (o) => fetch('/api/orders', { method: 'POST', body: o });\n\
+             export const stats = () => fetch('/admin/stats');\n",
+        ),
+    ];
+    for (path, content) in files {
+        let file = temp.path().join(path);
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(file, content).unwrap();
+    }
+    let got = summary(&map(temp.path(), &["route"]));
+    for expected in [
+        "GET /api/users/{}: routes/users.js -> web/client.js",
+        "POST /api/orders: routes/orders.js -> web/client.js",
+        "GET /admin/stats: app.js -> web/client.js",
+        "GET /health: app.js -> ",
+    ] {
+        assert!(got.contains(expected), "missing {expected}: {got:#?}");
+    }
+    assert!(
+        !got.iter()
+            .any(|c| c.starts_with("GET /{}:") || c.starts_with("GET /stats:")),
+        "unprefixed copies of mounted routes: {got:#?}"
+    );
+}
+
+#[test]
+fn graphql_schemas_resolvers_and_operations_link_by_root_field() {
+    let temp = fixture("contracts-graphql");
+    let root = temp.path();
+    let got = summary(&map(root, &["graphql"]));
+    let expected: BTreeSet<String> = [
+        "Query.user: api/resolvers.js -> web/queries.ts",
+        "Query.users: api/resolvers.js,nest/users.resolver.ts -> web/all-users.graphql",
+        "Mutation.createUser: api/resolvers.js,nest/users.resolver.ts -> web/queries.ts",
+    ]
+    .into_iter()
+    .map(str::to_string)
+    .collect();
+    assert_eq!(got, expected);
+    let value = map(root, &["graphql", "user"]);
+    let user = value["contracts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["name"] == "Query.user")
+        .unwrap();
+    assert_eq!(
+        user["definitions"][0]["path"], "api/schema.graphql",
+        "{user}"
+    );
+    assert_eq!(user["definitions"][0]["line"], 8, "{user}");
+}
+
+/// Repositories, each its own git repository, listed in one workspace.
+fn workspace(repos: &[(&str, &[(&str, &str)])]) -> TempDir {
+    let temp = tempfile::Builder::new()
+        .prefix("tessera-xpath-")
+        .tempdir()
+        .unwrap();
+    let mut listed = String::new();
+    for (repo, files) in repos {
+        let dir = temp.path().join(repo);
+        for (path, text) in *files {
+            let file = dir.join(path);
+            std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+            std::fs::write(file, text).unwrap();
+        }
+        assert!(std::process::Command::new("git")
+            .args(["init", "-q"])
+            .current_dir(&dir)
+            .status()
+            .unwrap()
+            .success());
+        listed.push_str(&format!("[[repo]]\npath = \"{repo}\"\n\n"));
+    }
+    std::fs::write(temp.path().join("tessera.workspace.toml"), listed).unwrap();
+    temp
+}
+
+fn http_workspace() -> TempDir {
+    let temp = tempfile::Builder::new()
+        .prefix("tessera-xpath-http-")
+        .tempdir()
+        .unwrap();
+    let http = fixture_dir("contracts-http");
+    for repo in ["api", "web"] {
+        let dir = temp.path().join(repo);
+        copy_dir(&http.join(repo), &dir);
+        assert!(std::process::Command::new("git")
+            .args(["init", "-q"])
+            .current_dir(&dir)
+            .status()
+            .unwrap()
+            .success());
+    }
+    std::fs::write(
+        temp.path().join("tessera.workspace.toml"),
+        "[[repo]]\npath = \"api\"\n\n[[repo]]\npath = \"web\"\n",
+    )
+    .unwrap();
+    temp
+}
+
+/// `name path:line via ...` for each hop of a path result.
+fn hops(result: &Value) -> Vec<String> {
+    result["path"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|n| {
+            format!(
+                "{} {}:{}{}",
+                n["qualified_name"].as_str().unwrap(),
+                n["path"].as_str().unwrap(),
+                n["line"],
+                n["via"]
+                    .as_str()
+                    .map(|v| format!(" via {v}"))
+                    .unwrap_or_default()
+            )
+        })
+        .collect()
+}
+
+#[test]
+fn path_follows_a_contract_into_another_repository() {
+    let temp = http_workspace();
+    for (from, to) in [("loadUser", "getUser"), ("web/loadUser", "api/getUser")] {
+        let result = tessera(&temp.path().join("web"), &["path", from, to]);
+        assert_eq!(result["found"], true, "{from} -> {to}: {result}");
+        assert_eq!(
+            hops(&result),
+            vec![
+                "loadUser web/src/client.ts:7",
+                "getUser api/src/app.js:10 via route GET /api/users/{}",
+            ],
+            "{result}"
+        );
+    }
+    // From the other repository, too.
+    let result = tessera(&temp.path().join("api"), &["path", "saveUser", "create"]);
+    assert_eq!(result["found"], true, "{result}");
+    assert_eq!(
+        hops(&result).pop().unwrap(),
+        "create api/src/app.js:14",
+        "{result}"
+    );
+
+    let output = Command::cargo_bin("tessera")
+        .unwrap()
+        .current_dir(temp.path().join("web"))
+        .args(["--quiet", "path", "loadUser", "getUser"])
+        .output()
+        .unwrap();
+    let text = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        text.contains("getUser @ api/src/app.js:10 (via route GET /api/users/{})"),
+        "{text}"
+    );
+}
+
+#[test]
+fn path_across_repositories_terminates_on_a_cycle() {
+    let temp = workspace(&[
+        (
+            "ping",
+            &[
+                ("package.json", "{ \"name\": \"ping\" }\n"),
+                (
+                    "src/server.js",
+                    "const express = require('express');\nconst app = express();\n\
+                     app.get('/ping', ping);\n\n\
+                     function ping(req, res) {\n  return askPong();\n}\n\n\
+                     function askPong() {\n  return fetch('/pong');\n}\n\n\
+                     function lonely() {\n  return 1;\n}\n",
+                ),
+            ],
+        ),
+        (
+            "pong",
+            &[
+                ("package.json", "{ \"name\": \"pong\" }\n"),
+                (
+                    "src/server.js",
+                    "const express = require('express');\nconst app = express();\n\
+                     app.get('/pong', pong);\n\n\
+                     function pong(req, res) {\n  return askPing();\n}\n\n\
+                     function askPing() {\n  return fetch('/ping');\n}\n",
+                ),
+            ],
+        ),
+    ]);
+    let root = temp.path().join("ping");
+    let result = tessera(&root, &["path", "ping", "askPing"]);
+    assert_eq!(result["found"], true, "{result}");
+    assert_eq!(
+        hops(&result),
+        vec![
+            "ping ping/src/server.js:5",
+            "askPong ping/src/server.js:9",
+            "pong pong/src/server.js:5 via route GET /pong",
+            "askPing pong/src/server.js:9",
+        ],
+        "{result}"
+    );
+    // ping -> pong -> ping ... never reaches `lonely`; the search still ends.
+    let result = tessera(&root, &["path", "ping", "lonely", "--depth", "12"]);
+    assert_eq!(result["found"], false, "{result}");
+    let result = tessera(&root, &["path", "pong/pong", "ping/ping"]);
+    assert_eq!(result["found"], true, "{result}");
+    assert_eq!(
+        hops(&result).last().unwrap(),
+        "ping ping/src/server.js:5 via route GET /ping",
+        "{result}"
+    );
+}
+
+#[test]
+fn path_in_a_workspace_reports_unknown_symbols_as_before() {
+    let temp = http_workspace();
+    let web = temp.path().join("web");
+    let result = tessera(&web, &["path", "noSuchThing", "getUser"]);
+    assert_eq!(result["found"], false, "{result}");
+    assert_eq!(result["path"].as_array().unwrap().len(), 0, "{result}");
+    // A repository prefix names only that repository's symbols.
+    let result = tessera(&web, &["path", "loadUser", "web/getUser"]);
+    assert_eq!(result["found"], false, "{result}");
+    let output = Command::cargo_bin("tessera")
+        .unwrap()
+        .current_dir(&web)
+        .args(["--quiet", "path", "noSuchThing", "getUser"])
+        .output()
+        .unwrap();
+    let text = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        text.contains("No call path from noSuchThing to getUser"),
+        "{text}"
+    );
+}
+
+#[test]
+fn path_in_one_repository_names_the_contract_it_crosses() {
+    let temp = fixture("contracts-grpc");
+    let result = tessera(
+        temp.path(),
+        &[
+            "path",
+            "frontendServer.currencies",
+            "getSupportedCurrencies",
+        ],
+    );
+    let path = result["path"].as_array().unwrap();
+    assert!(path[0].get("via").is_none(), "{result}");
+    assert_eq!(
+        path[1]["via"], "rpc CurrencyService/GetSupportedCurrencies",
+        "{result}"
+    );
+}
+
+#[test]
+fn config_keys_link_who_sets_them_to_who_reads_them() {
+    let temp = fixture("contracts-config");
+    let value = map(temp.path(), &["config"]);
+    let got = summary(&value);
+    for expected in [
+        "DATABASE_URL: .env.example,docker-compose.yml -> api/src/server.js,billing/src/main/resources/application.yml,worker/main.py",
+        "PORT: api/Dockerfile,docker-compose.yml -> api/src/server.js,gosvc/main.go",
+        "LOG_LEVEL: api/Dockerfile,docker-compose.yml -> worker/main.py",
+        "API_KEY: .env.example -> billing/src/main/java/billing/Billing.java",
+        "billing.rate: billing/src/main/resources/application.yml -> billing/src/main/java/billing/Billing.java",
+        "VITE_API_BASE:  -> api/src/server.js",
+    ] {
+        assert!(got.contains(expected), "missing {expected}: {got:#?}");
+    }
+    assert!(!got.iter().any(|c| c.starts_with("FEATURE_X")), "{got:#?}");
+    let text = value.to_string();
+    for secret in ["hunter2", "sk-live", "s3cret", "postgres://"] {
+        assert!(!text.contains(secret), "a value leaked: {secret}");
+    }
+}
+
+#[test]
+fn go_routes_link_to_their_clients() {
+    let temp = fixture("contracts-go");
+    let got = summary(&map(temp.path(), &["route"]));
+    for expected in [
+        "GET /users/{}: users/main.go -> frontend/client.go",
+        "ANY /health: users/main.go -> frontend/client.go",
+        "ANY /metrics: users/main.go -> ",
+        "ANY /legacy/users: users/main.go -> ",
+        "GET /carts/{}: users/main.go -> ",
+        "POST /api/carts: users/main.go -> frontend/client.go",
+        "GET /orders/{}: orders/main.go -> frontend/client.go",
+        "POST /api/orders: orders/main.go -> ",
+        "GET /items/{}: orders/main.go -> ",
+        "DELETE /admin/items/{}: orders/main.go -> frontend/client.go",
+    ] {
+        assert!(got.contains(expected), "missing {expected:?} in {got:#?}");
+    }
+    assert_eq!(got.len(), 10, "{got:#?}");
+}
+
+#[test]
+fn go_route_handlers_are_the_functions_they_name() {
+    let temp = fixture("contracts-go");
+    let result = map(temp.path(), &["route", "/users/{}"]);
+    let users = &result["contracts"][0];
+    assert_eq!(users["name"], "GET /users/{}", "{result}");
+    assert_eq!(users["providers"][0]["symbol"], "getUser", "{result}");
+    assert_eq!(users["consumers"][0]["symbol"], "user", "{result}");
+    assert_eq!(users["consumers"][0]["confidence"], "low", "{result}");
+}
+
+#[test]
+fn python_routes_link_to_their_clients() {
+    let temp = fixture("contracts-python");
+    let got = summary(&map(temp.path(), &["route"]));
+    for expected in [
+        "GET /users/{}: api/app.py -> client/client.py",
+        "POST /api/orders: api/app.py -> client/client.py",
+        "GET /api/orders/{}: api/app.py -> client/client.py",
+        "POST /carts/{}: web/app.py -> client/client.py",
+        "GET /carts: web/app.py -> ",
+        "GET /items/{}: web/app.py -> ",
+        "DELETE /items/{}: web/app.py -> client/client.py",
+        "ANY /accounts/{}: shop/shop/urls.py -> client/client.py",
+        "ANY /accounts: shop/shop/urls.py -> ",
+    ] {
+        assert!(got.contains(expected), "missing {expected:?} in {got:#?}");
+    }
+    assert_eq!(got.len(), 9, "{got:#?}");
+}
+
+#[test]
+fn python_route_handlers_are_the_decorated_functions() {
+    let temp = fixture("contracts-python");
+    let result = map(temp.path(), &["route", "/api/orders/{}"]);
+    let orders = &result["contracts"][0];
+    assert_eq!(orders["name"], "GET /api/orders/{}", "{result}");
+    assert_eq!(orders["providers"][0]["symbol"], "get_order", "{result}");
+    assert_eq!(orders["consumers"][0]["symbol"], "get_order", "{result}");
+    assert_eq!(orders["consumers"][0]["confidence"], "medium", "{result}");
+}
+
+#[test]
+fn rails_routes_link_to_ruby_clients() {
+    let temp = fixture("contracts-ruby");
+    let got = summary(&map(temp.path(), &["route"]));
+    let routes = "shop/config/routes.rb";
+    let client = "client/lib/shop_client.rb";
+    for expected in [
+        format!("GET /: {routes} -> "),
+        format!("GET /users/{{}}: {routes} -> {client}"),
+        format!("POST /users: {routes} -> {client}"),
+        format!("GET /orders: {routes} -> "),
+        format!("POST /orders: {routes} -> "),
+        format!("GET /orders/{{}}: {routes} -> {client}"),
+        format!("GET /orders/{{}}/edit: {routes} -> "),
+        format!("PATCH /orders/{{}}: {routes} -> "),
+        format!("PUT /orders/{{}}: {routes} -> "),
+        format!("DELETE /orders/{{}}: {routes} -> "),
+        format!("GET /reviews: {routes} -> {client}"),
+        format!("GET /reviews/{{}}: {routes} -> "),
+        format!("GET /api/status: {routes} -> "),
+        format!("GET /api/carts: {routes} -> "),
+        format!("POST /api/carts: {routes} -> "),
+        format!("GET /api/carts/{{}}: {routes} -> "),
+        format!("DELETE /api/carts/{{}}: {routes} -> {client}"),
+    ] {
+        assert!(got.contains(&expected), "missing {expected:?} in {got:#?}");
+    }
+    assert!(
+        got.iter().any(|c| c.starts_with("GET /orders/new: ")),
+        "{got:#?}"
+    );
+    assert!(
+        !got.iter().any(|c| c.contains("/api/carts/new")
+            || c.contains("/api/carts/{}/edit")
+            || c.contains("/reviews/new")),
+        "{got:#?}"
+    );
+    assert_eq!(got.len(), 20, "{got:#?}");
+}
+
+#[test]
+fn a_spring_mapping_with_several_methods_serves_each() {
+    let temp = TempDir::new().unwrap();
+    let dir = temp.path().join("src/main/java/app");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("FallbackController.java"),
+        "package app;\n\nimport org.springframework.web.bind.annotation.*;\n\n@RestController\npublic class FallbackController {\n    @RequestMapping(value = \"/fallback\", method = {\n        RequestMethod.GET, RequestMethod.POST })\n    public String fallback() { return \"\"; }\n}\n",
+    )
+    .unwrap();
+    let got = summary(&map(temp.path(), &["route"]));
+    assert!(
+        got.iter().any(|c| c.starts_with("GET /fallback:"))
+            && got.iter().any(|c| c.starts_with("POST /fallback:")),
+        "{got:#?}"
+    );
+}

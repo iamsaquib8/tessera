@@ -40,3 +40,11 @@
   (#eq? @route_fn "route")
   (#eq? @method_key "method")
   (#eq? @url_key "url")) @route
+
+; app.use("/api", users): the routes on `users` answer under /api. Joined to
+; the routes at query time, through the file's import of `users`.
+(call_expression
+  function: (member_expression
+    property: (property_identifier) @use_fn)
+  arguments: (arguments . [(string) (template_string)] @path . (identifier) @handler .)
+  (#eq? @use_fn "use")) @mount

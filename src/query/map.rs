@@ -28,7 +28,9 @@ const MANIFESTS: &[&str] = &[
     "composer.json",
     "Dockerfile",
 ];
-pub const KINDS: &[&str] = &["route", "rpc", "topic", "table", "service"];
+pub const KINDS: &[&str] = &[
+    "route", "rpc", "topic", "table", "graphql", "config", "service",
+];
 
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -158,10 +160,18 @@ impl Sources {
         })
     }
 
+    /// Each repository's path prefix (empty outside a workspace) and index.
+    pub fn repos(&self) -> &[(String, Connection)] {
+        &self.repos
+    }
+
     fn load(&self, key_prefix: &str) -> Result<Vec<Fact>> {
         let mut out = Vec::new();
         for (path_prefix, conn) in &self.repos {
             let mut facts = load(conn, key_prefix)?;
+            if "http ".starts_with(key_prefix) || key_prefix.starts_with("http ") {
+                facts = mounted(conn, facts)?;
+            }
             if !path_prefix.is_empty() {
                 for fact in &mut facts {
                     fact.path = format!("{path_prefix}{}", fact.path);
@@ -178,6 +188,75 @@ impl Sources {
 fn reopen(conn: &Connection) -> Result<Connection> {
     let path = conn.path().unwrap_or_default().to_string();
     Ok(crate::db::open_ro(Path::new(&path))?)
+}
+
+/// Routes registered on a router mounted under a prefix
+/// (`app.use("/api", users)`) answer under that prefix, once per mount; the
+/// unprefixed copy is not served.
+fn mounted(conn: &Connection, facts: Vec<Fact>) -> Result<Vec<Fact>> {
+    static RECEIVER: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+        regex::Regex::new(r"^\s*(?:this\.)?(\w+)\s*\.\s*(?:get|post|put|patch|delete|head|options|all|route)\s*\(")
+            .unwrap()
+    });
+    let mut stmt = conn.prepare(
+        "SELECT fl.path, substr(f.key, 7), f.name, f.confidence,
+                (SELECT b.target_path FROM import_bindings b
+                  WHERE b.file_id = f.file_id AND b.local = substr(f.key, 7)
+                    AND b.target_path IS NOT NULL LIMIT 1)
+         FROM facts f JOIN files fl ON fl.id = f.file_id WHERE f.kind = ?1",
+    )?;
+    let mounts: Vec<(String, String, String, String, Option<String>)> = stmt
+        .query_map([kind::MOUNT], |row| {
+            Ok((
+                row.get(0)?,
+                row.get(1)?,
+                row.get(2)?,
+                row.get(3)?,
+                row.get(4)?,
+            ))
+        })?
+        .collect::<rusqlite::Result<_>>()?;
+    if mounts.is_empty() {
+        return Ok(facts);
+    }
+    let mut out = Vec::with_capacity(facts.len());
+    for fact in facts {
+        let receiver = RECEIVER.captures(&fact.evidence).map(|c| c[1].to_string());
+        let parts = fact
+            .key
+            .strip_prefix("http ")
+            .and_then(|k| k.split_once(' '));
+        let (Some(receiver), Some((method, path)), true) =
+            (receiver, parts, fact.kind == kind::ROUTE)
+        else {
+            out.push(fact);
+            continue;
+        };
+        let under: Vec<&(String, String, String, String, Option<String>)> = mounts
+            .iter()
+            .filter(|(file, local, _, _, target)| match target {
+                // An imported router: its file's routes, except the app's own.
+                Some(target) => {
+                    target == &fact.path
+                        && !matches!(receiver.as_str(), "app" | "server" | "fastify" | "App")
+                }
+                None => file == &fact.path && local == &receiver,
+            })
+            .collect();
+        if under.is_empty() {
+            out.push(fact);
+            continue;
+        }
+        for (_, _, prefix, confidence, _) in under {
+            let full = crate::facts::http::join(prefix, path);
+            let mut copy = fact.clone();
+            copy.key = crate::facts::http::key(method, &full);
+            copy.name = format!("{method} {full}");
+            copy.confidence = lower(&fact.confidence, confidence);
+            out.push(copy);
+        }
+    }
+    Ok(out)
 }
 
 fn load(conn: &Connection, prefix: &str) -> Result<Vec<Fact>> {
@@ -343,37 +422,48 @@ fn page_of<T>(items: Vec<T>, args: &MapArgs) -> Result<(Vec<T>, Option<crate::ou
     Ok((items, Some(page)))
 }
 
-/// Caller → callee hops contracts add to the call graph, by symbol id: a
-/// client to the server's handler, a producer to the consumer.
-pub fn links(conn: &Connection) -> Result<HashMap<i64, Vec<i64>>> {
-    let mut out: HashMap<i64, Vec<i64>> = HashMap::new();
-    let has_facts: bool =
-        conn.query_row("SELECT EXISTS (SELECT 1 FROM facts)", [], |row| row.get(0))?;
-    if !has_facts {
-        return Ok(out);
-    }
-    let sources = Sources {
-        repos: vec![(String::new(), reopen(conn)?)],
-        root: PathBuf::new(),
-    };
-    for contract in all(&sources, &mut Services::none(), None)? {
+/// A caller → callee hop a contract adds to the call graph: a client to the
+/// server's handler, a producer to the consumer. Each end is a site's path
+/// (repository-prefixed in a workspace) and symbol id, so a hop can cross
+/// repositories.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct Hop {
+    pub from: (String, i64),
+    pub to: (String, i64),
+    /// The contract, as `kind name` (`route GET /api/users/{}`).
+    pub via: String,
+}
+
+/// Every hop the contracts of these sources add.
+pub fn hops(sources: &Sources) -> Result<Vec<Hop>> {
+    let mut out = Vec::new();
+    for contract in all(sources, &mut Services::none(), None)? {
         let (from, to) = match contract.kind.as_str() {
-            "table" => continue,
+            "table" | "config" => continue,
             "topic" => (&contract.providers, &contract.consumers),
             _ => (&contract.consumers, &contract.providers),
         };
-        for source in from.iter().filter_map(|s| s.symbol_id) {
-            for target in to.iter().filter_map(|s| s.symbol_id) {
+        let via = format!("{} {}", contract.kind, contract.name);
+        let ends = |sites: &[Site]| -> Vec<(String, i64)> {
+            sites
+                .iter()
+                .filter_map(|s| Some((s.path.clone(), s.symbol_id?)))
+                .collect()
+        };
+        for source in ends(from) {
+            for target in ends(to) {
                 if source != target {
-                    out.entry(source).or_default().push(target);
+                    out.push(Hop {
+                        from: source.clone(),
+                        to: target,
+                        via: via.clone(),
+                    });
                 }
             }
         }
     }
-    for targets in out.values_mut() {
-        targets.sort_unstable();
-        targets.dedup();
-    }
+    out.sort();
+    out.dedup();
     Ok(out)
 }
 
@@ -384,7 +474,10 @@ fn service_views(contracts: &[Contract], query: Option<&str>) -> Vec<ServiceView
     let mut views: BTreeMap<String, ServiceView> = BTreeMap::new();
     let services =
         |sites: &[Site]| -> BTreeSet<String> { sites.iter().map(|s| s.service.clone()).collect() };
-    for contract in contracts.iter().filter(|c| c.kind != "table") {
+    for contract in contracts
+        .iter()
+        .filter(|c| c.kind != "table" && c.kind != "config")
+    {
         let up = services(&contract.providers);
         let down = services(&contract.consumers);
         let sides = [
@@ -450,6 +543,26 @@ fn all(sources: &Sources, services: &mut Services, only: Option<&str>) -> Result
             &[],
             &[kind::PRODUCER],
             &[kind::CONSUMER],
+            services,
+        ));
+    }
+    if wants("graphql") {
+        contracts.extend(keyed(
+            "graphql",
+            &sources.load("graphql ")?,
+            &[kind::GQL_DEF],
+            &[kind::GQL_RESOLVER],
+            &[kind::GQL_OP],
+            services,
+        ));
+    }
+    if wants("config") {
+        contracts.extend(keyed(
+            "config",
+            &sources.load("config ")?,
+            &[],
+            &[kind::CONFIG_SET],
+            &[kind::CONFIG_READ],
             services,
         ));
     }
@@ -834,6 +947,7 @@ impl MapResult {
             let labels = match contract.kind.as_str() {
                 "topic" => ["declared", "produced by", "consumed by"],
                 "table" => ["migrated", "mapped by", "queried by"],
+                "config" => ["declared", "set by", "read by"],
                 _ => ["defined", "served by", "called by"],
             };
             let rows = [
