@@ -152,6 +152,12 @@ impl Index {
         query::verify(&self.conn, &self.root, args)
     }
 
+    /// Records today's blocking findings as the baseline (`prune`: keep only
+    /// those that still fire).
+    pub fn baseline(&self, prune: bool) -> Result<query::waivers::BaselineReport> {
+        query::waivers::baseline(&self.conn, &self.root, prune)
+    }
+
     /// The pull-request report for a change: findings, callers, contracts
     /// touched, tests to run.
     pub fn report(&self, changes: &query::Changes) -> Result<query::report::Report> {

@@ -314,7 +314,8 @@ fn verify_schema() -> Value {
             "language": { "type": "string", "enum": ["typescript", "tsx", "javascript", "python", "go", "rust", "java", "c", "cpp", "csharp", "ruby", "php"] },
             "changed": { "type": "boolean", "description": "Check every change in the working tree against HEAD: calls to names that do not exist, wrong argument counts, references the change broke, broken imports, and tests to run." },
             "staged": { "type": "boolean", "description": "Check the staged changes instead." },
-            "diff_from": { "type": "string", "description": "Check the working tree against this git revision instead." }
+            "diff_from": { "type": "string", "description": "Check the working tree against this git revision instead." },
+            "no_baseline": { "type": "boolean", "description": "Count findings in the repository's baseline or accepted breaks as new (they are advisory by default)." }
         }),
         &[],
     )

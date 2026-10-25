@@ -85,6 +85,7 @@
     "diff_from",
     "format",
     "language",
+    "no_baseline",
     "snippet",
     "staged",
     "symbol"

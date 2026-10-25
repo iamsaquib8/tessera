@@ -11,6 +11,7 @@ pub mod report;
 mod search;
 mod status;
 mod verify;
+pub mod waivers;
 
 pub use blast::{BlastArgs, BlastCaller, BlastResult};
 pub use context::{ContextArgs, ContextResult};
@@ -22,8 +23,9 @@ pub use refs::{RefHit, RefsArgs, RefsResult};
 pub use search::{SearchArgs, SearchResults};
 pub use status::{ShadowBinary, StatusResult};
 pub use verify::{
-    changed_paths, problem_keys, problems, verify_changes, verify_paths, verify_problems,
-    with_tests, with_tests_until, Changes, Finding, Problem, VerifyArgs, VerifyResult,
+    changed_paths, fingerprint, problem_keys, problems, problems_with, verify_changes,
+    verify_changes_with, verify_paths, verify_paths_with, verify_problems, with_tests,
+    with_tests_until, Changes, Finding, Problem, VerifyArgs, VerifyResult,
 };
 
 pub use blast::run as blast;

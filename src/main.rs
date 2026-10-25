@@ -160,6 +160,29 @@ enum Commands {
         /// Output: human (default), agent (one line per blocking problem), json, sarif, or markdown (a pull-request comment).
         #[arg(long, value_enum, default_value_t = VerifyFormat::Human)]
         format: VerifyFormat,
+        /// Count baselined and accepted findings as new.
+        #[arg(long)]
+        no_baseline: bool,
+    },
+    /// Record today's blocking findings, so only new ones block from now on.
+    Baseline {
+        /// Keep only the entries that still fire; add none.
+        #[arg(long)]
+        prune: bool,
+    },
+    /// Accept an intended break: the finding is reported, with your reason, and does not block.
+    Accept {
+        /// The finding's fingerprint, from `verify --json`.
+        fingerprint: String,
+        /// Why the break is intended (required).
+        #[arg(long)]
+        reason: Option<String>,
+        /// The date the acceptance lapses, like 2026-12-31.
+        #[arg(long, value_name = "DATE")]
+        expires: Option<String>,
+        /// Who accepted it.
+        #[arg(long)]
+        by: Option<String>,
     },
     /// Contracts between services: routes, gRPC methods, topics and tables, with both sides.
     Map {
@@ -459,6 +482,33 @@ fn run() -> Result<u8> {
             return run_init(&plan, yes, dry_run, &out);
         }
         Commands::Status => out.print(&query::status(&ws)?)?,
+        Commands::Baseline { prune } => {
+            let Some(index) = open_fresh(&ws, &out)? else {
+                return Ok(0);
+            };
+            out.print(&index.baseline(prune)?)?;
+        }
+        Commands::Accept {
+            fingerprint,
+            reason,
+            expires,
+            by,
+        } => {
+            let Some(reason) = reason else {
+                return Err(usage("an accepted break needs --reason"));
+            };
+            let path = query::waivers::accept(
+                &ws.root,
+                &fingerprint,
+                &reason,
+                expires.as_deref(),
+                by.as_deref(),
+            )
+            .map_err(|e| usage(&e.to_string()))?;
+            if !out.quiet {
+                eprintln!("Accepted {fingerprint} in {}.", path.display());
+            }
+        }
         Commands::Find {
             symbol,
             path,
@@ -550,6 +600,7 @@ fn run() -> Result<u8> {
             staged,
             diff,
             format,
+            no_baseline,
         } => {
             let changes = changed || staged || diff.is_some();
             if symbol.is_none() && snippet.is_none() && !changes {
@@ -592,6 +643,7 @@ fn run() -> Result<u8> {
                 changed,
                 staged,
                 diff_from: diff,
+                no_baseline,
             })?;
             match format {
                 _ if out.json => out.print_json(&result)?,

@@ -11,6 +11,7 @@ use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
 
 use super::common::{is_test_path, known_global};
+use super::waivers::Waivers;
 use super::{graph, legacy};
 use crate::extract::parse_file;
 use crate::facts::kind;
@@ -40,6 +41,8 @@ pub struct VerifyArgs {
     pub staged: bool,
     /// Check the working tree against this revision.
     pub diff_from: Option<String>,
+    /// Count baselined and accepted findings as if they were new.
+    pub no_baseline: bool,
 }
 
 fn language_by_name<'de, D: serde::Deserializer<'de>>(
@@ -66,6 +69,9 @@ pub struct Finding {
     /// Stable across edits that only move the code: what a baseline, an
     /// accepted break, or a code-scanning alert is keyed by.
     pub fingerprint: String,
+    /// Present when a baseline or an accepted break covers the finding.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub waived: Option<super::waivers::Waiver>,
 }
 
 /// 16 hex digits of FNV-1a over `text`.
@@ -134,7 +140,12 @@ pub fn run(conn: &Connection, root: &Path, args: &VerifyArgs) -> Result<VerifyRe
         } else {
             Changes::WorkingTree
         };
-        return verify_changes(conn, root, &changes);
+        let waivers = if args.no_baseline {
+            Waivers::none()
+        } else {
+            Waivers::load(root)
+        };
+        return verify_changes_with(conn, root, &changes, &waivers);
     }
     let mut findings = Vec::new();
     if let Some(symbol) = &args.symbol {
@@ -192,6 +203,7 @@ fn unresolved(name: &str, line: Option<usize>, suggestions: Vec<SymbolSuggestion
         line,
         suggestions,
         fingerprint: fingerprint(&format!("V1 {name}")),
+        waived: None,
     }
 }
 
@@ -206,8 +218,18 @@ pub enum Changes {
 /// V1–V4 and V6 over the files a change touches and the code that depends on
 /// them. The index must already reflect the working tree.
 pub fn verify_changes(conn: &Connection, root: &Path, changes: &Changes) -> Result<VerifyResult> {
+    verify_changes_with(conn, root, changes, &Waivers::load(root))
+}
+
+/// [`verify_changes`] with these waivers.
+pub fn verify_changes_with(
+    conn: &Connection,
+    root: &Path,
+    changes: &Changes,
+    waivers: &Waivers,
+) -> Result<VerifyResult> {
     let changed = changed_paths(root, changes)?;
-    verify_paths(conn, root, &changed, changes)
+    verify_paths_with(conn, root, &changed, changes, waivers)
 }
 
 /// The same checks for an explicit set of changed files (hooks pass the
@@ -218,12 +240,20 @@ pub fn verify_paths(
     changed: &HashSet<String>,
     changes: &Changes,
 ) -> Result<VerifyResult> {
-    let findings = problems(conn, root, changed, changes)?
+    verify_paths_with(conn, root, changed, changes, &Waivers::load(root))
+}
+
+/// [`verify_paths`] with these waivers.
+pub fn verify_paths_with(
+    conn: &Connection,
+    root: &Path,
+    changed: &HashSet<String>,
+    changes: &Changes,
+    waivers: &Waivers,
+) -> Result<VerifyResult> {
+    let findings = problems_with(conn, root, changed, changes, waivers)?
         .into_iter()
-        .map(|p| Finding {
-            fingerprint: fingerprint(&p.key),
-            ..p.finding
-        })
+        .map(|p| p.finding)
         .collect();
     with_tests(conn, root, changed, changes, findings)
 }
@@ -260,6 +290,7 @@ pub fn with_tests_until(
             line: None,
             suggestions: Vec::new(),
             fingerprint: String::new(),
+            waived: None,
         });
     }
     Ok(VerifyResult::new(findings, tests))
@@ -288,12 +319,24 @@ pub struct Problem {
     pub key: String,
 }
 
-/// V1–V5 over `changed`, keyed.
+/// V1–V5 over `changed`, keyed, with the repository's baseline and
+/// accepted breaks applied.
 pub fn problems(
     conn: &Connection,
     root: &Path,
     changed: &HashSet<String>,
     changes: &Changes,
+) -> Result<Vec<Problem>> {
+    problems_with(conn, root, changed, changes, &Waivers::load(root))
+}
+
+/// [`problems`] with these waivers.
+pub fn problems_with(
+    conn: &Connection,
+    root: &Path,
+    changed: &HashSet<String>,
+    changes: &Changes,
+    waivers: &Waivers,
 ) -> Result<Vec<Problem>> {
     let rev = match changes {
         Changes::Since(rev) => rev.as_str(),
@@ -316,6 +359,10 @@ pub fn problems(
         let mut contracts = Vec::new();
         contract_breaks(conn, root, changed, rev, &mut contracts)?;
         out.extend(contracts.into_iter().map(contract_problem));
+    }
+    for problem in &mut out {
+        problem.finding.fingerprint = fingerprint(&problem.key);
+        waivers.apply(&mut problem.finding);
     }
     Ok(out)
 }
@@ -476,6 +523,7 @@ fn contract_breaks(
                 line: Some(consumer.line),
                 suggestions: Vec::new(),
                 fingerprint: String::new(),
+                waived: None,
             });
         }
     }
@@ -746,6 +794,7 @@ fn finding(id: &str, path: String, line: usize, message: String) -> Finding {
         line: Some(line),
         suggestions: Vec::new(),
         fingerprint: String::new(),
+        waived: None,
     };
     finding.fingerprint = finding.default_fingerprint();
     finding
@@ -1303,7 +1352,16 @@ impl AgentText for VerifyResult {
                 (None, Some(line)) => format!(" (line {line})"),
                 _ => String::new(),
             };
-            let advisory = if finding.blocking { "" } else { " (advisory)" };
+            let advisory = match &finding.waived {
+                Some(w) if w.expired => format!(
+                    " (accepted until {}, now expired)",
+                    w.expires.as_deref().unwrap_or("?")
+                ),
+                Some(w) if w.by == "baseline" => " (in the baseline)".to_string(),
+                Some(w) => format!(" (accepted: {})", w.reason.as_deref().unwrap_or("")),
+                None if finding.blocking => String::new(),
+                None => " (advisory)".to_string(),
+            };
             out.push_str(&format!(
                 "  [{}]{at} {}{advisory}\n",
                 finding.id, finding.message

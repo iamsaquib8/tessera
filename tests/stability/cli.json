@@ -1,4 +1,26 @@
 {
+  "accept": [
+    "--by",
+    "--db",
+    "--expires",
+    "--help",
+    "--json",
+    "--quiet",
+    "--reason",
+    "--root",
+    "-h",
+    "-q"
+  ],
+  "baseline": [
+    "--db",
+    "--help",
+    "--json",
+    "--prune",
+    "--quiet",
+    "--root",
+    "-h",
+    "-q"
+  ],
   "blast": [
     "--cursor",
     "--db",
@@ -213,6 +235,7 @@
     "--language=rust",
     "--language=tsx",
     "--language=typescript",
+    "--no-baseline",
     "--quiet",
     "--root",
     "--snippet",
