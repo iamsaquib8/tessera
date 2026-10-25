@@ -36,7 +36,7 @@ pub const PACKS: &[Pack] = &[
     Pack {
         id: "express",
         languages: JS,
-        gate: r"\b(app|router|server|routes?|\w*Router|fastify|App)\s*\.\s*(get|post|put|patch|delete|head|options|all|route)\s*\(",
+        gate: r"\b(app|router|server|routes?|\w*Router|fastify|App)\s*\.\s*(get|post|put|patch|delete|head|options|all|route|use)\s*\(",
         query: include_str!("../../packs/express.scm"),
     },
     Pack {
@@ -136,6 +136,7 @@ const FACT_CAPTURES: &[(&str, &str)] = &[
     ("producer", kind::PRODUCER),
     ("consumer", kind::CONSUMER),
     ("entity", kind::ENTITY),
+    ("mount", kind::MOUNT),
 ];
 
 static JAVA_CONSTANT: LazyLock<Regex> = LazyLock::new(|| {
@@ -212,6 +213,7 @@ fn facts(
         kind::ENTITY => entity(pack, source, captures, defaults, captures[capture])
             .into_iter()
             .collect(),
+        kind::MOUNT => mount(pack, source, captures).into_iter().collect(),
         _ => fact(pack, source, captures, defaults).into_iter().collect(),
     }
 }
@@ -332,6 +334,27 @@ fn topics(
             (fact, 0)
         })
         .collect()
+}
+
+/// `app.use("/api", users)`: the prefix, keyed by the mounted name.
+fn mount(
+    pack: &'static str,
+    source: &str,
+    captures: &HashMap<&str, Node<'_>>,
+) -> Option<(IndexedFact, u8)> {
+    let at = *captures.get("mount")?;
+    let (prefix, confidence) = http::path(text(source, *captures.get("path")?))?;
+    let local = text(source, *captures.get("handler")?).to_string();
+    let mut fact = IndexedFact::new(
+        kind::MOUNT,
+        format!("mount {local}"),
+        prefix,
+        at.start_position().row + 1,
+        pack,
+        line_of(source, at),
+    );
+    fact.confidence = confidence;
+    Some((fact, 0))
 }
 
 /// `OwnerPet` → `owner_pet`, the table name ORMs derive by default.

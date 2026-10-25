@@ -44,6 +44,9 @@ pub mod kind {
     pub const ENTITY: &str = "entity";
     /// A SQL statement in code that reads or writes a table.
     pub const SQL: &str = "sql";
+    /// A router mounted under a path (`app.use("/api", users)`): key
+    /// `mount <local name>`, name the prefix.
+    pub const MOUNT: &str = "mount";
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]

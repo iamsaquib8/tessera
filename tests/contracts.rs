@@ -403,3 +403,60 @@ fn a_route_is_served_by_its_handler_not_the_next_function() {
         "{handlers:?}"
     );
 }
+
+#[test]
+fn routes_on_a_mounted_router_carry_the_mount_prefix() {
+    let temp = TempDir::new().unwrap();
+    let files = [
+        (
+            "app.js",
+            "const express = require('express');\n\
+             const users = require('./routes/users');\n\
+             const { ordersRouter } = require('./routes/orders');\n\
+             const app = express();\n\
+             const adminRouter = express.Router();\n\
+             adminRouter.get('/stats', (req, res) => res.send({}));\n\
+             app.use('/api/users', users);\n\
+             app.use('/api', ordersRouter);\n\
+             app.use('/admin', adminRouter);\n\
+             app.get('/health', (req, res) => res.send('ok'));\n",
+        ),
+        (
+            "routes/users.js",
+            "const router = require('express').Router();\n\
+             router.get('/:id', (req, res) => res.send(req.params.id));\n\
+             module.exports = router;\n",
+        ),
+        (
+            "routes/orders.js",
+            "const ordersRouter = require('express').Router();\n\
+             ordersRouter.post('/orders', (req, res) => res.send(req.body));\n\
+             module.exports = { ordersRouter };\n",
+        ),
+        (
+            "web/client.js",
+            "export const user = (id) => fetch(`/api/users/${id}`);\n\
+             export const order = (o) => fetch('/api/orders', { method: 'POST', body: o });\n\
+             export const stats = () => fetch('/admin/stats');\n",
+        ),
+    ];
+    for (path, content) in files {
+        let file = temp.path().join(path);
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(file, content).unwrap();
+    }
+    let got = summary(&map(temp.path(), &["route"]));
+    for expected in [
+        "GET /api/users/{}: routes/users.js -> web/client.js",
+        "POST /api/orders: routes/orders.js -> web/client.js",
+        "GET /admin/stats: app.js -> web/client.js",
+        "GET /health: app.js -> ",
+    ] {
+        assert!(got.contains(expected), "missing {expected}: {got:#?}");
+    }
+    assert!(
+        !got.iter()
+            .any(|c| c.starts_with("GET /{}:") || c.starts_with("GET /stats:")),
+        "unprefixed copies of mounted routes: {got:#?}"
+    );
+}
