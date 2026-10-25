@@ -28,7 +28,7 @@ export default defineConfig({
         { label: "Use", items: ["integrations", "hooks", "contracts", "configuration", "troubleshooting"] },
         { label: "Reference", items: ["mcp", "stability", "accuracy", "agents", "architecture", "when-not-to-use"] },
         { label: "Contribute", items: ["how-to-add-a-language", "how-to-add-an-agent"] },
-        { label: "Roadmap", link: "https://github.com/iamsaquib8/tessera/blob/main/ROADMAP.md" },
+        { label: "Roadmap", items: ["roadmap", "landscape"] },
       ],
     }),
   ],

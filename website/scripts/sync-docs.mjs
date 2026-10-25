@@ -1,5 +1,6 @@
-// Copies the Markdown in ../docs into Starlight's content folder so docs/
-// stays the single source of truth.
+// Copies the Markdown in ../docs (and the roadmap pages kept elsewhere in the
+// repository) into Starlight's content folder, so the repository stays the
+// single source of truth.
 import fs from "node:fs";
 import path from "node:path";
 
@@ -13,7 +14,7 @@ const pages = {
   "first-five-minutes.md": "Look before you edit, check after you edit, with real output.",
   "integrations.md": "Connect Tessera to 24 coding agents.",
   "hooks.md": "Checks before and after every edit, and at the end of each turn.",
-  "contracts.md": "Routes, gRPC, topics and tables across services.",
+  "contracts.md": "Routes, gRPC, GraphQL, topics, tables and config keys across services.",
   "configuration.md": "What gets indexed, and how to change it.",
   "troubleshooting.md": "Fixes for the problems status reports.",
   "mcp.md": "Protocol versions, transports, and the nine tools.",
@@ -26,25 +27,42 @@ const pages = {
   "how-to-add-an-agent.md": "Add an agent integration.",
 };
 
-function rewriteLinks(markdown) {
+// Pages whose source lives outside docs/: slug → [path from the root, description].
+const extra = {
+  "roadmap.md": ["ROADMAP.md", "What comes next, and what proves each step done."],
+  "landscape.md": [
+    "docs/design/2026-10-25-landscape.md",
+    "Other tools for agent code context, contracts, tests and guardrails, and what Tessera takes from them.",
+  ],
+};
+
+// Every synced source, by absolute path, with its slug and description.
+const sources = new Map([
+  ...Object.entries(pages).map(([file, description]) => [path.join(docs, file), [file, description]]),
+  ...Object.entries(extra).map(([file, [source, description]]) => [path.join(root, source), [file, description]]),
+]);
+
+/** Links to synced pages point at the site; the rest at the repository. */
+function rewriteLinks(markdown, fromDir) {
   return markdown.replace(/\]\(([^)\s]+)\)/g, (match, target) => {
     if (/^(https?:|mailto:|#)/.test(target)) return match;
     const [file, anchor = ""] = target.split("#");
     const hash = anchor ? `#${anchor}` : "";
-    if (pages[file]) return `](../${file.replace(/\.md$/, "")}/${hash})`;
-    const resolved = path.relative(root, path.resolve(docs, file));
-    return `](${repo}/${resolved}${hash})`;
+    const resolved = path.resolve(fromDir, file);
+    const page = sources.get(resolved);
+    if (page) return `](../${page[0].replace(/\.md$/, "")}/${hash})`;
+    return `](${repo}/${path.relative(root, resolved)}${hash})`;
   });
 }
 
 fs.rmSync(out, { recursive: true, force: true });
 fs.mkdirSync(out, { recursive: true });
-for (const [file, description] of Object.entries(pages)) {
-  const source = fs.readFileSync(path.join(docs, file), "utf8");
+for (const [sourcePath, [file, description]] of sources) {
+  const source = fs.readFileSync(sourcePath, "utf8");
   const [, title = file] = source.match(/^#\s+(.+)$/m) ?? [];
-  const body = rewriteLinks(source.replace(/^#\s+.+\n+/, ""));
+  const body = rewriteLinks(source.replace(/^#\s+.+\n+/, ""), path.dirname(sourcePath));
   const frontmatter = `---\ntitle: ${JSON.stringify(title)}\ndescription: ${JSON.stringify(description)}\n---\n\n`;
   fs.writeFileSync(path.join(out, file), frontmatter + body);
 }
 fs.copyFileSync(path.join(import.meta.dirname, "..", "src", "index.mdx"), path.join(out, "index.mdx"));
-console.log(`synced ${Object.keys(pages).length} pages`);
+console.log(`synced ${sources.size} pages`);
