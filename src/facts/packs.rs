@@ -32,6 +32,7 @@ const JS: &[Language] = &[Language::JavaScript, Language::TypeScript, Language::
 const TS: &[Language] = &[Language::TypeScript, Language::Tsx];
 const JAVA: &[Language] = &[Language::Java];
 const GO: &[Language] = &[Language::Go];
+const PYTHON: &[Language] = &[Language::Python];
 
 pub const PACKS: &[Pack] = &[
     Pack {
@@ -105,6 +106,30 @@ pub const PACKS: &[Pack] = &[
         languages: GO,
         gate: r"\bhttp\.(Get|Head|Post|PostForm|NewRequest|NewRequestWithContext)\(|[Cc]lient\.(Get|Head|Post|PostForm)\(",
         query: include_str!("../../packs/go-http-clients.scm"),
+    },
+    Pack {
+        id: "fastapi",
+        languages: PYTHON,
+        gate: r"@\s*\w+\.(get|post|put|patch|delete|head|options|api_route)\(",
+        query: include_str!("../../packs/fastapi.scm"),
+    },
+    Pack {
+        id: "flask",
+        languages: PYTHON,
+        gate: r"@\s*\w+\.route\(",
+        query: include_str!("../../packs/flask.scm"),
+    },
+    Pack {
+        id: "django",
+        languages: PYTHON,
+        gate: r"\burlpatterns\b",
+        query: include_str!("../../packs/django.scm"),
+    },
+    Pack {
+        id: "python-http-clients",
+        languages: PYTHON,
+        gate: r"\b(requests|httpx|client|session|http|sess|\w+_client|\w+_session)\.(get|post|put|patch|delete|head|options|request)\(|\b(Client|AsyncClient|Session)\(\)\.",
+        query: include_str!("../../packs/python-http-clients.scm"),
     },
 ];
 

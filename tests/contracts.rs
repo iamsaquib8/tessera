@@ -435,3 +435,34 @@ fn go_route_handlers_are_the_functions_they_name() {
     assert_eq!(users["consumers"][0]["symbol"], "user", "{result}");
     assert_eq!(users["consumers"][0]["confidence"], "low", "{result}");
 }
+
+#[test]
+fn python_routes_link_to_their_clients() {
+    let temp = fixture("contracts-python");
+    let got = summary(&map(temp.path(), &["route"]));
+    for expected in [
+        "GET /users/{}: api/app.py -> client/client.py",
+        "POST /api/orders: api/app.py -> client/client.py",
+        "GET /api/orders/{}: api/app.py -> client/client.py",
+        "POST /carts/{}: web/app.py -> client/client.py",
+        "GET /carts: web/app.py -> ",
+        "GET /items/{}: web/app.py -> ",
+        "DELETE /items/{}: web/app.py -> client/client.py",
+        "ANY /accounts/{}: shop/shop/urls.py -> client/client.py",
+        "ANY /accounts: shop/shop/urls.py -> ",
+    ] {
+        assert!(got.contains(expected), "missing {expected:?} in {got:#?}");
+    }
+    assert_eq!(got.len(), 9, "{got:#?}");
+}
+
+#[test]
+fn python_route_handlers_are_the_decorated_functions() {
+    let temp = fixture("contracts-python");
+    let result = map(temp.path(), &["route", "/api/orders/{}"]);
+    let orders = &result["contracts"][0];
+    assert_eq!(orders["name"], "GET /api/orders/{}", "{result}");
+    assert_eq!(orders["providers"][0]["symbol"], "get_order", "{result}");
+    assert_eq!(orders["consumers"][0]["symbol"], "get_order", "{result}");
+    assert_eq!(orders["consumers"][0]["confidence"], "medium", "{result}");
+}
