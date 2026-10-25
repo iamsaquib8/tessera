@@ -235,10 +235,8 @@ fn read_header(reader: &mut impl BufRead, display: &str) -> Result<Header> {
     }
     let mut line = Vec::new();
     reader.take(MAX_HEADER_BYTES).read_until(b'\n', &mut line)?;
-    let value: serde_json::Value = match line.strip_suffix(b"\n") {
-        Some(json) => serde_json::from_slice(json).map_err(|_| foreign())?,
-        None => return Err(foreign()),
-    };
+    let json = line.strip_suffix(b"\n").ok_or_else(foreign)?;
+    let value: serde_json::Value = serde_json::from_slice(json).map_err(|_| foreign())?;
     let format = value["format"].as_u64().unwrap_or_default();
     if format != FORMAT {
         return Err(refused(format!(
