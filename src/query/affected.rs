@@ -295,7 +295,7 @@ fn changed_tests(
     changes: &Changes,
     base: &str,
     seeds: &Seeds,
-    walk: &mut Walk,
+    walk: &mut Walk<'_>,
 ) -> Result<Vec<AffectedTest>> {
     let added = added(root, changes, base);
     let mut paths: Vec<&String> = changed
@@ -333,7 +333,7 @@ fn changed_tests(
 /// take as parameters rather than call.
 fn reached_tests(
     seeds: &Seeds,
-    walk: &mut Walk,
+    walk: &mut Walk<'_>,
     suite: &BTreeSet<String>,
 ) -> Result<Vec<AffectedTest>> {
     let mut out: Vec<AffectedTest> = seeds
