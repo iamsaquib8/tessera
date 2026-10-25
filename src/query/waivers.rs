@@ -251,6 +251,31 @@ pub fn write_baseline(root: &Path, findings: &[Finding]) -> Result<usize> {
     Ok(count)
 }
 
+#[derive(Debug, Clone, Default)]
+pub struct WaiverSummary {
+    pub baseline: usize,
+    pub accepted: usize,
+    pub expired: usize,
+}
+
+/// How many findings the baseline and the accepted breaks cover.
+pub fn summary(root: &Path) -> WaiverSummary {
+    let accepted: Vec<Accepted> = fs::read_to_string(dir(root).join(ACCEPTED_FILE))
+        .ok()
+        .and_then(|text| toml::from_str::<AcceptedFile>(&text).ok())
+        .map(|file| file.accept)
+        .unwrap_or_default();
+    let today = today();
+    WaiverSummary {
+        baseline: baseline_fingerprints(root).len(),
+        expired: accepted
+            .iter()
+            .filter(|a| a.expires.as_deref().is_some_and(|d| d < today.as_str()))
+            .count(),
+        accepted: accepted.len(),
+    }
+}
+
 /// The fingerprints the current baseline holds, if there is one.
 pub fn baseline_fingerprints(root: &Path) -> HashSet<String> {
     fs::read_to_string(dir(root).join(BASELINE_FILE))

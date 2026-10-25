@@ -1167,3 +1167,87 @@ fn the_same_event_run_twice_at_once_is_answered_once() {
     assert!(outputs[0].get("decision").is_none(), "{outputs:?}");
     assert_eq!(outputs[0], outputs[1]);
 }
+
+#[test]
+fn stats_summarise_what_the_hooks_did_without_recording_code() {
+    let temp = repo();
+    let root = temp.path();
+    start_indexed(root);
+    let repo_ts = fs::read_to_string(root.join("src/users/repo.ts")).unwrap();
+    write(
+        root,
+        "src/users/repo.ts",
+        &repo_ts.replace("findById(id: string)", "findUser(id: string)"),
+    );
+    claude(
+        root,
+        "PostToolUse",
+        edit_payload(
+            root,
+            "src/users/repo.ts",
+            "findById(id: string)",
+            "findUser(id: string)",
+        ),
+    );
+    let stop = claude(root, "Stop", json!({ "stop_hook_active": false }));
+    assert_eq!(stop["decision"], "block", "{stop}");
+    replace_in(
+        root,
+        "src/users/repo.ts",
+        "repo.findById(id)",
+        "repo.findUser(id)",
+    );
+    claude(
+        root,
+        "PostToolUse",
+        edit_payload(
+            root,
+            "src/users/repo.ts",
+            "repo.findById(id)",
+            "repo.findUser(id)",
+        ),
+    );
+    assert_eq!(
+        claude(root, "Stop", json!({ "stop_hook_active": true })),
+        Value::Null
+    );
+
+    let output = Command::cargo_bin("tessera")
+        .unwrap()
+        .current_dir(root)
+        .args(["--quiet", "--json", "stats"])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stats: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(stats["sessions"], 1, "{stats}");
+    assert_eq!(stats["edits_checked"], 2, "{stats}");
+    assert_eq!(stats["stop_blocks"], 1, "{stats}");
+    assert!(stats["problems_fixed"].as_u64().unwrap() >= 1, "{stats}");
+    assert!(
+        stats["latency_ms"]["post_edit"]["p50"].is_number(),
+        "{stats}"
+    );
+
+    let log = fs::read_to_string(root.join(".tessera/events.jsonl")).unwrap();
+    for private in ["repo.ts", "findUser", "loadUser", root.to_str().unwrap()] {
+        assert!(
+            !log.contains(private),
+            "the event log holds {private}: {log}"
+        );
+    }
+    let text = Command::cargo_bin("tessera")
+        .unwrap()
+        .current_dir(root)
+        .args(["--quiet", "stats"])
+        .output()
+        .unwrap();
+    assert!(
+        String::from_utf8_lossy(&text.stdout).contains("stop blocks"),
+        "{text:?}"
+    );
+}

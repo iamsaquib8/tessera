@@ -164,6 +164,12 @@ enum Commands {
         #[arg(long)]
         no_baseline: bool,
     },
+    /// What the edit hooks did here: edits checked, blocks, problems fixed, latency. Local only.
+    Stats {
+        /// How many days back to look.
+        #[arg(long, default_value_t = 30)]
+        days: u32,
+    },
     /// Record today's blocking findings, so only new ones block from now on.
     Baseline {
         /// Keep only the entries that still fire; add none.
@@ -482,6 +488,13 @@ fn run() -> Result<u8> {
             return run_init(&plan, yes, dry_run, &out);
         }
         Commands::Status => out.print(&query::status(&ws)?)?,
+        Commands::Stats { days } => {
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| d.as_millis() as u64);
+            let index_dir = ws.db_path.parent().unwrap_or(Path::new("."));
+            out.print(&hook::events::stats(index_dir, &ws.root, days, now))?;
+        }
         Commands::Baseline { prune } => {
             let Some(index) = open_fresh(&ws, &out)? else {
                 return Ok(0);

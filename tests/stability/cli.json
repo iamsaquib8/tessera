@@ -189,6 +189,16 @@
     "-h",
     "-q"
   ],
+  "stats": [
+    "--days",
+    "--db",
+    "--help",
+    "--json",
+    "--quiet",
+    "--root",
+    "-h",
+    "-q"
+  ],
   "status": [
     "--db",
     "--help",
