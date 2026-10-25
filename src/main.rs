@@ -7,6 +7,7 @@ use anyhow::{anyhow, Result};
 use clap::{CommandFactory, Parser, Subcommand, ValueEnum};
 use serde::Serialize;
 
+use tessera_codegraph::cache;
 use tessera_codegraph::db;
 use tessera_codegraph::fresh::{self, Freshness, Refresh};
 use tessera_codegraph::hook::{self, HookOptions};
@@ -157,7 +158,7 @@ enum Commands {
         /// Check the working tree against this git revision.
         #[arg(long, value_name = "REV", conflicts_with_all = ["symbol", "snippet"])]
         diff: Option<String>,
-        /// Output: human (default), agent (one line per blocking problem), json, sarif, or markdown (a pull-request comment).
+        /// Output: human (default), agent (one line per blocking problem), json, sarif, markdown (a pull-request comment), gitlab (Code Quality), azure (logging commands), bitbucket (Code Insights), or ndjson (one finding per line).
         #[arg(long, value_enum, default_value_t = VerifyFormat::Human)]
         format: VerifyFormat,
         /// Count baselined and accepted findings as new.
@@ -293,10 +294,29 @@ enum Commands {
         #[arg(long, value_name = "ADDR")]
         http: Option<String>,
     },
+    /// Save the index to one file, or load it from one, for a CI cache.
+    Cache {
+        #[command(subcommand)]
+        action: CacheAction,
+    },
     /// Print a shell completion script.
     Completions {
         #[arg(value_enum)]
         shell: clap_complete::Shell,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum CacheAction {
+    /// Write the index, brought up to date, to FILE: a compressed snapshot that another checkout can import.
+    Export {
+        /// Cache file to write.
+        file: PathBuf,
+    },
+    /// Install the index from FILE, then re-index the files that differ from the working tree. Exits 3 when the cache is from another Tessera version, configuration or repository.
+    Import {
+        /// Cache file to read.
+        file: PathBuf,
     },
 }
 
@@ -378,6 +398,14 @@ enum VerifyFormat {
     Sarif,
     /// A pull-request comment: findings, callers, contracts, tests to run.
     Markdown,
+    /// GitLab Code Quality report (JSON array).
+    Gitlab,
+    /// Azure DevOps logging commands, one per problem.
+    Azure,
+    /// Bitbucket Code Insights report and annotations (JSON).
+    Bitbucket,
+    /// One finding per line, then a summary line.
+    Ndjson,
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
@@ -666,6 +694,14 @@ fn run() -> Result<u8> {
                 VerifyFormat::Sarif => {
                     println!("{}", serde_json::to_string_pretty(&result.sarif())?)
                 }
+                VerifyFormat::Gitlab => {
+                    println!("{}", serde_json::to_string_pretty(&result.gitlab())?)
+                }
+                VerifyFormat::Azure => print!("{}", result.azure()),
+                VerifyFormat::Bitbucket => {
+                    println!("{}", serde_json::to_string_pretty(&result.bitbucket())?)
+                }
+                VerifyFormat::Ndjson => print!("{}", result.ndjson()),
                 VerifyFormat::Markdown => unreachable!("handled above"),
             }
             if !result.ok {
@@ -775,6 +811,21 @@ fn run() -> Result<u8> {
         Commands::Mcp { http } => match http {
             Some(addr) => mcp::serve_http(ws, &addr)?,
             None => mcp::serve_stdio(ws)?,
+        },
+        Commands::Cache { action } => match action {
+            CacheAction::Export { file } => out.print(&cache::export(&ws, &file)?)?,
+            CacheAction::Import { file } => match cache::import(&ws, &file) {
+                Ok(report) => out.print(&report)?,
+                Err(error) => {
+                    if out.json {
+                        out.print_json(&serde_json::json!({
+                            "imported": false,
+                            "reason": format!("{error:#}"),
+                        }))?;
+                    }
+                    return Err(error);
+                }
+            },
         },
         Commands::Completions { shell } => {
             clap_complete::generate(

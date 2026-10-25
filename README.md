@@ -173,7 +173,10 @@ One comment per pull request, updated on every push: problems to fix,
 contracts the change touches, callers of the changed code, and tests to
 run. On forks it writes the job summary instead. The same report is
 `tessera verify --diff <base> --format markdown` for any other CI.
-[action/README.md](action/README.md) lists the inputs.
+[action/README.md](action/README.md) lists the inputs, including
+`upload-sarif` for code scanning. GitLab Code Quality, Azure DevOps,
+Bitbucket Code Insights and NDJSON formats, and an index cache for any
+CI (`tessera cache export` / `import`), are in [docs/ci.md](docs/ci.md).
 
 ## Works with every agent and every model
 

@@ -58,6 +58,14 @@ the vendor.
 **The pull-request report.** The `<!-- tessera -->` marker that the GitHub
 Action uses to find its own comment, and the Action's inputs and outputs.
 
+**Review formats.** The fields of `verify --format sarif`, `gitlab`,
+`bitbucket` and `ndjson` (pinned like `--json`), the shape of `azure`
+logging commands, and each finding's `fingerprint`
+([docs/ci.md](ci.md)).
+
+**Cache files.** A cache file written by one Tessera version is imported
+only by that version; any other refuses it and indexes from scratch.
+
 **Files you write.** `tessera.workspace.toml` and `.tessera/config.toml`
 keep their format.
 

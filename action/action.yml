@@ -24,6 +24,9 @@ inputs:
   token:
     description: Token used to comment.
     default: ${{ github.token }}
+  upload-sarif:
+    description: "`true` also uploads the findings to GitHub code scanning (category `tessera`). The job needs `security-events: write`; a fork's read-only token skips the upload."
+    default: "false"
 
 outputs:
   blocking:
@@ -44,15 +47,8 @@ runs:
         sh "$GITHUB_ACTION_PATH/../install.sh"
         echo "${TESSERA_INSTALL_DIR}" >> "$GITHUB_PATH"
 
-    - name: Restore the index
-      uses: actions/cache@v4
-      with:
-        path: .tessera/tessera.db
-        key: tessera-${{ runner.os }}-${{ github.sha }}
-        restore-keys: tessera-${{ runner.os }}-
-
-    - name: Report
-      id: report
+    - name: Index cache key
+      id: key
       shell: bash
       env:
         BASE: ${{ inputs.base || github.event.pull_request.base.sha }}
@@ -63,6 +59,39 @@ runs:
           exit 1
         fi
         git cat-file -e "$BASE^{commit}" 2>/dev/null || git fetch --no-tags --depth=1 origin "$BASE"
+        # The change starts from its merge base; a shallow clone without the
+        # history to find it starts from the base itself.
+        merge_base=$(git merge-base HEAD "$BASE" 2>/dev/null || echo "$BASE")
+        echo "tree=$(git rev-parse "$merge_base^{tree}")" >> "$GITHUB_OUTPUT"
+        echo "version=$("$TESSERA" --version | awk '{print $2}')" >> "$GITHUB_OUTPUT"
+
+    # Tessera makes no network calls: actions/cache moves the cache file.
+    - name: Restore the index
+      id: restore
+      uses: actions/cache/restore@v4
+      with:
+        path: ${{ runner.temp }}/tessera-index.cache
+        key: tessera-${{ runner.os }}-${{ steps.key.outputs.version }}-${{ steps.key.outputs.tree }}
+        restore-keys: tessera-${{ runner.os }}-${{ steps.key.outputs.version }}-
+
+    - name: Import the index
+      shell: bash
+      env:
+        TESSERA: ${{ inputs.binary || 'tessera' }}
+        CACHE: ${{ runner.temp }}/tessera-index.cache
+      run: |
+        # A cache Tessera refuses (another configuration) only means a full index.
+        if [ -f "$CACHE" ]; then
+          "$TESSERA" --quiet cache import "$CACHE" || echo "Indexing from scratch." >&2
+        fi
+
+    - name: Report
+      id: report
+      shell: bash
+      env:
+        BASE: ${{ inputs.base || github.event.pull_request.base.sha }}
+        TESSERA: ${{ inputs.binary || 'tessera' }}
+      run: |
         set +e
         "$TESSERA" --quiet verify --diff "$BASE" --format markdown > "$RUNNER_TEMP/tessera-report.md"
         code=$?
@@ -72,6 +101,46 @@ runs:
           exit "$code"
         fi
         if [ "$code" -eq 1 ]; then echo "blocking=true" >> "$GITHUB_OUTPUT"; else echo "blocking=false" >> "$GITHUB_OUTPUT"; fi
+
+    - name: Export the index
+      id: export
+      if: steps.restore.outputs.cache-hit != 'true'
+      shell: bash
+      env:
+        TESSERA: ${{ inputs.binary || 'tessera' }}
+        CACHE: ${{ runner.temp }}/tessera-index.cache
+      run: |
+        "$TESSERA" --quiet cache export "$CACHE" || echo "Could not export the index; it is not cached." >&2
+
+    - name: Save the index
+      if: steps.restore.outputs.cache-hit != 'true'
+      uses: actions/cache/save@v4
+      with:
+        path: ${{ runner.temp }}/tessera-index.cache
+        key: ${{ steps.restore.outputs.cache-primary-key }}
+
+    - name: Code scanning results
+      if: inputs.upload-sarif == 'true'
+      shell: bash
+      env:
+        BASE: ${{ inputs.base || github.event.pull_request.base.sha }}
+        TESSERA: ${{ inputs.binary || 'tessera' }}
+      run: |
+        set +e
+        "$TESSERA" --quiet verify --diff "$BASE" --format sarif > "$RUNNER_TEMP/tessera.sarif"
+        code=$?
+        set -e
+        if [ "$code" -gt 1 ]; then exit "$code"; fi
+
+    - name: Upload to code scanning
+      id: sarif
+      if: inputs.upload-sarif == 'true'
+      # A fork's token cannot write security events; the comment still works.
+      continue-on-error: true
+      uses: github/codeql-action/upload-sarif@v3
+      with:
+        sarif_file: ${{ runner.temp }}/tessera.sarif
+        category: tessera
 
     - name: Comment
       if: inputs.comment == 'true' && github.event.pull_request.number
