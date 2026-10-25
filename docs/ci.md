@@ -184,3 +184,36 @@ can act on each finding as it reads it:
 ```sh
 tessera verify --changed --format ndjson | jq -c 'select(.blocking == true)'
 ```
+
+## Baseline and accepted breaks
+
+On a repository that already has problems, turning on a check that fails
+the build on every old one is how checks get turned off. Record what is
+there today, and only new problems block:
+
+```sh
+tessera baseline                 # writes .tessera/baseline.json; commit it
+tessera verify --diff origin/main
+```
+
+A finding in the baseline is still reported, marked `(in the baseline)`,
+with `waived: {"by": "baseline"}` in JSON, and it does not block: not in
+`verify`, not in the Action's `fail-on: blocking`, not in the edit hooks.
+`tessera baseline --prune` drops entries that no longer fire, and
+`verify --no-baseline` shows everything.
+
+An intended break, such as an endpoint removed on purpose while its last
+client is migrated, gets a reviewed record instead of a disabled check:
+
+```sh
+tessera accept 3f9a0c1e8b2d4471 --reason "orders v1 retired; web moves in #412" --expires 2026-12-31 --by sam
+```
+
+Fingerprints come from `verify --json` (every finding has one; it stays the
+same when lines move). The entry goes to `.tessera/accepted.toml`, which is
+committed and reviewed like code. Until it expires, the finding is
+reported with its reason and does not block; after that it blocks again.
+
+Both files are read leniently in one direction only: a file that cannot be
+read is named on stderr and waives nothing, so a broken file never turns
+checks off.
