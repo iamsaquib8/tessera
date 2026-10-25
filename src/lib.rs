@@ -141,7 +141,7 @@ impl Index {
     }
 
     pub fn path(&self, args: &PathArgs) -> Result<ConnectResult> {
-        query::path(&self.conn, args)
+        query::path(&self.conn, &self.root, args)
     }
 
     pub fn context(&self, args: &ContextArgs) -> Result<ContextResult> {

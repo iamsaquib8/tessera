@@ -158,6 +158,11 @@ impl Sources {
         })
     }
 
+    /// Each repository's path prefix (empty outside a workspace) and index.
+    pub fn repos(&self) -> &[(String, Connection)] {
+        &self.repos
+    }
+
     fn load(&self, key_prefix: &str) -> Result<Vec<Fact>> {
         let mut out = Vec::new();
         for (path_prefix, conn) in &self.repos {
@@ -343,37 +348,48 @@ fn page_of<T>(items: Vec<T>, args: &MapArgs) -> Result<(Vec<T>, Option<crate::ou
     Ok((items, Some(page)))
 }
 
-/// Caller → callee hops contracts add to the call graph, by symbol id: a
-/// client to the server's handler, a producer to the consumer.
-pub fn links(conn: &Connection) -> Result<HashMap<i64, Vec<i64>>> {
-    let mut out: HashMap<i64, Vec<i64>> = HashMap::new();
-    let has_facts: bool =
-        conn.query_row("SELECT EXISTS (SELECT 1 FROM facts)", [], |row| row.get(0))?;
-    if !has_facts {
-        return Ok(out);
-    }
-    let sources = Sources {
-        repos: vec![(String::new(), reopen(conn)?)],
-        root: PathBuf::new(),
-    };
-    for contract in all(&sources, &mut Services::none(), None)? {
+/// A caller → callee hop a contract adds to the call graph: a client to the
+/// server's handler, a producer to the consumer. Each end is a site's path
+/// (repository-prefixed in a workspace) and symbol id, so a hop can cross
+/// repositories.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct Hop {
+    pub from: (String, i64),
+    pub to: (String, i64),
+    /// The contract, as `kind name` (`route GET /api/users/{}`).
+    pub via: String,
+}
+
+/// Every hop the contracts of these sources add.
+pub fn hops(sources: &Sources) -> Result<Vec<Hop>> {
+    let mut out = Vec::new();
+    for contract in all(sources, &mut Services::none(), None)? {
         let (from, to) = match contract.kind.as_str() {
             "table" => continue,
             "topic" => (&contract.providers, &contract.consumers),
             _ => (&contract.consumers, &contract.providers),
         };
-        for source in from.iter().filter_map(|s| s.symbol_id) {
-            for target in to.iter().filter_map(|s| s.symbol_id) {
+        let via = format!("{} {}", contract.kind, contract.name);
+        let ends = |sites: &[Site]| -> Vec<(String, i64)> {
+            sites
+                .iter()
+                .filter_map(|s| Some((s.path.clone(), s.symbol_id?)))
+                .collect()
+        };
+        for source in ends(from) {
+            for target in ends(to) {
                 if source != target {
-                    out.entry(source).or_default().push(target);
+                    out.push(Hop {
+                        from: source.clone(),
+                        to: target,
+                        via: via.clone(),
+                    });
                 }
             }
         }
     }
-    for targets in out.values_mut() {
-        targets.sort_unstable();
-        targets.dedup();
-    }
+    out.sort();
+    out.dedup();
     Ok(out)
 }
 
