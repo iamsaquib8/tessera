@@ -769,7 +769,11 @@ fn a_change_reached_through_test_main_runs_the_whole_go_package() {
         "go/calc/main_test.go",
         "package calc\n\nimport (\n\t\"os\"\n\t\"testing\"\n)\n\nfunc TestMain(m *testing.M) {\n\tsetup()\n\tos.Exit(m.Run())\n}\n",
     );
-    write(root, "go/calc/setup.go", "package calc\n\nvar ready bool\n\nfunc setup() {\n\tready = true\n}\n");
+    write(
+        root,
+        "go/calc/setup.go",
+        "package calc\n\nvar ready bool\n\nfunc setup() {\n\tready = true\n}\n",
+    );
     git(root, &["add", "."]);
     git(root, &["commit", "-q", "-m", "setup"]);
     edit(root, "go/calc/setup.go", "ready = true", "ready = !ready");

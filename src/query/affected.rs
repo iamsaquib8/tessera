@@ -728,6 +728,12 @@ const BUILD_FILES: &[&str] = &[
     "directory.build.props",
     "directory.packages.props",
     "cmakelists.txt",
+    "makefile",
+    "gnumakefile",
+    ".npmrc",
+    ".yarnrc",
+    ".yarnrc.yml",
+    ".pnpmfile.cjs",
 ];
 /// Test runner, toolchain and CI configuration, by file name or prefix.
 const CONFIG_FILES: &[&str] = &[
@@ -765,7 +771,13 @@ const CONFIG_PREFIXES: &[&str] = &[
     "cypress.config.",
     "phpunit.xml",
 ];
-const CONFIG_DIRS: &[&str] = &[".github/workflows/", ".circleci/", ".buildkite/", ".cargo/"];
+const CONFIG_DIRS: &[&str] = &[
+    ".github/workflows/",
+    ".github/actions/",
+    ".circleci/",
+    ".buildkite/",
+    ".cargo/",
+];
 const FIXTURE_DIRS: &[&str] = &[
     "fixtures",
     "fixture",
@@ -786,13 +798,23 @@ fn trigger(path: &str) -> Option<&'static str> {
     if LOCKFILES.contains(&name) {
         return Some("a lockfile");
     }
-    let requirements = (name.starts_with("requirements") || name.starts_with("constraints"))
-        && name.ends_with(".txt");
+    let pip = name.ends_with(".txt") || name.ends_with(".in");
+    let requirements = pip
+        && (name.starts_with("requirements")
+            || name.starts_with("constraints")
+            || lower.split('/').any(|dir| dir == "requirements"));
     if BUILD_FILES.contains(&name)
         || requirements
-        || [".csproj", ".sln", ".gemspec"]
-            .iter()
-            .any(|ext| name.ends_with(ext))
+        || [
+            ".csproj",
+            ".sln",
+            ".gemspec",
+            ".gradle",
+            ".gradle.kts",
+            ".versions.toml",
+        ]
+        .iter()
+        .any(|ext| name.ends_with(ext))
     {
         return Some("a build file");
     }
@@ -1662,6 +1684,21 @@ mod tests {
             ),
             ("tests/stability/cli.json", "a test fixture or snapshot"),
             ("go/testdata/in.txt", "a test fixture or snapshot"),
+            ("requirements/base.txt", "a build file"),
+            ("svc/requirements/dev.in", "a build file"),
+            ("gradle/libs.versions.toml", "a build file"),
+            (
+                "buildSrc/src/main/kotlin/java-conventions.gradle.kts",
+                "a build file",
+            ),
+            ("lib/deps.gradle", "a build file"),
+            ("Makefile", "a build file"),
+            ("web/.npmrc", "a build file"),
+            (".yarnrc.yml", "a build file"),
+            (
+                ".github/actions/setup/action.yml",
+                "test or CI configuration",
+            ),
         ] {
             assert_eq!(trigger(path), Some(what), "{path}");
         }
