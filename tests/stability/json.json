@@ -299,6 +299,7 @@
     "findings",
     "findings[].blocking",
     "findings[].confidence",
+    "findings[].fingerprint",
     "findings[].id",
     "findings[].line",
     "findings[].message",

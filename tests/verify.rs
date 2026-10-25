@@ -1016,3 +1016,37 @@ fn changed_fixtures_and_snapshots_are_not_tests_to_run() {
         "{tests:?}"
     );
 }
+
+#[test]
+fn a_finding_keeps_its_fingerprint_when_lines_move() {
+    let temp = repo();
+    edit(
+        temp.path(),
+        "src/users/repo.ts",
+        "findById(id: string): string {",
+        "findOne(id: string): string {",
+    );
+    let (_, _, first) = verify_changed(temp.path());
+    let print = |value: &serde_json::Value| -> Vec<String> {
+        value["findings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|f| f["id"] != "V6")
+            .map(|f| f["fingerprint"].as_str().unwrap().to_string())
+            .collect()
+    };
+    let before = print(&first);
+    assert!(
+        !before.is_empty() && before.iter().all(|f| f.len() == 16),
+        "{first}"
+    );
+    edit(
+        temp.path(),
+        "src/users/repo.ts",
+        "export class UserRepo {",
+        "\n\nexport class UserRepo {",
+    );
+    let (_, _, second) = verify_changed(temp.path());
+    assert_eq!(print(&second), before, "{second}");
+}

@@ -63,6 +63,32 @@ pub struct Finding {
     pub path: Option<String>,
     pub line: Option<usize>,
     pub suggestions: Vec<SymbolSuggestion>,
+    /// Stable across edits that only move the code: what a baseline, an
+    /// accepted break, or a code-scanning alert is keyed by.
+    pub fingerprint: String,
+}
+
+/// 16 hex digits of FNV-1a over `text`.
+pub fn fingerprint(text: &str) -> String {
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for byte in text.as_bytes() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x0100_0000_01b3);
+    }
+    format!("{hash:016x}")
+}
+
+impl Finding {
+    /// The fingerprint of a finding with no semantic key: its check, file
+    /// and message, which name the symbols involved but not the line.
+    fn default_fingerprint(&self) -> String {
+        fingerprint(&format!(
+            "{} {} {}",
+            self.id,
+            self.path.as_deref().unwrap_or_default(),
+            self.message
+        ))
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -84,6 +110,9 @@ impl VerifyResult {
                 .then(a.line.cmp(&b.line))
         });
         findings.dedup_by(|a, b| a.id == b.id && a.path == b.path && a.line == b.line);
+        for finding in findings.iter_mut().filter(|f| f.fingerprint.is_empty()) {
+            finding.fingerprint = finding.default_fingerprint();
+        }
         Self {
             ok: !findings.iter().any(|f| f.blocking),
             findings,
@@ -162,6 +191,7 @@ fn unresolved(name: &str, line: Option<usize>, suggestions: Vec<SymbolSuggestion
         path: None,
         line,
         suggestions,
+        fingerprint: fingerprint(&format!("V1 {name}")),
     }
 }
 
@@ -190,7 +220,10 @@ pub fn verify_paths(
 ) -> Result<VerifyResult> {
     let findings = problems(conn, root, changed, changes)?
         .into_iter()
-        .map(|p| p.finding)
+        .map(|p| Finding {
+            fingerprint: fingerprint(&p.key),
+            ..p.finding
+        })
         .collect();
     with_tests(conn, root, changed, changes, findings)
 }
@@ -226,6 +259,7 @@ pub fn with_tests_until(
             path: Some(test.clone()),
             line: None,
             suggestions: Vec::new(),
+            fingerprint: String::new(),
         });
     }
     Ok(VerifyResult::new(findings, tests))
@@ -441,6 +475,7 @@ fn contract_breaks(
                 path: Some(consumer.path),
                 line: Some(consumer.line),
                 suggestions: Vec::new(),
+                fingerprint: String::new(),
             });
         }
     }
@@ -698,7 +733,7 @@ fn blocks(path: &str) -> bool {
 
 fn finding(id: &str, path: String, line: usize, message: String) -> Finding {
     let blocking = blocks(&path);
-    Finding {
+    let mut finding = Finding {
         id: id.to_string(),
         confidence: if blocking {
             Confidence::High
@@ -710,7 +745,10 @@ fn finding(id: &str, path: String, line: usize, message: String) -> Finding {
         path: Some(path),
         line: Some(line),
         suggestions: Vec::new(),
-    }
+        fingerprint: String::new(),
+    };
+    finding.fingerprint = finding.default_fingerprint();
+    finding
 }
 
 struct MissingRow {
