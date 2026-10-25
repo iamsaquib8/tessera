@@ -629,6 +629,7 @@ fn added(root: &Path, changes: &Changes, base: &str) -> HashSet<String> {
             "diff",
             "--name-only",
             "--relative",
+            "--no-renames",
             "--diff-filter=A",
             since,
         ],

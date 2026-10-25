@@ -321,6 +321,42 @@ fn a_changed_client_selects_the_tests_of_the_service_it_calls() {
 }
 
 #[test]
+fn a_renamed_file_counts_as_deleted_at_its_old_path() {
+    // Committed, staged, and in the working tree: git reports a rename
+    // under the new name only, but the importers of the old one break.
+    for mode in ["committed", "staged", "working tree"] {
+        let temp = repo(
+            "typescript",
+            &[("test/i18n.test.ts", I18N_TEST), ("yarn.lock", "# lock\n")],
+        );
+        let root = temp.path();
+        git(root, &["mv", "src/util/format.ts", "src/util/fmt.ts"]);
+        let args: &[&str] = match mode {
+            "committed" => {
+                git(root, &["commit", "-q", "-m", "rename"]);
+                &["HEAD~1"]
+            }
+            "staged" => &["--staged"],
+            _ => &[],
+        };
+        let value = affected_json(root, args);
+        assert_eq!(
+            selected(&value),
+            vec!["test/repo.test.ts reached"],
+            "{mode}: {value:#}"
+        );
+
+        git(root, &["mv", "yarn.lock", "yarn.lock.bak"]);
+        if mode == "committed" {
+            git(root, &["commit", "-q", "-m", "rename the lockfile"]);
+        }
+        let value = affected_json(root, args);
+        let reason = value["full_run"].as_str().unwrap_or_default();
+        assert!(reason.contains("yarn.lock"), "{mode}: {value:#}");
+    }
+}
+
+#[test]
 fn lockfiles_build_files_config_and_fixtures_run_the_full_suite() {
     let temp = ts_repo();
     let root = temp.path();

@@ -1297,11 +1297,23 @@ pub fn changed_paths(root: &Path, changes: &Changes) -> Result<HashSet<String>> 
     let mut paths = String::new();
     match changes {
         Changes::WorkingTree => {
-            paths.push_str(&git(&["diff", "--name-only", "--relative", "HEAD"])?);
+            paths.push_str(&git(&[
+                "diff",
+                "--name-only",
+                "--relative",
+                "--no-renames",
+                "HEAD",
+            ])?);
             paths.push_str(&git(&["ls-files", "--others", "--exclude-standard"])?);
         }
         Changes::Staged => {
-            paths.push_str(&git(&["diff", "--name-only", "--relative", "--cached"])?);
+            paths.push_str(&git(&[
+                "diff",
+                "--name-only",
+                "--relative",
+                "--no-renames",
+                "--cached",
+            ])?);
         }
         Changes::Since(rev) => {
             if rev.starts_with('-') {
@@ -1314,7 +1326,13 @@ pub fn changed_paths(root: &Path, changes: &Changes) -> Result<HashSet<String>> 
                 "--end-of-options",
                 &format!("{rev}^{{commit}}"),
             ])?;
-            paths.push_str(&git(&["diff", "--name-only", "--relative", commit.trim()])?);
+            paths.push_str(&git(&[
+                "diff",
+                "--name-only",
+                "--relative",
+                "--no-renames",
+                commit.trim(),
+            ])?);
             paths.push_str(&git(&["ls-files", "--others", "--exclude-standard"])?);
         }
     }
