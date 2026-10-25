@@ -220,3 +220,44 @@ fn the_baseline_and_accepted_files_can_be_committed() {
     assert!(status.contains(".tessera/baseline.json"), "{status}");
     assert!(!status.contains("tessera.db"), "{status}");
 }
+
+#[test]
+fn an_expiry_that_is_not_a_date_blocks_and_a_toml_date_works() {
+    let temp = legacy_repo();
+    let root = temp.path();
+    touch_legacy(root);
+    let (_, value) = verify(root, &[]);
+    let print = problems(&value)[0]["fingerprint"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let accepted = root.join(".tessera/accepted.toml");
+    fs::create_dir_all(accepted.parent().unwrap()).unwrap();
+
+    for expires in ["\"never\"", "\"31.12.2999\"", "\"2999-13-01\""] {
+        fs::write(
+            &accepted,
+            format!("[[accept]]\nfingerprint = \"{print}\"\nreason = \"r\"\nexpires = {expires}\n"),
+        )
+        .unwrap();
+        let (code, out, err) = tessera(root, &["--json", "verify", "--changed"]);
+        assert_eq!(code, 1, "{expires} never expires otherwise: {out}");
+        assert!(err.contains("is not a date"), "{expires}: {err}");
+    }
+
+    // A bare TOML date is a date.
+    fs::write(
+        &accepted,
+        format!("[[accept]]\nfingerprint = \"{print}\"\nreason = \"r\"\nexpires = 2999-01-01\n"),
+    )
+    .unwrap();
+    let (code, value) = verify(root, &[]);
+    assert_eq!(code, 0, "{value}");
+    assert_eq!(problems(&value)[0]["waived"]["expires"], "2999-01-01");
+
+    let (code, _, err) = tessera(
+        root,
+        &["accept", &print, "--reason", "r", "--expires", "2026-02-30"],
+    );
+    assert_eq!(code, 2, "an impossible date: {err}");
+}

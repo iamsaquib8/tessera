@@ -61,8 +61,56 @@ struct AcceptedFile {
 struct Accepted {
     fingerprint: String,
     reason: String,
+    #[serde(default, deserialize_with = "as_written")]
     expires: Option<String>,
     by: Option<String>,
+}
+
+/// `expires` as written: a quoted string, or a bare TOML date.
+fn as_written<'de, D>(deserializer: D) -> std::result::Result<Option<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Ok(match Option::<toml::Value>::deserialize(deserializer)? {
+        None => None,
+        Some(toml::Value::String(text)) => Some(text),
+        Some(toml::Value::Datetime(date)) => Some(date.to_string()),
+        // Never a date: the acceptance lapses, and the warning names the type.
+        Some(other) => Some(format!("a TOML {}", other.type_str())),
+    })
+}
+
+/// `YYYY-MM-DD`, a day that exists.
+fn is_date(text: &str) -> bool {
+    let bytes = text.as_bytes();
+    let digits = bytes.len() == 10
+        && bytes.iter().enumerate().all(|(i, b)| {
+            if i == 4 || i == 7 {
+                *b == b'-'
+            } else {
+                b.is_ascii_digit()
+            }
+        });
+    if !digits {
+        return false;
+    }
+    let number = |from: usize, to: usize| text[from..to].parse::<u32>().unwrap_or(0);
+    let (year, month, day) = (number(0, 4), number(5, 7), number(8, 10));
+    let leap = year % 4 == 0 && (year % 100 != 0 || year % 400 == 0);
+    let days = match month {
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        4 | 6 | 9 | 11 => 30,
+        2 if leap => 29,
+        2 => 28,
+        _ => return false,
+    };
+    (1..=days).contains(&day)
+}
+
+/// An acceptance lapses after its `expires` day (UTC), and at once when
+/// `expires` is not a date: a typo never accepts a break for good.
+fn lapsed(expires: Option<&str>, today: &str) -> bool {
+    expires.is_some_and(|date| !is_date(date) || date < today)
 }
 
 #[derive(Debug, Default)]
@@ -105,6 +153,15 @@ impl Waivers {
         if let Ok(text) = fs::read_to_string(&accepted) {
             match toml::from_str::<AcceptedFile>(&text) {
                 Ok(file) => {
+                    for entry in &file.accept {
+                        if let Some(date) = entry.expires.as_deref().filter(|d| !is_date(d)) {
+                            eprintln!(
+                                "tessera: {}: expires `{date}` for {} is not a date like 2026-12-31, so that break counts again",
+                                accepted.display(),
+                                entry.fingerprint
+                            );
+                        }
+                    }
                     waivers.accepted = file
                         .accept
                         .into_iter()
@@ -124,10 +181,7 @@ impl Waivers {
     /// Marks `finding` waived, and not blocking, when a waiver covers it.
     pub fn apply(&self, finding: &mut Finding) {
         if let Some(accepted) = self.accepted.get(&finding.fingerprint) {
-            let expired = accepted
-                .expires
-                .as_deref()
-                .is_some_and(|date| date < today().as_str());
+            let expired = lapsed(accepted.expires.as_deref(), &today());
             finding.waived = Some(Waiver {
                 by: "accepted".to_string(),
                 reason: Some(accepted.reason.clone()),
@@ -270,7 +324,7 @@ pub fn summary(root: &Path) -> WaiverSummary {
         baseline: baseline_fingerprints(root).len(),
         expired: accepted
             .iter()
-            .filter(|a| a.expires.as_deref().is_some_and(|d| d < today.as_str()))
+            .filter(|a| lapsed(a.expires.as_deref(), &today))
             .count(),
         accepted: accepted.len(),
     }
@@ -301,18 +355,8 @@ pub fn accept(
     if reason.trim().is_empty() {
         bail!("an accepted break needs a --reason");
     }
-    if let Some(date) = expires {
-        let valid = date.len() == 10
-            && date.char_indices().all(|(i, c)| {
-                if i == 4 || i == 7 {
-                    c == '-'
-                } else {
-                    c.is_ascii_digit()
-                }
-            });
-        if !valid {
-            bail!("--expires takes a date like 2026-12-31, not `{date}`");
-        }
+    if let Some(date) = expires.filter(|d| !is_date(d)) {
+        bail!("--expires takes a date like 2026-12-31, not `{date}`");
     }
     let dir = dir(root);
     fs::create_dir_all(&dir)?;
@@ -365,6 +409,29 @@ fn today() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn dates_are_days_that_exist() {
+        for date in ["2026-12-31", "2028-02-29", "2000-02-29"] {
+            assert!(is_date(date), "{date}");
+        }
+        for date in [
+            "2026-02-29",
+            "1900-02-29",
+            "2026-13-01",
+            "2026-00-10",
+            "2026-04-31",
+            "2026-1-1",
+            "never",
+            "+026-01-01",
+        ] {
+            assert!(!is_date(date), "{date}");
+        }
+        assert!(lapsed(Some("never"), "2026-10-26"));
+        assert!(lapsed(Some("2026-10-25"), "2026-10-26"));
+        assert!(!lapsed(Some("2026-10-26"), "2026-10-26"));
+        assert!(!lapsed(None, "2026-10-26"));
+    }
 
     #[test]
     fn today_is_an_iso_date() {
