@@ -1103,6 +1103,21 @@ fn lexical_target(from: &str, source: &str) -> Option<String> {
     Some(strip_extension(&parts.join("/")))
 }
 
+/// A test file a runner can run: source code under a test path, not the
+/// fixtures, snapshots or data files the tests read.
+fn runnable_test(path: &str) -> bool {
+    let data = [
+        "fixtures",
+        "fixture",
+        "testdata",
+        "snapshots",
+        "__snapshots__",
+    ];
+    is_test_path(path)
+        && !path.split('/').any(|segment| data.contains(&segment))
+        && Language::from_path(Path::new(path)).is_some_and(|l| !l.is_data())
+}
+
 /// V6: test files that reach a changed symbol, plus changed test files.
 fn tests_to_run(
     conn: &Connection,
@@ -1113,7 +1128,7 @@ fn tests_to_run(
 ) -> Result<Vec<String>> {
     let mut tests: BTreeSet<String> = changed
         .iter()
-        .filter(|p| is_test_path(p))
+        .filter(|p| runnable_test(p))
         .cloned()
         .collect();
     let rev = match changes {
@@ -1141,7 +1156,9 @@ fn tests_to_run(
             break;
         }
         for test in graph::tests_reaching(conn, seed, TEST_DEPTH, TEST_SCAN_CAP)? {
-            tests.insert(test.path);
+            if runnable_test(&test.path) {
+                tests.insert(test.path);
+            }
         }
     }
     Ok(tests.into_iter().collect())
