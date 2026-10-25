@@ -1385,3 +1385,47 @@ fn every_review_format_from_the_cli() {
         blocking["fingerprint"]
     );
 }
+
+#[test]
+fn the_report_runs_what_affected_selects_and_says_when_everything_should_run() {
+    let temp = TempDir::new().unwrap();
+    let root = temp.path();
+    let write = |path: &str, text: &str| {
+        let file = root.join(path);
+        fs::create_dir_all(file.parent().unwrap()).unwrap();
+        fs::write(file, text).unwrap();
+    };
+    write(
+        "src/a.ts",
+        "export function f(): number {\n  return 1;\n}\n",
+    );
+    for i in 0..55 {
+        write(
+            &format!("test/t{i:02}.test.ts"),
+            "import { f } from \"../src/a\";\n\ntest(\"f\", () => {\n  expect(f()).toBe(1);\n});\n",
+        );
+    }
+    assert!(StdCommand::new("git")
+        .args(["init", "-q"])
+        .current_dir(root)
+        .status()
+        .unwrap()
+        .success());
+    commit_all(root);
+    edit(root, "src/a.ts", "return 1;", "return 2;");
+    let (_, text) = markdown(root, &["--changed"]);
+    assert!(text.contains("Tests to run (55)"), "{text}");
+    assert!(text.contains("test/t49.test.ts\n"), "{text}");
+    assert!(!text.contains("test/t50.test.ts\n"), "{text}");
+    assert!(
+        text.contains("…and 5 more"),
+        "the block says what it cut: {text}"
+    );
+
+    write("package-lock.json", "{}\n");
+    let (_, text) = markdown(root, &["--changed"]);
+    assert!(
+        text.contains("Every test should run: package-lock.json changed (a lockfile)"),
+        "{text}"
+    );
+}

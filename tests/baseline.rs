@@ -261,3 +261,42 @@ fn an_expiry_that_is_not_a_date_blocks_and_a_toml_date_works() {
     );
     assert_eq!(code, 2, "an impossible date: {err}");
 }
+
+#[test]
+fn the_pull_request_report_says_why_a_finding_is_waived() {
+    let temp = legacy_repo();
+    let root = temp.path();
+    touch_legacy(root);
+    let report = |root: &Path| tessera(root, &["verify", "--changed", "--format", "markdown"]).1;
+
+    tessera(root, &["baseline"]);
+    assert!(
+        report(root).contains("(in the baseline)"),
+        "{}",
+        report(root)
+    );
+
+    fs::remove_file(root.join(".tessera/baseline.json")).unwrap();
+    let (_, value) = verify(root, &[]);
+    let print = problems(&value)[0]["fingerprint"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    tessera(root, &["accept", &print, "--reason", "findOne lands in v2"]);
+    let text = report(root);
+    assert!(text.contains("(accepted: findOne lands in v2)"), "{text}");
+
+    fs::write(
+        root.join(".tessera/accepted.toml"),
+        format!(
+            "[[accept]]\nfingerprint = \"{print}\"\nreason = \"old\"\nexpires = \"2001-01-01\"\n"
+        ),
+    )
+    .unwrap();
+    let text = report(root);
+    assert!(text.contains("1 problem to fix"), "{text}");
+    assert!(
+        text.contains("(accepted until 2001-01-01, now expired)"),
+        "{text}"
+    );
+}

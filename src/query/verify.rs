@@ -95,6 +95,21 @@ impl Finding {
             self.message
         ))
     }
+
+    /// Why a waiver covers this finding, or why it no longer does.
+    pub fn waiver_note(&self) -> Option<String> {
+        let waiver = self.waived.as_ref()?;
+        Some(if waiver.expired {
+            format!(
+                "accepted until {}, now expired",
+                waiver.expires.as_deref().unwrap_or("?")
+            )
+        } else if waiver.by == "baseline" {
+            "in the baseline".to_string()
+        } else {
+            format!("accepted: {}", waiver.reason.as_deref().unwrap_or(""))
+        })
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1370,13 +1385,8 @@ impl AgentText for VerifyResult {
                 (None, Some(line)) => format!(" (line {line})"),
                 _ => String::new(),
             };
-            let advisory = match &finding.waived {
-                Some(w) if w.expired => format!(
-                    " (accepted until {}, now expired)",
-                    w.expires.as_deref().unwrap_or("?")
-                ),
-                Some(w) if w.by == "baseline" => " (in the baseline)".to_string(),
-                Some(w) => format!(" (accepted: {})", w.reason.as_deref().unwrap_or("")),
+            let advisory = match finding.waiver_note() {
+                Some(note) => format!(" ({note})"),
                 None if finding.blocking => String::new(),
                 None => " (advisory)".to_string(),
             };
