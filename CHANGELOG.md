@@ -2,6 +2,29 @@
 
 All notable changes to Tessera are documented here.
 
+## 1.1.0 - Unreleased
+
+The contract map, completed: more frameworks, two new contract kinds, and
+paths that cross repositories.
+
+### Added
+
+- **Express mounts:** `app.use("/api", users)` serves the routes on `users`
+  under `/api`, whether the router is defined in the same file or required
+  or imported from another.
+- **Go, Python and Ruby web frameworks:** net/http (with Go 1.22 method
+  patterns), chi, gin and echo; FastAPI, Flask and Django; Rails
+  `routes.rb` with `resources`. Clients: Go `net/http`, Python `requests`
+  and `httpx`, Ruby `Net::HTTP`, Faraday and HTTParty.
+- **GraphQL** (`tessera map graphql`): root fields in schemas, Apollo and
+  NestJS resolvers, and the operations that select them.
+- **Config keys** (`tessera map config`): `.env` files, Dockerfiles,
+  Compose and Spring properties set keys; code in every language reads
+  them. Keys bind like Spring's relaxed binding; values are never stored.
+- **`path` across repositories:** in a workspace, a path can run from a
+  client in one repository into the handler of another; each hop through a
+  contract names it (`via route GET /api/users/{}`).
+
 ## 1.0.1 - 2026-10-21
 
 ### Fixed

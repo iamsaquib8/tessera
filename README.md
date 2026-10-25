@@ -50,10 +50,10 @@ against it:
   Hooks run it after every edit and hold the agent at "done" until the
   breakage is fixed, in Claude Code, Codex, Gemini CLI, Copilot, Cursor and
   more.
-- **Across services:** `map` links HTTP routes, gRPC methods, Kafka topics,
-  and tables to the code on both sides, in any language Tessera reads, so a
-  changed endpoint shows the frontend code that calls it, and `verify`
-  catches a removed route that a client still calls.
+- **Across services:** `map` links HTTP routes, gRPC methods, GraphQL fields,
+  Kafka topics, tables, and config keys to the code on both sides, in any
+  language Tessera reads, so a changed endpoint shows the frontend code that
+  calls it, and `verify` catches a removed route that a client still calls.
 - **On every pull request:** the GitHub Action comments what the change
   breaks, who calls the changed code, and which tests to run.
 
@@ -120,7 +120,7 @@ docker run --rm -v "$PWD:/work" ghcr.io/iamsaquib8/tessera status
 | `tessera refs <symbol \| file>` | Who calls it? Who imports this file? |
 | `tessera search <pattern>` / `--unused` | Which symbols match? Which functions are never called? |
 | `tessera path <from> <to>` | Does A reach B, and how? Follows routes and gRPC calls across services |
-| `tessera map <route\|rpc\|topic\|table\|service> [query]` | Which services call this endpoint, method, topic, or table? |
+| `tessera map <route\|rpc\|graphql\|topic\|table\|config\|service> [query]` | Which services call this endpoint, method, field, or topic? Who sets the config key this code reads? |
 | `tessera ui` | What does my working tree change, and how do the services connect? In the browser |
 | `tessera status` | Is the index fresh? Is anything misconfigured? |
 | `tessera init` | Wire Tessera into the agents this project uses |

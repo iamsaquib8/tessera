@@ -1,7 +1,7 @@
 # Contract map
 
-Services talk through contracts: HTTP routes, gRPC methods, message topics,
-and database tables. `tessera map` finds both sides of each one, in any
+Services talk through contracts: HTTP routes, gRPC methods, GraphQL
+fields, message topics, database tables, and configuration keys. `tessera map` finds both sides of each one, in any
 language Tessera reads, so you can see which other services a change
 reaches before you make it.
 
@@ -10,6 +10,8 @@ tessera map route /api/users      # routes, with the requests that reach them
 tessera map rpc GetCart           # gRPC methods: .proto, servers, clients
 tessera map topic orders          # Kafka (and Rabbit/JMS/SQS) producers and consumers
 tessera map table owners          # migrations, mapped models, SQL in code
+tessera map graphql user          # schema fields, resolvers, operations
+tessera map config DATABASE_URL   # who sets a key, who reads it
 tessera map service checkout      # what a service serves and calls
 ```
 
@@ -32,10 +34,18 @@ same data is the MCP `map` tool, and `--json` gives it to scripts.
 
 | Contract | Providers | Consumers |
 | --- | --- | --- |
-| HTTP | Express, Fastify, Koa-router style routers; NestJS controllers; Next.js `pages/api` and `app/**/route.ts`; Spring MVC and WebFlux mappings; Go `net/http` `HandleFunc`/`Handle` (with Go 1.22 `"GET /path"` patterns), chi (with `r.Route` prefixes), gin and echo (with `Group` prefixes); FastAPI and Flask decorators (with `APIRouter(prefix=…)` and `Blueprint(url_prefix=…)`), Django `path()` in `urlpatterns`; Rails `routes.rb` verbs, `root`, and `resources` (the REST routes, with `only:`/`except:`), inside one `namespace` or `scope`; OpenAPI 3 and Swagger documents (as declarations) | `fetch`, axios and axios instances, ky, SWR; Spring Feign interfaces, `RestTemplate`, `WebClient`/`RestClient`; MockMvc and WebTestClient requests in tests; Go `http.Get`/`Post`/`Head`, `client.Get`, `http.NewRequest(WithContext)` (including `fmt.Sprintf` URLs); Python `requests`, `httpx` (functions, `Client`, `AsyncClient`) and sessions; Ruby `Net::HTTP` with `URI(…)`, Faraday (and its connections), HTTParty |
+| HTTP | Express, Fastify, Koa-router style routers, with `app.use("/prefix", router)` mounts followed through the file the router comes from; NestJS controllers; Next.js `pages/api` and `app/**/route.ts`; Spring MVC and WebFlux mappings; Go `net/http` `HandleFunc`/`Handle` (with Go 1.22 `"GET /path"` patterns), chi (with `r.Route` prefixes), gin and echo (with `Group` prefixes); FastAPI and Flask decorators (with `APIRouter(prefix=…)` and `Blueprint(url_prefix=…)`), Django `path()` in `urlpatterns`; Rails `routes.rb` verbs, `root`, and `resources` (the REST routes, with `only:`/`except:`), inside one `namespace` or `scope`; OpenAPI 3 and Swagger documents (as declarations) | `fetch`, axios and axios instances, ky, SWR; Spring Feign interfaces, `RestTemplate`, `WebClient`/`RestClient`; MockMvc and WebTestClient requests in tests; Go `http.Get`/`Post`/`Head`, `client.Get`, `http.NewRequest(WithContext)` (including `fmt.Sprintf` URLs); Python `requests`, `httpx` (functions, `Client`, `AsyncClient`) and sessions; Ruby `Net::HTTP` with `URI(…)`, Faraday (and its connections), HTTParty |
 | gRPC | `.proto` services (declarations); Go `RegisterXServer` and handler methods; Python `XServicer` subclasses; Java `XImplBase`; C# `X.XBase` overrides; C++ `X::Service` overrides; Node `addService` | Go `NewXClient`; Python `XStub`; Java `XGrpc.new*Stub` and stub-typed fields; C# `X.XClient`; C++ `X::NewStub`; Node proto-loader and ts-proto clients |
 | Topics | `KafkaTemplate.send`, kafkajs `producer.send`, NestJS `client.emit` | `@KafkaListener` (and Rabbit, JMS, SQS listeners), kafkajs `subscribe`, NestJS `@EventPattern`/`@MessagePattern` |
 | Tables | `CREATE`/`ALTER`/`DROP TABLE` in `.sql` migrations (declarations); JPA `@Entity`/`@Table`, TypeORM `@Entity`, Sequelize models, Prisma models | SQL statements in string literals, including JPQL entity names |
+| GraphQL | Root fields of `type Query`/`Mutation`/`Subscription` in `.graphql`/`.gql` files and `gql` templates (declarations); Apollo resolver maps; NestJS `@Query`/`@Mutation`/`@Subscription` methods (with `name:`) | Operations in `.graphql` files and `gql`/`graphql` tagged templates, by the root fields they select |
+| Config keys | `.env` and `.env.*` files, Dockerfile `ENV`, Compose `environment:` blocks, Spring `application*.yml`/`.properties` | `process.env`, `import.meta.env`, `Deno.env.get`, `os.environ`/`os.getenv`, `os.Getenv`/`LookupEnv`, viper, `System.getenv`, `@Value("${…}")`, `env.getProperty`, `ENV[…]`/`ENV.fetch`, `env::var`/`env!`, `GetEnvironmentVariable`, and `${…}` placeholders in config files |
+
+Configuration keys bind the way Spring's relaxed binding does:
+`SPRING_DATASOURCE_URL`, `spring.datasource.url` and `spring.data-source.url`
+are one key. Only keys are kept, never values; a setter's evidence is its key
+alone. Config keys and tables are listed but not drawn as links between
+services, and `path` does not follow them.
 
 Generated code (protobuf stubs and anything marked generated) is skipped.
 
@@ -119,8 +129,18 @@ but it is no longer held out.
 
 ## Limits
 
-- Express routers mounted under a prefix (`app.use("/api", router)`) are not
-  followed yet, so their routes miss clients that include the prefix.
+- Express mounts are followed one level: `app.use("/api", users)` where
+  `users` is a router in the same file or the file it is required or
+  imported from. A router that is itself mounted on another router, or
+  passed through a function, keeps its own paths only. V5 compares the
+  paths routes are declared with, so a removed route on a mounted router is
+  checked without its prefix.
+- GraphQL links root fields only: nested resolvers (`User.name`) and
+  fragments are not contracts. Schemas built in code (`buildSchema`,
+  code-first type classes) are read only when they are `gql` documents.
+- Config keys set by Kubernetes manifests, Helm values, CI variables or a
+  secrets manager are not read; a key read through a wrapper of your own
+  (`config.get("X")`) is not seen.
 - Go, Python and Ruby route prefixes are read only within one file and one
   level: a gin or echo `Group` assigned and used in the same block, a chi
   `r.Route` body, a module-level `APIRouter`/`Blueprint`, one Rails
