@@ -17,7 +17,7 @@ const pages = {
   "contracts.md": "Routes, gRPC, GraphQL, topics, tables and config keys across services.",
   "configuration.md": "What gets indexed, and how to change it.",
   "troubleshooting.md": "Fixes for the problems status reports.",
-  "mcp.md": "Protocol versions, transports, and the nine tools.",
+  "mcp.md": "Protocol versions, transports, and the ten tools.",
   "stability.md": "What every 1.x release keeps working.",
   "accuracy.md": "How often each confidence level is right, measured.",
   "agents.md": "Sourced matrix of agent MCP and hook capabilities.",

@@ -5,7 +5,8 @@ use super::protocol::{RpcError, INVALID_PARAMS};
 use super::ServerState;
 use crate::output::AgentText;
 use crate::query::{
-    BlastArgs, ContextArgs, FindArgs, MapArgs, PathArgs, RefsArgs, SearchArgs, VerifyArgs,
+    AffectedArgs, BlastArgs, ContextArgs, FindArgs, MapArgs, PathArgs, RefsArgs, SearchArgs,
+    VerifyArgs,
 };
 use crate::Index;
 
@@ -33,7 +34,7 @@ pub fn registry() -> &'static [ToolSpec] {
     &REGISTRY
 }
 
-static REGISTRY: [ToolSpec; 9] = [
+static REGISTRY: [ToolSpec; 10] = [
     ToolSpec {
         name: "find",
         title: "Find definition",
@@ -96,6 +97,13 @@ static REGISTRY: [ToolSpec; 9] = [
         description: "Index health: repository root, freshness, file and symbol counts, languages, and setup hints. Call when results look stale or empty.",
         input_schema: status_schema,
         run: |index, args| run_query(args, false, |_: Value| index.status()),
+    },
+    ToolSpec {
+        name: "affected",
+        title: "Tests to run",
+        description: "The test files a change reaches, each with why: the call path from the changed symbol, across service contracts (a changed route selects its clients' tests). New, changed and `failed` tests always run; a lockfile, build file, test config or fixture change, or a `Tessera-No-Skip` commit trailer, selects every test. Compares the working tree with `rev` (default HEAD), or the `staged` changes. `explain` says why one test is or is not selected; `package` keeps one workspace package. Paginated.",
+        input_schema: affected_schema,
+        run: |index, args| run_query(args, true, |a: AffectedArgs| index.affected(&a)),
     },
 ];
 
@@ -356,4 +364,21 @@ fn map_schema() -> Value {
 
 fn status_schema() -> Value {
     schema(json!({}), &[])
+}
+
+fn affected_schema() -> Value {
+    schema(
+        merge(
+            json!({
+                "rev": { "type": "string", "description": "Git revision to compare the working tree with (default HEAD)." },
+                "staged": { "type": "boolean", "description": "Select for the staged changes instead." },
+                "failed": { "type": "array", "items": { "type": "string" }, "description": "Test paths that failed in an earlier run; they always run." },
+                "explain": { "type": "string", "description": "A test path: say why it is or is not selected." },
+                "package": { "type": "string", "description": "Only tests in this workspace package." },
+                "depth": { "type": "integer", "minimum": 1, "maximum": 12, "description": "Calls or contracts a test may be from the change (default 6)." }
+            }),
+            paging(),
+        ),
+        &[],
+    )
 }

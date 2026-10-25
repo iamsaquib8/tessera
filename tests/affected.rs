@@ -677,3 +677,49 @@ fn the_library_pages_the_selection() {
     assert_eq!(result.totals.selected, 2);
     assert!(result.page.next_cursor.is_some());
 }
+
+#[test]
+fn the_mcp_tool_selects_and_explains() {
+    let temp = ts_repo();
+    let root = temp.path();
+    edit(
+        root,
+        "src/util/format.ts",
+        "name.trim()",
+        "name.trim().toLowerCase()",
+    );
+    let dir = temp_dir_outside();
+    let db = dir.path().join("tessera.db");
+    Index::build(root, &db, IndexOptions::default()).unwrap();
+    let index = Index::open(&db).unwrap();
+    let tool = tessera_codegraph::mcp::registry()
+        .iter()
+        .find(|tool| tool.name == "affected")
+        .expect("an `affected` MCP tool");
+    let output = (tool.run)(
+        &index,
+        json!({ "failed": ["test/i18n.test.ts"], "explain": "test/repo.test.ts" }),
+    )
+    .unwrap_or_else(|_| panic!("the affected tool failed"));
+    assert!(
+        output
+            .text
+            .starts_with("test/repo.test.ts is selected (reached)"),
+        "{}",
+        output.text
+    );
+    assert!(
+        output.text.contains("2 of 2 test files selected"),
+        "{}",
+        output.text
+    );
+    assert_eq!(output.json["totals"]["selected"], 2);
+
+    let tools = tessera_codegraph::mcp::registry();
+    let schema = (tools
+        .iter()
+        .find(|t| t.name == "affected")
+        .unwrap()
+        .input_schema)();
+    assert_eq!(schema["required"], json!([]));
+}

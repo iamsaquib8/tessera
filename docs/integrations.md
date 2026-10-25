@@ -2,7 +2,7 @@
 
 Tessera never calls a language model, so it works with any model:
 Claude, GPT, Gemini, Grok, DeepSeek, Qwen, or a local one. What matters is
-the **agent** you run. Every agent that speaks MCP gets the nine tools
+the **agent** you run. Every agent that speaks MCP gets the ten tools
 below; agents with hook systems also get [checks before and after every
 edit](hooks.md).
 
