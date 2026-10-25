@@ -1,4 +1,26 @@
 {
+  "affected": [
+    "--db",
+    "--depth",
+    "--explain",
+    "--failed",
+    "--format",
+    "--format=cargo",
+    "--format=go-test",
+    "--format=jest",
+    "--format=json",
+    "--format=list",
+    "--format=pytest",
+    "--format=vitest",
+    "--help",
+    "--json",
+    "--package",
+    "--quiet",
+    "--root",
+    "--staged",
+    "-h",
+    "-q"
+  ],
   "blast": [
     "--cursor",
     "--db",

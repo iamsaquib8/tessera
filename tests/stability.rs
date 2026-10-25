@@ -217,6 +217,10 @@ fn json_fields() {
         "the rename should leave a broken call"
     );
     pin("verify", verify);
+    pin(
+        "affected",
+        json(root, &["affected", "--explain", "test/repo.test.ts"]),
+    );
 
     let http = repo("contracts-http");
     pin("map", json(http.path(), &["map"]));
@@ -295,6 +299,8 @@ fn exit_codes() {
     )
     .unwrap();
     assert_eq!(code(&["verify", "--changed"]), Some(1));
+    // Selecting tests is not a failure.
+    assert_eq!(code(&["affected"]), Some(0));
     let blocked: PathBuf = root.join("not-a-dir");
     fs::write(&blocked, "").unwrap();
     let db = blocked.join("tessera.db");

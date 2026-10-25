@@ -1,4 +1,18 @@
 {
+  "affected": [
+    "cursor",
+    "depth",
+    "explain",
+    "failed",
+    "format",
+    "limit",
+    "package",
+    "rev",
+    "staged"
+  ],
+  "affected required": [
+    ""
+  ],
   "blast": [
     "cursor",
     "depth",
