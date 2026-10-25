@@ -1,3 +1,4 @@
+mod affected;
 mod blast;
 pub mod common;
 mod context;
@@ -12,6 +13,10 @@ mod search;
 mod status;
 mod verify;
 
+pub use affected::{
+    AffectedArgs, AffectedResult, AffectedTest, AffectedUsage, Explanation, Kind as AffectedKind,
+    Link as AffectedLink, Runner, Step as AffectedStep, Totals as AffectedTotals,
+};
 pub use blast::{BlastArgs, BlastCaller, BlastResult};
 pub use context::{ContextArgs, ContextResult};
 pub use find::{FindArgs, FindMatch, FindResult};
@@ -26,6 +31,7 @@ pub use verify::{
     with_tests, with_tests_until, Changes, Finding, Problem, VerifyArgs, VerifyResult,
 };
 
+pub use affected::{require_git, run as affected};
 pub use blast::run as blast;
 pub use context::run as context;
 pub use find::run as find;
