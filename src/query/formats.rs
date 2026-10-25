@@ -57,9 +57,11 @@ fn issues(result: &VerifyResult) -> impl Iterator<Item = (&Finding, String)> {
 }
 
 /// Azure DevOps logging-command escaping. Property values are split on
-/// `;` and end at the first `]`, so both are escaped there; the message
-/// after `]` only needs line breaks and `%` escaped (the agent's
-/// `Command.cs`). `%` goes first, so no escape is escaped twice.
+/// `;` and end at the first `]`, so both are escaped there. The message
+/// after that `]` is never split: it escapes only line breaks and `%`
+/// (as `%AZP25`), and a raw `;` or `]` in it reads the same whether or
+/// not the agent decodes `%3B` and `%5D` there. Each character is
+/// escaped once, so `%0A` in the text stays `%0A`.
 fn azure_escape(value: &str, property: bool) -> String {
     let mut out = String::with_capacity(value.len());
     for c in value.chars() {

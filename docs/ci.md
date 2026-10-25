@@ -148,8 +148,8 @@ tessera:
 **Azure DevOps.** One logging command per problem, `type=error` when it
 blocks and `warning` when it is advisory, with `sourcepath`,
 `linenumber` and `code`. Property values escape `%` (as `%AZP25`), line
-breaks, `;` and `]`; the message escapes `%` and line breaks, as the
-agent unescapes them:
+breaks, `;` and `]`; the message after the first `]` is never split, so
+it escapes only `%` and line breaks:
 
 ```yaml
 - script: tessera verify --diff "$(BASE)" --format azure
