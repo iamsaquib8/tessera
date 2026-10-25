@@ -44,6 +44,12 @@ pub mod kind {
     pub const ENTITY: &str = "entity";
     /// A SQL statement in code that reads or writes a table.
     pub const SQL: &str = "sql";
+    /// A GraphQL root field in a schema: `type Query { user }`.
+    pub const GQL_DEF: &str = "graphql_def";
+    /// A resolver for a root field.
+    pub const GQL_RESOLVER: &str = "graphql_resolver";
+    /// An operation that selects a root field.
+    pub const GQL_OP: &str = "graphql_op";
     /// A router mounted under a path (`app.use("/api", users)`): key
     /// `mount <local name>`, name the prefix.
     pub const MOUNT: &str = "mount";
@@ -117,10 +123,12 @@ pub fn extract(
         (Language::OpenApi, _) => text::openapi(content),
         (Language::Sql, _) => text::sql(content),
         (Language::Prisma, _) => text::prisma(content),
+        (Language::GraphQl, _) => text::graphql(content, 0),
         (_, Some(tree)) => {
             let mut facts = grpc::code(language, content, tree);
             facts.extend(packs::run(language, content, tree));
             facts.extend(text::sql_strings(content));
+            facts.extend(text::graphql_in_code(content));
             if matches!(
                 language,
                 Language::JavaScript | Language::TypeScript | Language::Tsx

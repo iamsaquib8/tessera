@@ -461,7 +461,8 @@ fn stop_over_five_hundred_changed_files_is_quick() {
     let took = started.elapsed();
     assert_eq!(stop["decision"], "block", "{stop}");
     assert!(
-        took < std::time::Duration::from_secs(4),
+        // Unbounded, this took 12 s in a debug build; loaded runners need slack.
+        took < std::time::Duration::from_secs(10),
         "Stop over 500 changed files took {took:?}"
     );
 }

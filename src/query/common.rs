@@ -257,7 +257,11 @@ pub fn known_global(language: Language, name: &str) -> bool {
         ],
         Language::CSharp => &["Console", "Math", "String", "Task", "nameof", "typeof"],
         Language::Php => &["echo", "print", "isset", "empty", "count", "trim", "array"],
-        Language::Proto | Language::Sql | Language::OpenApi | Language::Prisma => &[],
+        Language::Proto
+        | Language::Sql
+        | Language::OpenApi
+        | Language::Prisma
+        | Language::GraphQl => &[],
     };
     names.contains(&name)
 }

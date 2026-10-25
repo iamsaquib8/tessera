@@ -460,3 +460,31 @@ fn routes_on_a_mounted_router_carry_the_mount_prefix() {
         "unprefixed copies of mounted routes: {got:#?}"
     );
 }
+
+#[test]
+fn graphql_schemas_resolvers_and_operations_link_by_root_field() {
+    let temp = fixture("contracts-graphql");
+    let root = temp.path();
+    let got = summary(&map(root, &["graphql"]));
+    let expected: BTreeSet<String> = [
+        "Query.user: api/resolvers.js -> web/queries.ts",
+        "Query.users: api/resolvers.js,nest/users.resolver.ts -> web/all-users.graphql",
+        "Mutation.createUser: api/resolvers.js,nest/users.resolver.ts -> web/queries.ts",
+    ]
+    .into_iter()
+    .map(str::to_string)
+    .collect();
+    assert_eq!(got, expected);
+    let value = map(root, &["graphql", "user"]);
+    let user = value["contracts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["name"] == "Query.user")
+        .unwrap();
+    assert_eq!(
+        user["definitions"][0]["path"], "api/schema.graphql",
+        "{user}"
+    );
+    assert_eq!(user["definitions"][0]["line"], 8, "{user}");
+}

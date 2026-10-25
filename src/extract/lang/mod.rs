@@ -27,7 +27,11 @@ pub(super) fn support_for(language: Language) -> &'static dyn LanguageSupport {
         Language::CSharp => &csharp::CSharp,
         Language::Ruby => &ruby::Ruby,
         Language::Php => &php::Php,
-        Language::Proto | Language::Sql | Language::OpenApi | Language::Prisma => {
+        Language::Proto
+        | Language::Sql
+        | Language::OpenApi
+        | Language::Prisma
+        | Language::GraphQl => {
             unreachable!("data files are read by the facts layer, not parsed")
         }
     }

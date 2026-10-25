@@ -88,6 +88,18 @@ pub const PACKS: &[Pack] = &[
         query: include_str!("../../packs/sequelize.scm"),
     },
     Pack {
+        id: "graphql",
+        languages: JS,
+        gate: r"\b(Query|Mutation|Subscription)\b",
+        query: include_str!("../../packs/graphql.scm"),
+    },
+    Pack {
+        id: "nestjs-graphql",
+        languages: TS,
+        gate: r"@(Query|Mutation|Subscription)\(",
+        query: include_str!("../../packs/nestjs-graphql.scm"),
+    },
+    Pack {
         id: "spring-clients",
         languages: JAVA,
         gate: r"FeignClient|RestTemplate|restTemplate|WebClient|webClient|RestClient|restClient|MockMvc|WebTestClient",
@@ -137,6 +149,7 @@ const FACT_CAPTURES: &[(&str, &str)] = &[
     ("consumer", kind::CONSUMER),
     ("entity", kind::ENTITY),
     ("mount", kind::MOUNT),
+    ("resolver", kind::GQL_RESOLVER),
 ];
 
 static JAVA_CONSTANT: LazyLock<Regex> = LazyLock::new(|| {
@@ -214,6 +227,7 @@ fn facts(
             .into_iter()
             .collect(),
         kind::MOUNT => mount(pack, source, captures).into_iter().collect(),
+        kind::GQL_RESOLVER => resolver(pack, source, captures).into_iter().collect(),
         _ => fact(pack, source, captures, defaults).into_iter().collect(),
     }
 }
@@ -334,6 +348,53 @@ fn topics(
             (fact, 0)
         })
         .collect()
+}
+
+/// A resolver for `Query.user`: the field is the method's name, or the
+/// decorator's `name` option.
+fn resolver(
+    pack: &'static str,
+    source: &str,
+    captures: &HashMap<&str, Node<'_>>,
+) -> Option<(IndexedFact, u8)> {
+    let at = *captures.get("resolver")?;
+    let root = text(source, *captures.get("root")?);
+    let renamed = captures.get("args").and_then(|args| {
+        let mut cursor = args.walk();
+        let children: Vec<Node<'_>> = args.named_children(&mut cursor).collect();
+        children.into_iter().find_map(|child| {
+            let mut cursor = child.walk();
+            let pairs: Vec<Node<'_>> = if child.kind() == "object" {
+                child.named_children(&mut cursor).collect()
+            } else {
+                Vec::new()
+            };
+            pairs.into_iter().find_map(|pair| {
+                let key = text(source, pair.child_by_field_name("key")?);
+                let value = text(source, pair.child_by_field_name("value")?);
+                (key == "name").then(|| value.trim_matches(['"', '\'', '`']).to_string())
+            })
+        })
+    });
+    let field = renamed.unwrap_or_else(|| {
+        captures
+            .get("field")
+            .map(|f| text(source, *f).to_string())
+            .unwrap_or_default()
+    });
+    if field.is_empty() {
+        return None;
+    }
+    let mut fact = IndexedFact::new(
+        kind::GQL_RESOLVER,
+        super::text::graphql_key(root, &field),
+        format!("{root}.{field}"),
+        at.start_position().row + 1,
+        pack,
+        line_of(source, at),
+    );
+    fact.handler = captures.get("field").map(|f| text(source, *f).to_string());
+    Some((fact, 0))
 }
 
 /// `app.use("/api", users)`: the prefix, keyed by the mounted name.

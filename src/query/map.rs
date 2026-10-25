@@ -28,7 +28,7 @@ const MANIFESTS: &[&str] = &[
     "composer.json",
     "Dockerfile",
 ];
-pub const KINDS: &[&str] = &["route", "rpc", "topic", "table", "service"];
+pub const KINDS: &[&str] = &["route", "rpc", "topic", "table", "graphql", "service"];
 
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -522,6 +522,16 @@ fn all(sources: &Sources, services: &mut Services, only: Option<&str>) -> Result
             &[],
             &[kind::PRODUCER],
             &[kind::CONSUMER],
+            services,
+        ));
+    }
+    if wants("graphql") {
+        contracts.extend(keyed(
+            "graphql",
+            &sources.load("graphql ")?,
+            &[kind::GQL_DEF],
+            &[kind::GQL_RESOLVER],
+            &[kind::GQL_OP],
             services,
         ));
     }

@@ -345,7 +345,7 @@ fn map_schema() -> Value {
     schema(
         merge(
             json!({
-                "kind": { "type": "string", "enum": ["route", "rpc", "topic", "table", "service"] },
+                "kind": { "type": "string", "enum": ["route", "rpc", "topic", "table", "graphql", "service"] },
                 "query": { "type": "string" }
             }),
             paging(),

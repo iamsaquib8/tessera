@@ -28,6 +28,7 @@ pub enum Language {
     Sql,
     OpenApi,
     Prisma,
+    GraphQl,
 }
 
 impl Language {
@@ -50,6 +51,7 @@ impl Language {
             "proto" => Some(Self::Proto),
             "sql" => Some(Self::Sql),
             "prisma" => Some(Self::Prisma),
+            "graphql" | "gql" | "graphqls" => Some(Self::GraphQl),
             _ => None,
         }
     }
@@ -69,7 +71,10 @@ impl Language {
 
     /// Read for contract facts only; no grammar, no symbols.
     pub fn is_data(&self) -> bool {
-        matches!(self, Self::Proto | Self::Sql | Self::OpenApi | Self::Prisma)
+        matches!(
+            self,
+            Self::Proto | Self::Sql | Self::OpenApi | Self::Prisma | Self::GraphQl
+        )
     }
 
     pub fn from_name(name: &str) -> Option<Self> {
@@ -109,6 +114,7 @@ impl Language {
             Self::Sql => "sql",
             Self::OpenApi => "openapi",
             Self::Prisma => "prisma",
+            Self::GraphQl => "graphql",
         }
     }
 }
