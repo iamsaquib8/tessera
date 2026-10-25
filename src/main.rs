@@ -139,6 +139,30 @@ enum Commands {
         #[command(flatten)]
         page: PageArgs,
     },
+    /// The tests a change reaches, each with the reason it runs: for CI test selection.
+    Affected {
+        /// Compare the working tree with this git revision (default HEAD).
+        #[arg(value_name = "REV")]
+        rev: Option<String>,
+        /// Select for the staged changes instead.
+        #[arg(long, conflicts_with = "rev")]
+        staged: bool,
+        /// Tests that failed in an earlier run, one path per line; they always run.
+        #[arg(long, value_name = "FILE")]
+        failed: Option<PathBuf>,
+        /// Say why this test is or is not selected.
+        #[arg(long, value_name = "TEST")]
+        explain: Option<String>,
+        /// Only tests in this workspace package (npm, pnpm or yarn workspace, Cargo, Go or Maven module).
+        #[arg(long, value_name = "NAME")]
+        package: Option<String>,
+        /// How many calls or contracts a test may be from the changed code.
+        #[arg(long, default_value_t = 6)]
+        depth: usize,
+        /// Output: list (one test path per line), json, or the command line for a runner.
+        #[arg(long, value_enum, default_value_t = AffectedFormat::List)]
+        format: AffectedFormat,
+    },
     /// Check that symbols or calls in a snippet exist. Exits 1 on problems.
     Verify {
         /// Symbol name to check.
@@ -408,6 +432,22 @@ enum VerifyFormat {
     Ndjson,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+enum AffectedFormat {
+    List,
+    Json,
+    /// `jest --runTestsByPath …`
+    Jest,
+    /// `vitest run …`
+    Vitest,
+    /// `pytest file::Class::test …`
+    Pytest,
+    /// `go test <packages> -run '^(TestA|TestB)$'`
+    GoTest,
+    /// `cargo test -p <package> --test <target>`
+    Cargo,
+}
+
 #[derive(Debug, Clone, Copy, ValueEnum)]
 enum MinConfidence {
     /// Resolved through scope, an import, `this`, a typed receiver or a static class.
@@ -632,6 +672,25 @@ fn run() -> Result<u8> {
                 limit: page.limit,
                 cursor: page.cursor,
             })?)?;
+        }
+        Commands::Affected {
+            rev,
+            staged,
+            failed,
+            explain,
+            package,
+            depth,
+            format,
+        } => {
+            let args = query::AffectedArgs {
+                rev,
+                staged,
+                explain,
+                package,
+                depth,
+                ..query::AffectedArgs::default()
+            };
+            return run_affected(&ws, &out, args, failed.as_deref(), format);
         }
         Commands::Verify {
             symbol,
@@ -991,6 +1050,66 @@ fn open_fresh(ws: &Workspace, out: &Output) -> Result<Option<Index>> {
         return Ok(None);
     }
     Ok(Some(index))
+}
+
+/// `affected`: the selection on stdout in the format asked for, the counts
+/// and notes on stderr. Selecting is not a failure, so it exits 0.
+fn run_affected(
+    ws: &Workspace,
+    out: &Output,
+    mut args: query::AffectedArgs,
+    failed: Option<&Path>,
+    format: AffectedFormat,
+) -> Result<u8> {
+    if let Some(file) = failed {
+        let list = std::fs::read_to_string(file).map_err(|error| {
+            usage(&format!(
+                "cannot read the failed-tests list {}: {error}",
+                file.display()
+            ))
+        })?;
+        args.failed = list.lines().map(str::to_string).collect();
+    }
+    let usage_error = |error: anyhow::Error| match error.downcast_ref::<query::AffectedUsage>() {
+        Some(problem) => usage(&problem.0),
+        None => error,
+    };
+    query::require_git(&ws.root).map_err(usage_error)?;
+    let Some(index) = open_fresh(ws, out)? else {
+        return Ok(0);
+    };
+    let result = index.affected(&args).map_err(usage_error)?;
+    if out.json || format == AffectedFormat::Json {
+        out.print_json(&result)?;
+        return Ok(0);
+    }
+    if !out.quiet {
+        eprint!("{}", result.summary());
+        for note in &result.notes {
+            eprintln!("note: {note}");
+        }
+    }
+    if let Some(explain) = &result.explain {
+        println!("{}", explain.line());
+        return Ok(0);
+    }
+    let runner = match format {
+        AffectedFormat::List | AffectedFormat::Json => None,
+        AffectedFormat::Jest => Some(query::Runner::Jest),
+        AffectedFormat::Vitest => Some(query::Runner::Vitest),
+        AffectedFormat::Pytest => Some(query::Runner::Pytest),
+        AffectedFormat::GoTest => Some(query::Runner::GoTest),
+        AffectedFormat::Cargo => Some(query::Runner::Cargo),
+    };
+    match runner {
+        Some(runner) => print!("{}", result.command(runner)),
+        None => {
+            for test in &result.tests {
+                println!("{}", test.path);
+            }
+        }
+    }
+    Ok(0)
 }
 
 fn read_snippet(source: &str) -> Result<String> {

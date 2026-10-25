@@ -14,7 +14,7 @@
    ▼
  fresh.rs        stat-walk freshness check; index_files re-indexes only changed paths
    ▼
- query/          nine operations: find search refs blast path context verify map status;
+ query/          ten operations: find search refs blast path context verify map status affected;
    │             map joins facts that share a key into contracts at query time
    │             every list paginated, sorted by a stable key, measured in tokens
    ├─▶ main.rs   CLI (clap): global --root --db --json --quiet; exit codes 0/1/2/3

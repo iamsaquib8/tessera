@@ -159,6 +159,11 @@ impl Index {
         query::waivers::baseline(&self.conn, &self.root, prune)
     }
 
+    /// The tests a change reaches, each with the reason it runs.
+    pub fn affected(&self, args: &query::AffectedArgs) -> Result<query::AffectedResult> {
+        query::affected(&self.conn, &self.root, args)
+    }
+
     /// The pull-request report for a change: findings, callers, contracts
     /// touched, tests to run.
     pub fn report(&self, changes: &query::Changes) -> Result<query::report::Report> {

@@ -698,7 +698,7 @@ fn consumers_of(conn: &Connection, fact: &crate::facts::IndexedFact) -> Result<V
 /// `path` as it was at `rev`; `None` when it did not exist.
 /// Each path's content at `rev`, read by one `git cat-file --batch`;
 /// paths that did not exist then are left out.
-fn files_at(root: &Path, rev: &str, paths: &[&String]) -> HashMap<String, String> {
+pub(crate) fn files_at(root: &Path, rev: &str, paths: &[&String]) -> HashMap<String, String> {
     let mut out = HashMap::new();
     if paths.is_empty() {
         return out;
@@ -1192,7 +1192,7 @@ fn lexical_target(from: &str, source: &str) -> Option<String> {
 
 /// A test file a runner can run: source code under a test path, not the
 /// fixtures, snapshots or data files the tests read.
-fn runnable_test(path: &str) -> bool {
+pub(crate) fn runnable_test(path: &str) -> bool {
     let data = [
         "fixtures",
         "fixture",
@@ -1252,7 +1252,7 @@ fn tests_to_run(
 }
 
 /// Files git does not track and does not ignore, from one git process.
-fn untracked(root: &Path) -> HashSet<String> {
+pub(crate) fn untracked(root: &Path) -> HashSet<String> {
     Command::new("git")
         .arg("-C")
         .arg(root)

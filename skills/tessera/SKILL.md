@@ -77,7 +77,8 @@ tessera verify --snippet <file> --language typescript
 
 ## Prefer MCP when available
 
-If the agent supports MCP, register `tessera mcp` once. The same nine tools
-(`find`, `search`, `refs`, `blast`, `verify`, `context`, `path`, `map`, `status`)
+If the agent supports MCP, register `tessera mcp` once. The same ten tools
+(`find`, `search`, `refs`, `blast`, `verify`, `context`, `path`, `map`, `status`,
+`affected`)
 become available without shell calls, and the server keeps the index fresh as
 files change.
