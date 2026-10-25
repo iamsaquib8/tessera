@@ -34,7 +34,13 @@ pub struct Report {
     pub verify: VerifyResult,
     pub blast: Option<BlastResult>,
     pub contracts: Vec<TouchedContract>,
+    /// Changed functions and methods that no test reaches.
+    pub gaps: Vec<crate::types::SymbolRecord>,
 }
+
+/// How far from a test a changed function may be and still count as tested.
+const GAP_DEPTH: usize = 4;
+const GAP_SCAN_CAP: usize = 2_000;
 
 pub fn run(conn: &Connection, root: &Path, changes: &Changes) -> Result<Report> {
     let changed = changed_paths(root, changes)?;
@@ -54,10 +60,21 @@ pub fn run(conn: &Connection, root: &Path, changes: &Changes) -> Result<Report> 
     )
     .ok();
     let contracts = touched(conn, root, &changed)?;
+    let mut gaps = Vec::new();
+    for symbol in blast.iter().flat_map(|b| &b.changed) {
+        let callable = matches!(symbol.kind.as_str(), "function" | "method" | "constructor");
+        if !callable || super::common::is_test_path(&symbol.path) {
+            continue;
+        }
+        if super::graph::tests_reaching(conn, symbol.id, GAP_DEPTH, GAP_SCAN_CAP)?.is_empty() {
+            gaps.push(symbol.clone());
+        }
+    }
     Ok(Report {
         verify,
         blast,
         contracts,
+        gaps,
     })
 }
 
@@ -216,11 +233,25 @@ impl Report {
         }
         if !self.verify.tests.is_empty() {
             out.push_str(&format!(
-                "<details><summary>Tests to run ({})</summary>\n\n",
+                "<details><summary>Tests to run ({})</summary>\n\n```text\n",
                 self.verify.tests.len()
             ));
             for test in self.verify.tests.iter().take(MAX_ROWS) {
-                out.push_str(&format!("- {}\n", code(test)));
+                out.push_str(&format!("{}\n", test.replace('`', "'")));
+            }
+            out.push_str("```\n\n</details>\n\n");
+        }
+        if !self.gaps.is_empty() {
+            out.push_str(&format!(
+                "<details><summary>Test gaps: changed code no test reaches ({})</summary>\n\n",
+                self.gaps.len()
+            ));
+            for symbol in self.gaps.iter().take(MAX_ROWS) {
+                out.push_str(&format!(
+                    "- {} {}\n",
+                    code(&symbol.qualified_name),
+                    code(&format!("{}:{}", symbol.path, symbol.start_line))
+                ));
             }
             out.push_str("\n</details>\n\n");
         }

@@ -829,7 +829,7 @@ fn markdown_report_for_a_pull_request() {
     assert!(text.contains("Callers of the changed code"), "{text}");
     assert!(text.contains("handler"), "callers are listed: {text}");
     assert!(text.contains("Tests to run"), "{text}");
-    assert!(text.contains("`test/repo.test.ts`"), "{text}");
+    assert!(text.contains("```text\ntest/repo.test.ts\n```"), "{text}");
 }
 
 #[test]
@@ -1049,4 +1049,33 @@ fn a_finding_keeps_its_fingerprint_when_lines_move() {
     );
     let (_, _, second) = verify_changed(temp.path());
     assert_eq!(print(&second), before, "{second}");
+}
+
+#[test]
+fn the_report_lists_changed_functions_no_test_reaches() {
+    let temp = repo();
+    edit(
+        temp.path(),
+        "src/util/i18n.ts",
+        "return \"héllo\";",
+        "return \"hello\";",
+    );
+    edit(
+        temp.path(),
+        "src/users/repo.ts",
+        "return this.cache.get(id) ?? id;",
+        "return this.cache.get(id) ?? id.trim();",
+    );
+    let (_, text) = markdown(temp.path(), &["--changed"]);
+    let gaps = text
+        .split("Test gaps")
+        .nth(1)
+        .unwrap_or_else(|| panic!("no test gaps section: {text}"));
+    let gaps = gaps.split("</details>").next().unwrap();
+    assert!(gaps.contains("greet"), "{gaps}");
+    assert!(
+        !gaps.contains("lookup"),
+        "UserRepo.lookup is reached by test/repo.test.ts: {gaps}"
+    );
+    assert!(text.contains("```text\ntest/repo.test.ts\n```"), "{text}");
 }
