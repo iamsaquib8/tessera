@@ -2,7 +2,7 @@
 
 All notable changes to Tessera are documented here.
 
-## 1.1.0 - Unreleased
+## 1.1.0 - 2026-10-25
 
 The contract map, completed: more frameworks, two new contract kinds, and
 paths that cross repositories.
@@ -24,6 +24,16 @@ paths that cross repositories.
 - **`path` across repositories:** in a workspace, a path can run from a
   client in one repository into the handler of another; each hop through a
   contract names it (`via route GET /api/users/{}`).
+- **Route and topic ground truth** in tessera-bench, including a held-out
+  corpus (bank-of-anthos): no wrong links on any of the three
+  ([docs/contracts.md](docs/contracts.md#accuracy)).
+
+### Fixed
+
+- A request whose URL is only variables (`fetch(\`${url}?${query}\`)`) is
+  no longer read as `ANY /`.
+- Spring `@RequestMapping(method = {GET, POST})` serves every listed method,
+  not the first.
 
 ## 1.0.1 - 2026-10-21
 

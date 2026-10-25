@@ -273,8 +273,8 @@ pins them ([docs/stability.md](docs/stability.md)).
 | v0.11 | Precision: import- and type-aware resolution, public accuracy benchmark |
 | v0.12 | Edit-safety loop: hooks that check every edit, `tessera init`, Claude Code plugin, git backstop |
 | v0.13 | Contract map: routes, gRPC, topics, and tables across services and repositories |
-| v1.0 | Change-impact UI, GitHub Action, stable contracts (this release) |
-| v1.1 | Contract map completed: mounted routers, GraphQL, config keys, `path` across repositories, Go/Python/Ruby web frameworks |
+| v1.0 | Change-impact UI, GitHub Action, stable contracts |
+| v1.1 | Contract map completed: mounted routers, GraphQL, config keys, `path` across repositories, Go/Python/Ruby web frameworks (this release) |
 | v1.2 | Team and CI: test selection, a shared index cache, findings in code scanning |
 | v1.x | Architecture rules, SCIP precise mode, editor extensions, runtime traces, data lineage, refactor plans |
 

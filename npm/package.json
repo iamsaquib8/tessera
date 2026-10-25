@@ -1,6 +1,6 @@
 {
   "name": "tessera-codegraph",
-  "version": "1.0.1",
+  "version": "1.1.0",
   "description": "Deterministic edit safety for AI coding agents: blast radius before an edit, verification after it. Prebuilt tessera binary, no Rust toolchain required.",
   "bin": {
     "tessera": "bin/tessera.js"
@@ -31,10 +31,10 @@
     "node": ">=18"
   },
   "optionalDependencies": {
-    "tessera-codegraph-darwin-arm64": "1.0.1",
-    "tessera-codegraph-darwin-x64": "1.0.1",
-    "tessera-codegraph-linux-x64-musl": "1.0.1",
-    "tessera-codegraph-linux-arm64-musl": "1.0.1",
-    "tessera-codegraph-win32-x64": "1.0.1"
+    "tessera-codegraph-darwin-arm64": "1.1.0",
+    "tessera-codegraph-darwin-x64": "1.1.0",
+    "tessera-codegraph-linux-x64-musl": "1.1.0",
+    "tessera-codegraph-linux-arm64-musl": "1.1.0",
+    "tessera-codegraph-win32-x64": "1.1.0"
   }
 }

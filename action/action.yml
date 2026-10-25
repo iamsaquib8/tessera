@@ -8,7 +8,7 @@ branding:
 inputs:
   version:
     description: Tessera release to install, e.g. v1.0.0, or `latest`. Defaults to the release this action ships with. Ignored when `binary` is set.
-    default: v1.0.1
+    default: v1.1.0
   binary:
     description: Path to a tessera binary to use instead of installing one.
     default: ""

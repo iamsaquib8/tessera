@@ -127,6 +127,22 @@ The held-out misses (C++ servers, `using static` C# clients, injected Java
 stubs) are handled since; that repository now scores 12 of 12 and 26 of 26,
 but it is no longer held out.
 
+Hand-labelled HTTP routes and Kafka topics, labelled from the source before
+Tessera ran on them:
+
+| Repository | Route servers | Route clients | Topics |
+| --- | --- | --- | --- |
+| bank-of-anthos, held out (Flask, Spring) | 39 of 39, no wrong links | 0 of 17, no wrong links | none in the repository |
+| opentelemetry-demo | 10 of 21, no wrong links | 7 of 38, no wrong links | 0 of 5 sites |
+| spring-petclinic-microservices | 16 of 16, no wrong links | 6 of 19 (6 of 6 that call a service directly), no wrong links | none in the repository |
+
+Precision holds; recall on clients is low where URLs are assembled away
+from the call: from Flask `app.config`, `str.format`, Locust's
+`self.client`, or a wrapper of the project's own. opentelemetry-demo's
+misses are mostly servers in frameworks not read yet (Rust actix, PHP Slim,
+Sinatra, Phoenix, ASP.NET `MapGet`), and its topic uses Go sarama, C#
+Confluent.Kafka and the Kotlin Kafka client, which no pack reads yet.
+
 ## Limits
 
 - Express mounts are followed one level: `app.use("/api", users)` where
