@@ -1,0 +1,11 @@
+services:
+  api:
+    build: ./api
+    environment:
+      - DATABASE_URL=postgres://app:hunter2@db/app
+      - PORT=8080
+  worker:
+    build: ./worker
+    environment:
+      LOG_LEVEL: debug
+      DATABASE_URL: postgres://app:hunter2@db/app

@@ -261,7 +261,8 @@ pub fn known_global(language: Language, name: &str) -> bool {
         | Language::Sql
         | Language::OpenApi
         | Language::Prisma
-        | Language::GraphQl => &[],
+        | Language::GraphQl
+        | Language::Config => &[],
     };
     names.contains(&name)
 }

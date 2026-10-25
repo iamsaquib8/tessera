@@ -28,7 +28,9 @@ const MANIFESTS: &[&str] = &[
     "composer.json",
     "Dockerfile",
 ];
-pub const KINDS: &[&str] = &["route", "rpc", "topic", "table", "graphql", "service"];
+pub const KINDS: &[&str] = &[
+    "route", "rpc", "topic", "table", "graphql", "config", "service",
+];
 
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -437,7 +439,7 @@ pub fn hops(sources: &Sources) -> Result<Vec<Hop>> {
     let mut out = Vec::new();
     for contract in all(sources, &mut Services::none(), None)? {
         let (from, to) = match contract.kind.as_str() {
-            "table" => continue,
+            "table" | "config" => continue,
             "topic" => (&contract.providers, &contract.consumers),
             _ => (&contract.consumers, &contract.providers),
         };
@@ -472,7 +474,10 @@ fn service_views(contracts: &[Contract], query: Option<&str>) -> Vec<ServiceView
     let mut views: BTreeMap<String, ServiceView> = BTreeMap::new();
     let services =
         |sites: &[Site]| -> BTreeSet<String> { sites.iter().map(|s| s.service.clone()).collect() };
-    for contract in contracts.iter().filter(|c| c.kind != "table") {
+    for contract in contracts
+        .iter()
+        .filter(|c| c.kind != "table" && c.kind != "config")
+    {
         let up = services(&contract.providers);
         let down = services(&contract.consumers);
         let sides = [
@@ -548,6 +553,16 @@ fn all(sources: &Sources, services: &mut Services, only: Option<&str>) -> Result
             &[kind::GQL_DEF],
             &[kind::GQL_RESOLVER],
             &[kind::GQL_OP],
+            services,
+        ));
+    }
+    if wants("config") {
+        contracts.extend(keyed(
+            "config",
+            &sources.load("config ")?,
+            &[],
+            &[kind::CONFIG_SET],
+            &[kind::CONFIG_READ],
             services,
         ));
     }
@@ -932,6 +947,7 @@ impl MapResult {
             let labels = match contract.kind.as_str() {
                 "topic" => ["declared", "produced by", "consumed by"],
                 "table" => ["migrated", "mapped by", "queried by"],
+                "config" => ["declared", "set by", "read by"],
                 _ => ["defined", "served by", "called by"],
             };
             let rows = [

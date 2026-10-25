@@ -694,3 +694,25 @@ fn path_in_one_repository_names_the_contract_it_crosses() {
         "{result}"
     );
 }
+
+#[test]
+fn config_keys_link_who_sets_them_to_who_reads_them() {
+    let temp = fixture("contracts-config");
+    let value = map(temp.path(), &["config"]);
+    let got = summary(&value);
+    for expected in [
+        "DATABASE_URL: .env.example,docker-compose.yml -> api/src/server.js,billing/src/main/resources/application.yml,worker/main.py",
+        "PORT: api/Dockerfile,docker-compose.yml -> api/src/server.js,gosvc/main.go",
+        "LOG_LEVEL: api/Dockerfile,docker-compose.yml -> worker/main.py",
+        "API_KEY: .env.example -> billing/src/main/java/billing/Billing.java",
+        "billing.rate: billing/src/main/resources/application.yml -> billing/src/main/java/billing/Billing.java",
+        "VITE_API_BASE:  -> api/src/server.js",
+    ] {
+        assert!(got.contains(expected), "missing {expected}: {got:#?}");
+    }
+    assert!(!got.iter().any(|c| c.starts_with("FEATURE_X")), "{got:#?}");
+    let text = value.to_string();
+    for secret in ["hunter2", "sk-live", "s3cret", "postgres://"] {
+        assert!(!text.contains(secret), "a value leaked: {secret}");
+    }
+}
