@@ -1432,8 +1432,10 @@ fn pytest_name(name: &str) -> bool {
 }
 
 /// A top-level Go test, example or fuzz target, which `-run` matches.
+/// `TestMain` is not one: it wraps every test in its package.
 fn go_test_name(name: &str) -> bool {
     !name.contains('.')
+        && name != "TestMain"
         && ["Test", "Example", "Fuzz"]
             .iter()
             .any(|p| name.starts_with(p))
