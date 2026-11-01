@@ -14,7 +14,7 @@ use tessera_codegraph::indexer::{self, IndexMode, IndexOptions, IndexReport};
 use tessera_codegraph::init::{self, InitOptions};
 use tessera_codegraph::output::Confidence;
 use tessera_codegraph::query::{
-    self, BlastArgs, ContextArgs, FindArgs, PathArgs, RefsArgs, SearchArgs, VerifyArgs,
+    self, BlastArgs, ContextArgs, CyclesArgs, FindArgs, PathArgs, RefsArgs, SearchArgs, VerifyArgs,
 };
 use tessera_codegraph::types::Language;
 use tessera_codegraph::watch::{self, WatchOptions};
@@ -197,6 +197,19 @@ enum Commands {
         /// Maximum path length.
         #[arg(long, default_value_t = 8)]
         depth: usize,
+    },
+    /// Detect circular import dependencies between modules.
+    #[command(alias = "imports")]
+    Cycles {
+        /// Only cycles involving modules under this path prefix.
+        #[arg(long)]
+        path: Option<String>,
+        /// List circular dependency cycles (default: true).
+        #[arg(long, default_value_t = true)]
+        cycles: bool,
+        /// Maximum number of cycles to return (default: 100).
+        #[arg(long, default_value_t = 100)]
+        limit: usize,
     },
     /// Export the call graph as Mermaid or Graphviz DOT.
     Export {
@@ -643,6 +656,16 @@ fn run() -> Result<u8> {
                 return Ok(0);
             };
             out.print(&index.path(&PathArgs { from, to, depth })?)?;
+        }
+        Commands::Cycles {
+            path,
+            cycles: _,
+            limit,
+        } => {
+            let Some(index) = open_fresh(&ws, &out)? else {
+                return Ok(0);
+            };
+            out.print(&index.cycles(&CyclesArgs { path, limit })?)?;
         }
         Commands::Export {
             format,

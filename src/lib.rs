@@ -56,9 +56,9 @@ use rusqlite::Connection;
 
 pub use indexer::{IndexMode, IndexOptions, IndexReport};
 pub use query::{
-    BlastArgs, BlastResult, ContextArgs, ContextResult, ExportGroupBy, ExportOptions, FindArgs,
-    FindResult, PathArgs, RefsArgs, RefsResult, SearchArgs, SearchResults, StatusResult,
-    VerifyArgs, VerifyResult,
+    BlastArgs, BlastResult, ContextArgs, ContextResult, CyclesArgs, CyclesResult, ExportGroupBy,
+    ExportOptions, FindArgs, FindResult, ImportCycle, ImportCycleLink, PathArgs, RefsArgs,
+    RefsResult, SearchArgs, SearchResults, StatusResult, VerifyArgs, VerifyResult,
 };
 pub use types::{ConnectResult, ExportResult, Language, ReferenceRecord, SymbolRecord};
 pub use workspace::Workspace;
@@ -146,6 +146,10 @@ impl Index {
 
     pub fn context(&self, args: &ContextArgs) -> Result<ContextResult> {
         query::context(&self.conn, &self.root, args)
+    }
+
+    pub fn cycles(&self, args: &CyclesArgs) -> Result<CyclesResult> {
+        query::cycles(&self.conn, &self.root, args)
     }
 
     pub fn verify(&self, args: &VerifyArgs) -> Result<VerifyResult> {
