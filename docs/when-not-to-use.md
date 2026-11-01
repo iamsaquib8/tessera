@@ -34,7 +34,7 @@ definition; on the benchmark that is right 99.7% of the time. Medium, low, and n
   fields, topics, tables and config keys are linked across services and
   repositories ([contracts](contracts.md)), with these gaps the ground truth
   measured: clients whose URL is built away from the call (from app config,
-  `str.format`, or a request wrapper), servers in Rust actix, PHP Slim,
+  `str.format`, or a request wrapper), servers in PHP Slim,
   Sinatra, Phoenix and ASP.NET minimal APIs, Kafka clients for Go sarama,
   C# Confluent.Kafka and Kotlin, and Next.js Server Actions and tRPC.
 - Field-level changes. V5 catches a removed route, RPC or topic that a

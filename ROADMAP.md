@@ -139,7 +139,7 @@ smaller: a removed field, a renamed enum value, a narrowed type.
   sibling repositories, at their default branches, as a cross-repo merge
   gate.
 - **Recall where the ground truth found gaps:** clients whose URLs come from
-  app config, `str.format` and request wrappers; servers in actix, Slim,
+  app config, `str.format` and request wrappers; servers in Slim,
   Sinatra, Phoenix and ASP.NET minimal APIs; Kafka clients for sarama,
   Confluent.Kafka and Kotlin; SQS/SNS, RabbitMQ, NATS and Pub/Sub.
 
