@@ -102,6 +102,65 @@ fn unreadable_utf8_source_warns_without_aborting_index() {
 }
 
 #[test]
+fn multibyte_utf8_signature_exceeding_180_bytes_does_not_panic() {
+    let temp = TempDir::new().unwrap();
+    let prefix_len = 179 - "pub fn test_/* ".len();
+    let prefix = "a".repeat(prefix_len);
+    let source = format!("pub fn test_{}/* 🦀 */() {{}}\n", prefix);
+    assert_eq!(source.find('🦀'), Some(179));
+    fs::write(temp.path().join("lib.rs"), source).unwrap();
+
+    let db = temp.path().join(".tessera/multibyte.db");
+    Command::cargo_bin("tessera")
+        .unwrap()
+        .args([
+            "index",
+            temp.path().to_str().unwrap(),
+            "--db",
+            db.to_str().unwrap(),
+            "--full",
+        ])
+        .assert()
+        .success();
+
+    let conn = Connection::open(&db).unwrap();
+    let sig: String = conn
+        .query_row(
+            "SELECT signature FROM symbols WHERE name LIKE 'test_%'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert!(sig.contains("pub fn test_"));
+
+    // Also verify that signatures exceeding 180 characters truncate with '…' without panicking
+    let long_fn = format!("test_long_{}🦀", "b".repeat(200));
+    let source2 = format!("pub fn {}() {{}}\n", long_fn);
+    fs::write(temp.path().join("long.rs"), source2).unwrap();
+
+    Command::cargo_bin("tessera")
+        .unwrap()
+        .args([
+            "index",
+            temp.path().to_str().unwrap(),
+            "--db",
+            db.to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+
+    let sig2: String = conn
+        .query_row(
+            "SELECT signature FROM symbols WHERE name LIKE 'test_long_%'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert!(sig2.ends_with('…'));
+    assert!(sig2.chars().count() <= 181);
+}
+
+#[test]
 fn fixture_snapshot_covers_symbols_refs_imports_edges_and_exports() {
     let temp = TempDir::new().unwrap();
     fs::write(
