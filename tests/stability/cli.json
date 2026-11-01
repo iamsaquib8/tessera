@@ -32,6 +32,18 @@
     "-h",
     "-q"
   ],
+  "cycles": [
+    "--cycles",
+    "--db",
+    "--help",
+    "--json",
+    "--limit",
+    "--path",
+    "--quiet",
+    "--root",
+    "-h",
+    "-q"
+  ],
   "export": [
     "--collapse-tests",
     "--db",

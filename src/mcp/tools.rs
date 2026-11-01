@@ -5,7 +5,8 @@ use super::protocol::{RpcError, INVALID_PARAMS};
 use super::ServerState;
 use crate::output::AgentText;
 use crate::query::{
-    BlastArgs, ContextArgs, FindArgs, MapArgs, PathArgs, RefsArgs, SearchArgs, VerifyArgs,
+    BlastArgs, ContextArgs, CyclesArgs, FindArgs, MapArgs, PathArgs, RefsArgs, SearchArgs,
+    VerifyArgs,
 };
 use crate::Index;
 
@@ -33,7 +34,7 @@ pub fn registry() -> &'static [ToolSpec] {
     &REGISTRY
 }
 
-static REGISTRY: [ToolSpec; 9] = [
+static REGISTRY: [ToolSpec; 10] = [
     ToolSpec {
         name: "find",
         title: "Find definition",
@@ -96,6 +97,13 @@ static REGISTRY: [ToolSpec; 9] = [
         description: "Index health: repository root, freshness, file and symbol counts, languages, and setup hints. Call when results look stale or empty.",
         input_schema: status_schema,
         run: |index, args| run_query(args, false, |_: Value| index.status()),
+    },
+    ToolSpec {
+        name: "import_cycles",
+        title: "Detect circular import cycles",
+        description: "Detect circular import dependency cycles across modules in the codebase. Filter by `path` prefix. Returns ordered circular import chains of length >= 2.",
+        input_schema: import_cycles_schema,
+        run: |index, args| run_query(args, false, |a: CyclesArgs| index.cycles(&a)),
     },
 ];
 
@@ -356,4 +364,14 @@ fn map_schema() -> Value {
 
 fn status_schema() -> Value {
     schema(json!({}), &[])
+}
+
+fn import_cycles_schema() -> Value {
+    schema(
+        json!({
+            "path": { "type": "string", "description": "Filter cycles involving modules under this path prefix." },
+            "limit": { "type": "integer", "minimum": 1, "maximum": 1000, "description": "Maximum number of cycles to return (default 100)." }
+        }),
+        &[],
+    )
 }

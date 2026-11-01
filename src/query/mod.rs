@@ -1,6 +1,7 @@
 mod blast;
 pub mod common;
 mod context;
+pub mod cycles;
 mod find;
 pub mod graph;
 mod legacy;
@@ -14,6 +15,7 @@ mod verify;
 
 pub use blast::{BlastArgs, BlastCaller, BlastResult};
 pub use context::{ContextArgs, ContextResult};
+pub use cycles::{CyclesArgs, CyclesResult, ImportCycle, ImportCycleLink};
 pub use find::{FindArgs, FindMatch, FindResult};
 pub use legacy::{export_conn_with_options, ExportGroupBy, ExportOptions};
 pub use map::{MapArgs, MapResult};
@@ -28,6 +30,7 @@ pub use verify::{
 
 pub use blast::run as blast;
 pub use context::run as context;
+pub use cycles::run as cycles;
 pub use find::run as find;
 pub use map::run as map;
 pub use path::run as path;
