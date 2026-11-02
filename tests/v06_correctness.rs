@@ -256,3 +256,198 @@ export function entry() {
         .unwrap();
     assert_eq!(edges, vec![("entry".to_string(), "helper".to_string())]);
 }
+
+#[test]
+fn rust_trait_methods_and_go_interface_methods_indexed_and_queried() {
+    let temp = TempDir::new().unwrap();
+    let src = temp.path().join("src");
+    fs::create_dir_all(&src).unwrap();
+    fs::write(
+        src.join("greeter.rs"),
+        r#"
+pub trait Greeter {
+    fn greet(&self, name: &str) -> String;
+    fn default_greet(&self) -> String {
+        "hello".to_string()
+    }
+}
+
+trait InternalTrait {
+    fn internal_method(&self);
+}
+"#,
+    )
+    .unwrap();
+
+    fs::write(
+        src.join("service.go"),
+        r#"
+package service
+
+type Greeter interface {
+    Greet(name string) string
+    greetInternal()
+}
+"#,
+    )
+    .unwrap();
+
+    let db = temp.path().join(".tessera/tessera.db");
+    Command::cargo_bin("tessera")
+        .unwrap()
+        .args([
+            "index",
+            temp.path().to_str().unwrap(),
+            "--db",
+            db.to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+
+    let conn = Connection::open(&db).unwrap();
+    let symbols: Vec<(String, String, String, Option<String>, bool)> = conn
+        .prepare(
+            "
+            SELECT s.name, s.qualified_name, s.kind, s.container, s.exported != 0
+            FROM symbols s
+            WHERE s.kind IN ('trait', 'interface', 'function', 'method')
+            ORDER BY s.qualified_name, s.kind
+            ",
+        )
+        .unwrap()
+        .query_map([], |row| {
+            Ok((
+                row.get(0)?,
+                row.get(1)?,
+                row.get(2)?,
+                row.get(3)?,
+                row.get(4)?,
+            ))
+        })
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap();
+
+    assert_eq!(
+        symbols,
+        vec![
+            (
+                "Greeter".to_string(),
+                "Greeter".to_string(),
+                "interface".to_string(),
+                None,
+                true
+            ),
+            (
+                "Greeter".to_string(),
+                "Greeter".to_string(),
+                "trait".to_string(),
+                None,
+                true
+            ),
+            (
+                "Greet".to_string(),
+                "Greeter.Greet".to_string(),
+                "method".to_string(),
+                Some("Greeter".to_string()),
+                true
+            ),
+            (
+                "default_greet".to_string(),
+                "Greeter.default_greet".to_string(),
+                "function".to_string(),
+                Some("Greeter".to_string()),
+                true
+            ),
+            (
+                "greet".to_string(),
+                "Greeter.greet".to_string(),
+                "function".to_string(),
+                Some("Greeter".to_string()),
+                true
+            ),
+            (
+                "greetInternal".to_string(),
+                "Greeter.greetInternal".to_string(),
+                "method".to_string(),
+                Some("Greeter".to_string()),
+                false
+            ),
+            (
+                "InternalTrait".to_string(),
+                "InternalTrait".to_string(),
+                "trait".to_string(),
+                None,
+                false
+            ),
+            (
+                "internal_method".to_string(),
+                "InternalTrait.internal_method".to_string(),
+                "function".to_string(),
+                Some("InternalTrait".to_string()),
+                false
+            ),
+        ]
+    );
+
+    // Verify finding Greeter returns members
+    let output = Command::cargo_bin("tessera")
+        .unwrap()
+        .current_dir(temp.path())
+        .args([
+            "--root",
+            temp.path().to_str().unwrap(),
+            "--db",
+            db.to_str().unwrap(),
+            "--json",
+            "find",
+            "Greeter",
+        ])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let matches = json["matches"].as_array().expect("matches array");
+    assert_eq!(matches.len(), 2);
+    for m in matches {
+        let members = m["members"].as_array().expect("members array");
+        assert_eq!(members.len(), 2, "match: {m:#?}");
+    }
+
+    // Verify find on trait method and interface method
+    let output_greet = Command::cargo_bin("tessera")
+        .unwrap()
+        .current_dir(temp.path())
+        .args([
+            "--root",
+            temp.path().to_str().unwrap(),
+            "--db",
+            db.to_str().unwrap(),
+            "--json",
+            "find",
+            "Greeter.greet",
+        ])
+        .output()
+        .unwrap();
+    assert!(output_greet.status.success());
+    let json_greet: serde_json::Value = serde_json::from_slice(&output_greet.stdout).unwrap();
+    assert_eq!(json_greet["matches"][0]["symbol"]["name"], "greet");
+
+    let output_go_greet = Command::cargo_bin("tessera")
+        .unwrap()
+        .current_dir(temp.path())
+        .args([
+            "--root",
+            temp.path().to_str().unwrap(),
+            "--db",
+            db.to_str().unwrap(),
+            "--json",
+            "find",
+            "Greeter.Greet",
+        ])
+        .output()
+        .unwrap();
+    assert!(output_go_greet.status.success());
+    let json_go_greet: serde_json::Value = serde_json::from_slice(&output_go_greet.stdout).unwrap();
+    assert_eq!(json_go_greet["matches"][0]["symbol"]["name"], "Greet");
+}
