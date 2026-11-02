@@ -287,17 +287,21 @@ pub fn diff_impact_conn(
     }
     let mut current: Option<FileHunks> = None;
     let mut hunks: Vec<FileHunks> = Vec::new();
+    let mut old_path: Option<String> = None;
     for line in diff.lines() {
-        if let Some(rest) = line.strip_prefix("+++ ") {
+        if let Some(rest) = line.strip_prefix("--- ") {
+            old_path = parse_diff_path(rest);
+        } else if let Some(rest) = line.strip_prefix("+++ ") {
             if let Some(cur) = current.take() {
                 hunks.push(cur);
             }
-            let path = rest
-                .trim_start_matches("b/")
-                .trim_start_matches("a/")
-                .trim()
-                .to_string();
-            if path != "/dev/null" {
+            let new_path = parse_diff_path(rest);
+            let path = match (old_path.take(), new_path) {
+                (_, Some(p)) if p != "/dev/null" => Some(p),
+                (Some(p), _) if p != "/dev/null" => Some(p),
+                _ => None,
+            };
+            if let Some(path) = path {
                 current = Some(FileHunks {
                     path,
                     ranges: Vec::new(),
@@ -331,9 +335,12 @@ pub fn diff_impact_conn(
         let Some((file_id, _)) = db::file_sha(conn, &fh.path)? else {
             continue;
         };
-        for (_, _, new_start, new_count) in &fh.ranges {
-            let hunk_start = *new_start;
-            let hunk_end = new_start + new_count.saturating_sub(1);
+        for (old_start, old_count, new_start, new_count) in &fh.ranges {
+            let (hunk_start, hunk_end) = if *new_count > 0 {
+                (*new_start, new_start + new_count.saturating_sub(1))
+            } else {
+                (*old_start, old_start + old_count.saturating_sub(1))
+            };
             let mut stmt = conn.prepare(
                 "
                 SELECT s.id, s.name, s.qualified_name, s.kind, s.file_id, f.path, f.language,
@@ -353,11 +360,12 @@ pub fn diff_impact_conn(
                 let sym = row?;
                 if let Some(existing) = changed_symbols.iter_mut().find(|c| c.symbol.id == sym.id) {
                     existing.added_lines += *new_count;
+                    existing.removed_lines += *old_count;
                 } else {
                     changed_symbols.push(DiffChangedSymbol {
                         symbol: sym,
                         added_lines: *new_count,
-                        removed_lines: 0,
+                        removed_lines: *old_count,
                     });
                 }
             }
@@ -408,6 +416,27 @@ fn parse_range(s: &str) -> Option<(usize, usize)> {
     let start: usize = parts.next()?.parse().ok()?;
     let count: usize = parts.next().and_then(|n| n.parse().ok()).unwrap_or(1);
     Some((start, count))
+}
+
+fn parse_diff_path(rest: &str) -> Option<String> {
+    let trimmed = rest.trim();
+    if trimmed == "/dev/null" {
+        return Some("/dev/null".to_string());
+    }
+    let unquoted = if trimmed.starts_with('"') && trimmed.ends_with('"') && trimmed.len() >= 2 {
+        &trimmed[1..trimmed.len() - 1]
+    } else {
+        trimmed
+    };
+    let stripped = unquoted
+        .strip_prefix("b/")
+        .or_else(|| unquoted.strip_prefix("a/"))
+        .unwrap_or(unquoted);
+    if stripped.is_empty() {
+        None
+    } else {
+        Some(stripped.to_string())
+    }
 }
 
 pub fn imports_conn(conn: &Connection, path: &str) -> Result<ImportsResult> {
@@ -1331,5 +1360,42 @@ mod tests {
         ] {
             assert!(!is_test_path(path), "{path} should not be a test path");
         }
+    }
+
+    #[test]
+    fn test_parse_diff_path() {
+        assert_eq!(
+            parse_diff_path("b/src/service.rs"),
+            Some("src/service.rs".to_string())
+        );
+        assert_eq!(
+            parse_diff_path("a/src/service.rs"),
+            Some("src/service.rs".to_string())
+        );
+        assert_eq!(parse_diff_path("/dev/null"), Some("/dev/null".to_string()));
+        assert_eq!(
+            parse_diff_path("b/b/service.rs"),
+            Some("b/service.rs".to_string())
+        );
+        assert_eq!(
+            parse_diff_path("a/a/service.rs"),
+            Some("a/service.rs".to_string())
+        );
+        assert_eq!(
+            parse_diff_path("b/a/service.rs"),
+            Some("a/service.rs".to_string())
+        );
+        assert_eq!(
+            parse_diff_path("a/b/service.rs"),
+            Some("b/service.rs".to_string())
+        );
+        assert_eq!(
+            parse_diff_path("\"b/path with spaces/file.rs\""),
+            Some("path with spaces/file.rs".to_string())
+        );
+        assert_eq!(
+            parse_diff_path("\"b/b/file.rs\""),
+            Some("b/file.rs".to_string())
+        );
     }
 }
