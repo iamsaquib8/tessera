@@ -90,7 +90,7 @@ pub fn find_definition_conn(conn: &Connection, symbol: &str) -> Result<Definitio
         .collect::<rusqlite::Result<Vec<_>>>()?;
     let mut match_kind = MatchKind::Exact;
     if matches.is_empty() {
-        let ranked = ranked_fuzzy_matches(conn, symbol, 5)?;
+        let ranked = ranked_fuzzy_matches(conn, symbol, None, 5)?;
         if let Some((score, _)) = ranked.first() {
             match_kind = MatchKind::Fuzzy { score: *score };
         }
@@ -609,11 +609,21 @@ pub fn search_conn(
     //   - if the pattern has `*`, treat it as a glob → SQL LIKE
     //   - otherwise fuzzy via FTS5 trigram + Jaro-Winkler
     let candidates: Vec<SymbolRecord> = if pattern.contains('*') {
-        glob_symbol_matches(conn, pattern, limit.saturating_mul(4).max(50))?
+        glob_symbol_matches(
+            conn,
+            pattern,
+            Some(&options),
+            limit.saturating_mul(4).max(50),
+        )?
     } else if pattern.is_empty() {
-        list_symbols(conn, limit.saturating_mul(4).max(50))?
+        list_symbols(conn, Some(&options), limit.saturating_mul(4).max(50))?
     } else {
-        fuzzy_symbol_matches(conn, pattern, limit.saturating_mul(4).max(50))?
+        fuzzy_symbol_matches(
+            conn,
+            pattern,
+            Some(&options),
+            limit.saturating_mul(4).max(50),
+        )?
     };
 
     let mut hits: Vec<SearchHit> = candidates
@@ -676,9 +686,11 @@ pub fn export_conn_with_options(conn: &Connection, options: ExportOptions) -> Re
         let mut visited: HashSet<i64> = HashSet::new();
         let mut queue: VecDeque<(SymbolRecord, usize)> = VecDeque::new();
         for s in &starts {
-            insert_graph_node(&mut node_meta, s);
-            if visited.insert(s.id) {
-                queue.push_back((s.clone(), 0));
+            if include_graph_node(s, &options) {
+                insert_graph_node(&mut node_meta, s);
+                if visited.insert(s.id) {
+                    queue.push_back((s.clone(), 0));
+                }
             }
         }
         'bfs: while let Some((node, d)) = queue.pop_front() {
@@ -686,11 +698,11 @@ pub fn export_conn_with_options(conn: &Connection, options: ExportOptions) -> Re
                 continue;
             }
             for callee in callees_for_symbol(conn, &node, 200)? {
-                insert_graph_node(&mut node_meta, &node);
-                insert_graph_node(&mut node_meta, &callee);
                 if !include_graph_node(&node, &options) || !include_graph_node(&callee, &options) {
                     continue;
                 }
+                insert_graph_node(&mut node_meta, &node);
+                insert_graph_node(&mut node_meta, &callee);
                 edges.push((node.qualified_name.clone(), callee.qualified_name.clone()));
                 if edges.len() >= limit {
                     truncated = true;
@@ -703,7 +715,7 @@ pub fn export_conn_with_options(conn: &Connection, options: ExportOptions) -> Re
         }
     } else {
         scope = "all".to_string();
-        let mut stmt = conn.prepare(
+        let mut sql = String::from(
             "
             SELECT DISTINCT
                 s1.qualified_name, f1.path, f1.language, s1.exported,
@@ -714,11 +726,15 @@ pub fn export_conn_with_options(conn: &Connection, options: ExportOptions) -> Re
             JOIN symbols s2 ON (s2.name = e.to_symbol_name OR s2.qualified_name = e.to_symbol_name)
             JOIN files f2 ON f2.id = s2.file_id
             WHERE s1.id != s2.id
-            ORDER BY s1.qualified_name, s2.qualified_name
-            LIMIT ?1
             ",
-        )?;
-        let rows = stmt.query_map(params![(limit + 1) as i64], |row| {
+        );
+        if options.exported_only {
+            sql.push_str(" AND s1.exported != 0 AND s2.exported != 0");
+        }
+        sql.push_str(" ORDER BY s1.qualified_name, s2.qualified_name");
+
+        let mut stmt = conn.prepare(&sql)?;
+        let rows = stmt.query_map([], |row| {
             Ok((
                 GraphNode {
                     name: row.get(0)?,
@@ -736,18 +752,19 @@ pub fn export_conn_with_options(conn: &Connection, options: ExportOptions) -> Re
         })?;
         for row in rows {
             let (from_node, to_node) = row?;
-            node_meta.insert(from_node.name.clone(), from_node.clone());
-            node_meta.insert(to_node.name.clone(), to_node.clone());
             if !include_graph_node_raw(&from_node, &options)
                 || !include_graph_node_raw(&to_node, &options)
             {
                 continue;
             }
+            node_meta.insert(from_node.name.clone(), from_node.clone());
+            node_meta.insert(to_node.name.clone(), to_node.clone());
             edges.push((from_node.name, to_node.name));
-        }
-        if edges.len() > limit {
-            truncated = true;
-            edges.truncate(limit);
+            if edges.len() > limit {
+                truncated = true;
+                edges.truncate(limit);
+                break;
+            }
         }
     }
 
@@ -1111,7 +1128,7 @@ fn fuzzy_candidates(
     symbol: &str,
     limit: usize,
 ) -> Result<Vec<SymbolSuggestion>> {
-    let matches = fuzzy_symbol_matches(conn, symbol, limit)?;
+    let matches = fuzzy_symbol_matches(conn, symbol, None, limit)?;
     let mut suggestions: Vec<SymbolSuggestion> = matches
         .into_iter()
         .map(|s| {
@@ -1142,17 +1159,65 @@ fn fuzzy_candidates(
 fn fuzzy_symbol_matches(
     conn: &Connection,
     symbol: &str,
+    options: Option<&SearchOptions>,
     limit: usize,
 ) -> Result<Vec<SymbolRecord>> {
-    Ok(ranked_fuzzy_matches(conn, symbol, limit)?
+    Ok(ranked_fuzzy_matches(conn, symbol, options, limit)?
         .into_iter()
         .map(|(_, s)| s)
         .collect())
 }
 
+fn append_symbol_filters(
+    sql: &mut String,
+    params: &mut Vec<rusqlite::types::Value>,
+    options: Option<&SearchOptions>,
+) {
+    let Some(options) = options else {
+        return;
+    };
+    if !options.kinds.is_empty() {
+        sql.push_str(" AND s.kind IN (");
+        for (i, kind) in options.kinds.iter().enumerate() {
+            if i > 0 {
+                sql.push_str(", ");
+            }
+            sql.push('?');
+            params.push(rusqlite::types::Value::Text(kind.clone()));
+        }
+        sql.push(')');
+    }
+    if !options.languages.is_empty() {
+        sql.push_str(" AND f.language IN (");
+        for (i, lang) in options.languages.iter().enumerate() {
+            if i > 0 {
+                sql.push_str(", ");
+            }
+            sql.push('?');
+            params.push(rusqlite::types::Value::Text(lang.clone()));
+        }
+        sql.push(')');
+    }
+    if let Some(exported) = options.exported {
+        sql.push_str(" AND s.exported = ?");
+        params.push(rusqlite::types::Value::Integer(if exported {
+            1
+        } else {
+            0
+        }));
+    }
+    if let Some(prefix) = &options.path_prefix {
+        if !prefix.is_empty() {
+            sql.push_str(" AND instr(f.path, ?) = 1");
+            params.push(rusqlite::types::Value::Text(prefix.clone()));
+        }
+    }
+}
+
 fn ranked_fuzzy_matches(
     conn: &Connection,
     symbol: &str,
+    options: Option<&SearchOptions>,
     limit: usize,
 ) -> Result<Vec<(f32, SymbolRecord)>> {
     // First try FTS5 (cheap, indexed). If unavailable or no hits, fall back to
@@ -1160,34 +1225,44 @@ fn ranked_fuzzy_matches(
     let escaped = escape_fts_term(symbol);
     let fts_query = format!("{}*", escaped);
     let fts_attempt: rusqlite::Result<Vec<SymbolRecord>> = (|| {
-        let mut stmt = conn.prepare(
+        let mut sql = String::from(
             "
             SELECT s.id, s.name, s.qualified_name, s.kind, s.file_id, f.path, f.language,
                    s.start_line, s.end_line, s.signature, s.exported
             FROM symbols_fts fts
             JOIN symbols s ON s.id = fts.rowid
             JOIN files f ON f.id = s.file_id
-            WHERE symbols_fts MATCH ?1
-            LIMIT ?2
+            WHERE symbols_fts MATCH ?
             ",
-        )?;
-        let rows = stmt.query_map(params![fts_query, (limit * 4) as i64], db::map_symbol)?;
+        );
+        let mut params = vec![rusqlite::types::Value::Text(fts_query)];
+        append_symbol_filters(&mut sql, &mut params, options);
+        sql.push_str(" LIMIT ?");
+        params.push(rusqlite::types::Value::Integer((limit * 4) as i64));
+
+        let mut stmt = conn.prepare(&sql)?;
+        let rows = stmt.query_map(rusqlite::params_from_iter(params), db::map_symbol)?;
         rows.collect::<rusqlite::Result<Vec<_>>>()
     })();
 
     let mut candidates = fts_attempt.unwrap_or_default();
 
     if candidates.is_empty() {
-        let mut stmt = conn.prepare(
+        let mut sql = String::from(
             "
             SELECT s.id, s.name, s.qualified_name, s.kind, s.file_id, f.path, f.language,
                    s.start_line, s.end_line, s.signature, s.exported
             FROM symbols s
             JOIN files f ON f.id = s.file_id
-            LIMIT 5000
+            WHERE 1=1
             ",
-        )?;
-        let rows = stmt.query_map([], db::map_symbol)?;
+        );
+        let mut params = Vec::new();
+        append_symbol_filters(&mut sql, &mut params, options);
+        sql.push_str(" LIMIT 5000");
+
+        let mut stmt = conn.prepare(&sql)?;
+        let rows = stmt.query_map(rusqlite::params_from_iter(params), db::map_symbol)?;
         for row in rows {
             candidates.push(row?);
         }
@@ -1222,6 +1297,7 @@ fn escape_fts_term(term: &str) -> String {
 fn glob_symbol_matches(
     conn: &Connection,
     pattern: &str,
+    options: Option<&SearchOptions>,
     limit: usize,
 ) -> Result<Vec<SymbolRecord>> {
     // Translate `*` → SQL `%`; escape SQL wildcards in the literal part.
@@ -1230,33 +1306,49 @@ fn glob_symbol_matches(
         .replace('%', "\\%")
         .replace('_', "\\_")
         .replace('*', "%");
-    let mut stmt = conn.prepare(
+    let mut sql = String::from(
         "
         SELECT s.id, s.name, s.qualified_name, s.kind, s.file_id, f.path, f.language,
                s.start_line, s.end_line, s.signature, s.exported
         FROM symbols s
         JOIN files f ON f.id = s.file_id
-        WHERE s.name LIKE ?1 ESCAPE '\\' OR s.qualified_name LIKE ?1 ESCAPE '\\'
-        ORDER BY length(s.qualified_name), s.qualified_name
-        LIMIT ?2
+        WHERE (s.name LIKE ? ESCAPE '\\' OR s.qualified_name LIKE ? ESCAPE '\\')
         ",
-    )?;
-    let rows = stmt.query_map(params![like, limit as i64], db::map_symbol)?;
+    );
+    let mut params = vec![
+        rusqlite::types::Value::Text(like.clone()),
+        rusqlite::types::Value::Text(like),
+    ];
+    append_symbol_filters(&mut sql, &mut params, options);
+    sql.push_str(" ORDER BY length(s.qualified_name), s.qualified_name LIMIT ?");
+    params.push(rusqlite::types::Value::Integer(limit as i64));
+
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map(rusqlite::params_from_iter(params), db::map_symbol)?;
     Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
 }
 
-fn list_symbols(conn: &Connection, limit: usize) -> Result<Vec<SymbolRecord>> {
-    let mut stmt = conn.prepare(
+fn list_symbols(
+    conn: &Connection,
+    options: Option<&SearchOptions>,
+    limit: usize,
+) -> Result<Vec<SymbolRecord>> {
+    let mut sql = String::from(
         "
         SELECT s.id, s.name, s.qualified_name, s.kind, s.file_id, f.path, f.language,
                s.start_line, s.end_line, s.signature, s.exported
         FROM symbols s
         JOIN files f ON f.id = s.file_id
-        ORDER BY s.qualified_name
-        LIMIT ?1
+        WHERE 1=1
         ",
-    )?;
-    let rows = stmt.query_map(params![limit as i64], db::map_symbol)?;
+    );
+    let mut params = Vec::new();
+    append_symbol_filters(&mut sql, &mut params, options);
+    sql.push_str(" ORDER BY s.qualified_name LIMIT ?");
+    params.push(rusqlite::types::Value::Integer(limit as i64));
+
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map(rusqlite::params_from_iter(params), db::map_symbol)?;
     Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
 }
 
