@@ -56,21 +56,42 @@ impl LanguageSupport for C {
 
 pub(super) fn c_family_symbol(cx: &Cx<'_>, node: Node<'_>, cpp: bool) -> Option<IndexedSymbol> {
     let has_body = node.child_by_field_name("body").is_some();
-    let kind = match node.kind() {
-        "function_definition" => {
-            let name = declarator_name(cx, node.child_by_field_name("declarator")?)?;
-            if name.is_empty() {
-                return None;
+    let kind =
+        match node.kind() {
+            "function_definition" => {
+                let name = declarator_name(cx, node.child_by_field_name("declarator")?)?;
+                if name.is_empty() {
+                    return None;
+                }
+                let is_member = node.parent().and_then(|p| p.parent()).is_some_and(|p| {
+                    p.kind() == "class_specifier" || p.kind() == "struct_specifier"
+                });
+                let exported = is_member || !has_static(cx, node);
+                return Some(cx.symbol(name, "function", node, exported));
             }
-            return Some(cx.symbol(name, "function", node, !has_static(cx, node)));
-        }
-        "struct_specifier" if has_body => "struct",
-        "enum_specifier" if has_body => "enum",
-        "union_specifier" if has_body => "union",
-        "class_specifier" if cpp && has_body => "class",
-        "namespace_definition" if cpp => "namespace",
-        _ => return None,
-    };
+            "declaration" | "field_declaration" => {
+                if is_inside_function(node) || has_typedef(cx, node) {
+                    return None;
+                }
+                let decl = node.child_by_field_name("declarator")?;
+                let fn_decl = find_function_declarator(decl)?;
+                let name = declarator_name(cx, fn_decl)?;
+                if name.is_empty() {
+                    return None;
+                }
+                let is_member = node.parent().and_then(|p| p.parent()).is_some_and(|p| {
+                    p.kind() == "class_specifier" || p.kind() == "struct_specifier"
+                });
+                let exported = is_member || !has_static(cx, node);
+                return Some(cx.symbol(name, "function", node, exported));
+            }
+            "struct_specifier" if has_body => "struct",
+            "enum_specifier" if has_body => "enum",
+            "union_specifier" if has_body => "union",
+            "class_specifier" if cpp && has_body => "class",
+            "namespace_definition" if cpp => "namespace",
+            _ => return None,
+        };
     let name = cx.text(node.child_by_field_name("name")?);
     Some(cx.symbol(name, kind, node, true))
 }
@@ -118,5 +139,42 @@ fn has_static(cx: &Cx<'_>, node: Node<'_>) -> bool {
     let found = node
         .children(&mut cursor)
         .any(|child| child.kind() == "storage_class_specifier" && cx.text(child) == "static");
+    found
+}
+
+fn find_function_declarator(node: Node<'_>) -> Option<Node<'_>> {
+    match node.kind() {
+        "function_declarator" => {
+            let inner = node.child_by_field_name("declarator")?;
+            if inner.kind() == "parenthesized_declarator" {
+                None
+            } else {
+                Some(node)
+            }
+        }
+        "pointer_declarator"
+        | "reference_declarator"
+        | "parenthesized_declarator"
+        | "array_declarator" => find_function_declarator(node.child_by_field_name("declarator")?),
+        _ => None,
+    }
+}
+
+fn is_inside_function(node: Node<'_>) -> bool {
+    let mut current = node.parent();
+    while let Some(parent) = current {
+        if matches!(parent.kind(), "function_definition" | "compound_statement") {
+            return true;
+        }
+        current = parent.parent();
+    }
+    false
+}
+
+fn has_typedef(cx: &Cx<'_>, node: Node<'_>) -> bool {
+    let mut cursor = node.walk();
+    let found = node
+        .children(&mut cursor)
+        .any(|child| child.kind() == "storage_class_specifier" && cx.text(child) == "typedef");
     found
 }

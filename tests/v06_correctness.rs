@@ -451,3 +451,184 @@ type Greeter interface {
     let json_go_greet: serde_json::Value = serde_json::from_slice(&output_go_greet.stdout).unwrap();
     assert_eq!(json_go_greet["matches"][0]["symbol"]["name"], "Greet");
 }
+
+#[test]
+fn c_and_cpp_declarations_indexed_and_queried() {
+    let temp = TempDir::new().unwrap();
+
+    let src = temp.path().join("src");
+    fs::create_dir_all(&src).unwrap();
+
+    fs::write(
+        src.join("math.h"),
+        r#"
+int add(int a, int b);
+static int internal_add(int a, int b);
+"#,
+    )
+    .unwrap();
+
+    fs::write(
+        src.join("widget.hpp"),
+        r#"
+namespace ui {
+class Widget {
+public:
+    int render() const;
+    virtual void show() = 0;
+};
+}
+"#,
+    )
+    .unwrap();
+
+    let db = temp.path().join(".tessera/tessera.db");
+    Command::cargo_bin("tessera")
+        .unwrap()
+        .current_dir(temp.path())
+        .args([
+            "index",
+            temp.path().to_str().unwrap(),
+            "--db",
+            db.to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+
+    let conn = Connection::open(&db).unwrap();
+    let symbols: Vec<(String, String, String, Option<String>, bool)> = conn
+        .prepare(
+            "
+            SELECT s.name, s.qualified_name, s.kind, s.container, s.exported != 0
+            FROM symbols s
+            WHERE s.kind IN ('class', 'namespace', 'function', 'method')
+            ORDER BY s.qualified_name, s.name
+            ",
+        )
+        .unwrap()
+        .query_map([], |row| {
+            Ok((
+                row.get(0)?,
+                row.get(1)?,
+                row.get(2)?,
+                row.get(3)?,
+                row.get(4)?,
+            ))
+        })
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap();
+
+    assert_eq!(
+        symbols,
+        vec![
+            (
+                "add".to_string(),
+                "add".to_string(),
+                "function".to_string(),
+                None,
+                true
+            ),
+            (
+                "internal_add".to_string(),
+                "internal_add".to_string(),
+                "function".to_string(),
+                None,
+                false
+            ),
+            (
+                "ui".to_string(),
+                "ui".to_string(),
+                "namespace".to_string(),
+                None,
+                true
+            ),
+            (
+                "Widget".to_string(),
+                "ui.Widget".to_string(),
+                "class".to_string(),
+                Some("ui".to_string()),
+                true
+            ),
+            (
+                "render".to_string(),
+                "ui.Widget.render".to_string(),
+                "function".to_string(),
+                Some("ui.Widget".to_string()),
+                true
+            ),
+            (
+                "show".to_string(),
+                "ui.Widget.show".to_string(),
+                "function".to_string(),
+                Some("ui.Widget".to_string()),
+                true
+            ),
+        ]
+    );
+
+    // Verify finding Widget returns its member functions
+    let output = Command::cargo_bin("tessera")
+        .unwrap()
+        .current_dir(temp.path())
+        .args([
+            "--root",
+            temp.path().to_str().unwrap(),
+            "--db",
+            db.to_str().unwrap(),
+            "--json",
+            "find",
+            "Widget",
+        ])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let matches = json["matches"].as_array().expect("matches array");
+    assert_eq!(matches.len(), 1);
+    let members = matches[0]["members"].as_array().expect("members array");
+    assert_eq!(members.len(), 2, "members: {members:#?}");
+    let member_sigs: Vec<&str> = members.iter().map(|m| m.as_str().unwrap()).collect();
+    assert_eq!(
+        member_sigs,
+        vec!["int render() const;", "virtual void show() = 0;"]
+    );
+
+    // Verify find on member function directly
+    let output_render = Command::cargo_bin("tessera")
+        .unwrap()
+        .current_dir(temp.path())
+        .args([
+            "--root",
+            temp.path().to_str().unwrap(),
+            "--db",
+            db.to_str().unwrap(),
+            "--json",
+            "find",
+            "ui.Widget.render",
+        ])
+        .output()
+        .unwrap();
+    assert!(output_render.status.success());
+    let json_render: serde_json::Value = serde_json::from_slice(&output_render.stdout).unwrap();
+    assert_eq!(json_render["matches"][0]["symbol"]["name"], "render");
+
+    // Verify find on C header function
+    let output_add = Command::cargo_bin("tessera")
+        .unwrap()
+        .current_dir(temp.path())
+        .args([
+            "--root",
+            temp.path().to_str().unwrap(),
+            "--db",
+            db.to_str().unwrap(),
+            "--json",
+            "find",
+            "add",
+        ])
+        .output()
+        .unwrap();
+    assert!(output_add.status.success());
+    let json_add: serde_json::Value = serde_json::from_slice(&output_add.stdout).unwrap();
+    assert_eq!(json_add["matches"][0]["symbol"]["name"], "add");
+}
