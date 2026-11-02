@@ -59,9 +59,19 @@ pub fn read_body(root: &Path, symbol: &SymbolRecord) -> Result<String> {
     {
         bail!("refusing to read {} outside the repository", symbol.path);
     }
-    let root = root.canonicalize()?;
-    let path = root.join(rel).canonicalize()?;
-    if !path.starts_with(&root) {
+    let canonical_root = if let Ok(canon) = root.canonicalize() {
+        canon
+    } else if let Ok(cwd) = std::env::current_dir() {
+        if cwd.join(rel).exists() {
+            cwd.canonicalize()?
+        } else {
+            root.to_path_buf()
+        }
+    } else {
+        root.to_path_buf()
+    };
+    let path = canonical_root.join(rel).canonicalize()?;
+    if !path.starts_with(&canonical_root) {
         bail!("refusing to read {} outside the repository", symbol.path);
     }
     let bytes = fs::read(path)?;

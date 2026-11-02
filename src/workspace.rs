@@ -30,15 +30,36 @@ impl Workspace {
     }
 
     pub fn resolve(root: Option<&Path>, db: Option<&Path>, cwd: &Path) -> Workspace {
+        let explicit_db = db.map(|db| cwd.join(db));
         let root = match root {
             Some(root) => {
                 let root = cwd.join(root);
                 root.canonicalize().unwrap_or(root)
             }
-            None => discover_root(cwd),
+            None => {
+                let discovered = discover_root(cwd);
+                if let (true, Some(db_p)) = (discovered == cwd, explicit_db.as_ref()) {
+                    if let Some(parent) = db_p.parent() {
+                        if parent.file_name().and_then(|n| n.to_str()) == Some(".tessera") {
+                            parent
+                                .parent()
+                                .map(|p| p.canonicalize().unwrap_or_else(|_| p.to_path_buf()))
+                                .unwrap_or(discovered)
+                        } else {
+                            parent
+                                .canonicalize()
+                                .unwrap_or_else(|_| parent.to_path_buf())
+                        }
+                    } else {
+                        discovered
+                    }
+                } else {
+                    discovered
+                }
+            }
         };
-        let db_path = match db {
-            Some(db) => cwd.join(db),
+        let db_path = match explicit_db {
+            Some(p) => p,
             None => {
                 let config = crate::config::TesseraConfig::load(&root);
                 if let Some(custom_db) = config.db {
@@ -233,5 +254,20 @@ mod tests {
             ws.db_path,
             repo.canonicalize().unwrap().join("custom_index.db")
         );
+    }
+
+    #[test]
+    fn resolve_derives_root_from_explicit_db_when_outside_repo() {
+        let temp = TempDir::new().unwrap();
+        let outside = temp.path().join("outside");
+        let repo = temp.path().join("my_repo");
+        fs::create_dir_all(&outside).unwrap();
+        fs::create_dir_all(repo.join(".tessera")).unwrap();
+        let db_path = repo.join(".tessera").join("tessera.db");
+        fs::write(&db_path, "").unwrap();
+
+        let ws = Workspace::resolve(None, Some(&db_path), &outside);
+        assert_eq!(ws.root, repo.canonicalize().unwrap());
+        assert_eq!(ws.db_path, db_path);
     }
 }
