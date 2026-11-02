@@ -780,3 +780,268 @@ pub fn untouched() -> i32 {
         .iter()
         .any(|c| c.symbol.name == "extra_helper" && c.removed_lines > 0));
 }
+
+#[test]
+fn search_and_export_apply_filters_before_sql_limit() {
+    let temp = TempDir::new().unwrap();
+    let root = temp.path();
+
+    // Create a large number of functions with prefix `handle_` in src/handlers.rs
+    // that outnumber the default limit / candidate limit (80 functions).
+    fs::create_dir_all(root.join("src/services")).unwrap();
+    fs::create_dir_all(root.join("tests")).unwrap();
+
+    let mut handlers = String::new();
+    for i in 0..80 {
+        handlers.push_str(&format!("fn handle_{:02}() -> i32 {{ {} }}\n", i, i));
+    }
+    fs::write(root.join("src/handlers.rs"), &handlers).unwrap();
+
+    // Create 3 exported classes in src/services/service.ts
+    fs::write(
+        root.join("src/services/service.ts"),
+        r#"export class HandleService {
+    run() { return 1; }
+}
+
+export class HandleController {
+    serve() { return new HandleService().run(); }
+}
+
+export class HandleManager {
+    manage() { return 3; }
+}
+
+export function serviceEntry() { return serviceHelper(); }
+export function serviceHelper() { return 42; }
+"#,
+    )
+    .unwrap();
+
+    // Create 30 test edges in tests/test_flow.ts
+    let mut test_flow = String::new();
+    for i in 0..30 {
+        test_flow.push_str(&format!(
+            "function test_fn_{i}() {{ return test_callee_{i}(); }}\nfunction test_callee_{i}() {{ return {i}; }}\n"
+        ));
+    }
+    fs::write(root.join("tests/test_flow.ts"), &test_flow).unwrap();
+
+    let db = root.join(".tessera/index.db");
+    Command::cargo_bin("tessera")
+        .unwrap()
+        .current_dir(root)
+        .args([
+            "index",
+            root.to_str().unwrap(),
+            "--db",
+            db.to_str().unwrap(),
+            "--full",
+        ])
+        .assert()
+        .success();
+
+    let conn = Connection::open(&db).unwrap();
+
+    // 1. Search glob pattern `handle*` with `--kind class`
+    // Before fix: 80 functions in handlers.rs exhausted the candidate scan limit (50),
+    // returning 0 classes.
+    let glob_res = tessera_codegraph::query::search_conn(
+        &conn,
+        "handle*",
+        tessera_codegraph::types::SearchOptions {
+            kinds: vec!["class".to_string()],
+            languages: vec![],
+            exported: None,
+            path_prefix: None,
+            limit: 10,
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        glob_res.hits.len(),
+        3,
+        "glob search with kind filter returns all 3 classes"
+    );
+    let names: Vec<&str> = glob_res
+        .hits
+        .iter()
+        .map(|h| h.symbol.name.as_str())
+        .collect();
+    assert!(names.contains(&"HandleService"));
+    assert!(names.contains(&"HandleController"));
+    assert!(names.contains(&"HandleManager"));
+
+    // 2. Search with path_prefix
+    let path_res = tessera_codegraph::query::search_conn(
+        &conn,
+        "handle*",
+        tessera_codegraph::types::SearchOptions {
+            kinds: vec![],
+            languages: vec![],
+            exported: None,
+            path_prefix: Some("src/services".to_string()),
+            limit: 10,
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        path_res.hits.len(),
+        6,
+        "path prefix returns all symbols under src/services"
+    );
+    assert!(path_res
+        .hits
+        .iter()
+        .all(|h| h.symbol.path.starts_with("src/services")));
+
+    // 3. Search with language filter
+    let lang_res = tessera_codegraph::query::search_conn(
+        &conn,
+        "handle*",
+        tessera_codegraph::types::SearchOptions {
+            kinds: vec![],
+            languages: vec!["typescript".to_string()],
+            exported: None,
+            path_prefix: None,
+            limit: 10,
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        lang_res.hits.len(),
+        6,
+        "language filter returns typescript symbols"
+    );
+    assert!(lang_res
+        .hits
+        .iter()
+        .all(|h| h.symbol.language == "typescript"));
+
+    // 4. Search with exported filter
+    let exp_res = tessera_codegraph::query::search_conn(
+        &conn,
+        "handle*",
+        tessera_codegraph::types::SearchOptions {
+            kinds: vec![],
+            languages: vec![],
+            exported: Some(true),
+            path_prefix: None,
+            limit: 10,
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        exp_res.hits.len(),
+        6,
+        "exported filter returns only exported symbols"
+    );
+    assert!(exp_res.hits.iter().all(|h| h.symbol.exported));
+
+    // 5. Search with empty pattern (listing) and kind filter
+    let list_res = tessera_codegraph::query::search_conn(
+        &conn,
+        "",
+        tessera_codegraph::types::SearchOptions {
+            kinds: vec!["class".to_string()],
+            languages: vec![],
+            exported: None,
+            path_prefix: None,
+            limit: 10,
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        list_res.hits.len(),
+        3,
+        "empty pattern search with kind filter returns 3 classes"
+    );
+
+    // 6. Fuzzy search `Handle` with kind filter
+    let fuzzy_res = tessera_codegraph::query::search_conn(
+        &conn,
+        "Handle",
+        tessera_codegraph::types::SearchOptions {
+            kinds: vec!["class".to_string()],
+            languages: vec![],
+            exported: None,
+            path_prefix: None,
+            limit: 10,
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        fuzzy_res.hits.len(),
+        3,
+        "fuzzy search with kind filter returns 3 classes"
+    );
+
+    // 7. CLI command search test
+    Command::cargo_bin("tessera")
+        .unwrap()
+        .current_dir(root)
+        .args([
+            "search",
+            "handle*",
+            "--kind",
+            "class",
+            "--db",
+            db.to_str().unwrap(),
+        ])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("HandleService"))
+        .stdout(predicates::str::contains("HandleController"))
+        .stdout(predicates::str::contains("HandleManager"));
+
+    // 8. Export with collapse_tests:
+    // tests/test_flow.ts has 30 edges. If SQL limit was 10 (or 11), they would exhaust the limit,
+    // leaving 0 edges from src/services.
+    let export_res = tessera_codegraph::query::export_conn_with_options(
+        &conn,
+        tessera_codegraph::query::ExportOptions {
+            format: "mermaid".to_string(),
+            from: None,
+            depth: 1,
+            limit: 10,
+            group_by: tessera_codegraph::query::ExportGroupBy::None,
+            collapse_tests: true,
+            exported_only: false,
+            html_out: None,
+        },
+    )
+    .unwrap();
+    assert!(
+        !export_res.diagram.is_empty(),
+        "diagram should not be empty"
+    );
+    assert!(
+        export_res.edges > 0,
+        "collapse_tests should not cause empty export due to test edges"
+    );
+
+    // 9. Export with exported_only:
+    // tests/test_flow.ts has 30 non-exported edges. If SQL limit was 10 (or 11), they would exhaust the limit.
+    let export_exp = tessera_codegraph::query::export_conn_with_options(
+        &conn,
+        tessera_codegraph::query::ExportOptions {
+            format: "mermaid".to_string(),
+            from: None,
+            depth: 1,
+            limit: 10,
+            group_by: tessera_codegraph::query::ExportGroupBy::None,
+            collapse_tests: false,
+            exported_only: true,
+            html_out: None,
+        },
+    )
+    .unwrap();
+    assert!(
+        !export_exp.diagram.is_empty(),
+        "diagram should not be empty"
+    );
+    assert!(
+        export_exp.edges > 0,
+        "exported_only should not cause empty export due to non-exported edges"
+    );
+}
