@@ -262,8 +262,8 @@ enum Commands {
     /// Keep the index fresh while files change.
     Watch {
         /// Wait this long after a change before re-indexing.
-        #[arg(long, default_value_t = 200)]
-        debounce_ms: u64,
+        #[arg(long, value_name = "MS")]
+        debounce_ms: Option<u64>,
         /// Index once and exit.
         #[arg(long)]
         once: bool,
@@ -717,11 +717,18 @@ fn run() -> Result<u8> {
             once,
             full,
         } => {
+            let debounce = match debounce_ms {
+                Some(ms) => Duration::from_millis(ms),
+                None => {
+                    let config = tessera_codegraph::config::TesseraConfig::load(&ws.root);
+                    Duration::from_millis(config.watch_debounce_ms.unwrap_or(200))
+                }
+            };
             watch::watch_path(
                 &ws.root,
                 &ws.db_path,
                 WatchOptions {
-                    debounce: Duration::from_millis(debounce_ms),
+                    debounce,
                     index_options: IndexOptions {
                         full,
                         excludes: None,
