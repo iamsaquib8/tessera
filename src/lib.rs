@@ -56,12 +56,14 @@ use rusqlite::Connection;
 
 pub use indexer::{IndexMode, IndexOptions, IndexReport};
 pub use query::{
-    signature_conn, BlastArgs, BlastResult, ContextArgs, ContextResult, CyclesArgs, CyclesResult,
-    ExportGroupBy, ExportOptions, FindArgs, FindResult, ImportCycle, ImportCycleLink, PathArgs,
-    RefsArgs, RefsResult, SearchArgs, SearchResults, StatusResult, VerifyArgs, VerifyResult,
+    diff_impact_conn, signature_conn, BlastArgs, BlastResult, ContextArgs, ContextResult,
+    CyclesArgs, CyclesResult, ExportGroupBy, ExportOptions, FindArgs, FindResult, ImportCycle,
+    ImportCycleLink, PathArgs, RefsArgs, RefsResult, SearchArgs, SearchResults, StatusResult,
+    VerifyArgs, VerifyResult,
 };
 pub use types::{
-    ConnectResult, ExportResult, Language, ReferenceRecord, SignatureResult, SymbolRecord,
+    ConnectResult, DiffImpactResult, ExportResult, Language, ReferenceRecord, SignatureResult,
+    SymbolRecord,
 };
 pub use workspace::Workspace;
 
@@ -144,6 +146,15 @@ impl Index {
 
     pub fn blast(&self, args: &BlastArgs) -> Result<BlastResult> {
         query::blast(&self.conn, &self.root, args)
+    }
+
+    pub fn diff_impact(
+        &self,
+        from_ref: &str,
+        to_ref: Option<&str>,
+        depth: usize,
+    ) -> Result<DiffImpactResult> {
+        query::diff_impact_conn(&self.conn, &self.root, from_ref, to_ref, depth)
     }
 
     pub fn path(&self, args: &PathArgs) -> Result<ConnectResult> {

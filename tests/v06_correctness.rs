@@ -632,3 +632,151 @@ public:
     let json_add: serde_json::Value = serde_json::from_slice(&output_add.stdout).unwrap();
     assert_eq!(json_add["matches"][0]["symbol"]["name"], "add");
 }
+
+fn run_git_cmd(root: &std::path::Path, args: &[&str]) {
+    let status = std::process::Command::new("git")
+        .args(["-c", "user.name=t", "-c", "user.email=t@example.com"])
+        .args(args)
+        .current_dir(root)
+        .status()
+        .unwrap();
+    assert!(status.success(), "git {args:?}");
+}
+
+#[test]
+fn diff_impact_path_preservation_and_deletions() {
+    let temp = TempDir::new().unwrap();
+    run_git_cmd(temp.path(), &["init", "-q"]);
+
+    let b_dir = temp.path().join("b/b");
+    fs::create_dir_all(&b_dir).unwrap();
+
+    fs::write(
+        b_dir.join("service.rs"),
+        r#"pub fn calculate(x: i32) -> i32 {
+    let a = 1;
+    let b = 2;
+    x + a + b
+}
+
+pub fn untouched() -> i32 {
+    100
+}
+
+pub fn to_be_deleted() -> i32 {
+    42
+}
+"#,
+    )
+    .unwrap();
+
+    fs::write(
+        temp.path().join("caller.rs"),
+        r#"pub fn run() -> i32 {
+    calculate(10) + to_be_deleted()
+}
+"#,
+    )
+    .unwrap();
+
+    run_git_cmd(temp.path(), &["add", "."]);
+    run_git_cmd(temp.path(), &["commit", "-q", "-m", "initial"]);
+
+    let db = temp.path().join(".tessera/tessera.db");
+    Command::cargo_bin("tessera")
+        .unwrap()
+        .current_dir(temp.path())
+        .args([
+            "index",
+            temp.path().to_str().unwrap(),
+            "--db",
+            db.to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+
+    // Modify calculate (delete 3 lines, add 2 lines) and delete to_be_deleted completely
+    fs::write(
+        b_dir.join("service.rs"),
+        r#"pub fn calculate(x: i32) -> i32 {
+    let c = 3;
+    x + c
+}
+
+pub fn untouched() -> i32 {
+    100
+}
+"#,
+    )
+    .unwrap();
+
+    let conn = Connection::open(&db).unwrap();
+    let diff =
+        tessera_codegraph::query::diff_impact_conn(&conn, temp.path(), "HEAD", None, 2).unwrap();
+
+    assert_eq!(diff.changed_files, 1);
+    let changed_names: Vec<(&str, usize, usize)> = diff
+        .changed_symbols
+        .iter()
+        .map(|c| (c.symbol.name.as_str(), c.added_lines, c.removed_lines))
+        .collect();
+
+    // calculate has 2 added lines and 3 removed lines
+    let calc = changed_names
+        .iter()
+        .find(|(name, _, _)| *name == "calculate")
+        .expect("calculate changed");
+    assert_eq!(calc.1, 2, "calculate added_lines");
+    assert_eq!(calc.2, 3, "calculate removed_lines");
+
+    // to_be_deleted is recognized as changed with removed_lines > 0
+    let del = changed_names
+        .iter()
+        .find(|(name, _, _)| *name == "to_be_deleted")
+        .expect("to_be_deleted changed");
+    assert_eq!(del.1, 0, "to_be_deleted added_lines");
+    assert_eq!(del.2, 4, "to_be_deleted removed_lines");
+
+    // untouched is not changed
+    assert!(!changed_names
+        .iter()
+        .any(|(name, _, _)| *name == "untouched"));
+
+    // Callers are impacted
+    let impacted_names: Vec<&str> = diff
+        .impacted
+        .iter()
+        .map(|i| i.symbol.name.as_str())
+        .collect();
+    assert!(impacted_names.contains(&"run"));
+
+    // Now test a completely deleted file
+    fs::write(
+        temp.path().join("extra.rs"),
+        "pub fn extra_helper() -> i32 { 100 }\n",
+    )
+    .unwrap();
+    run_git_cmd(temp.path(), &["add", "."]);
+    run_git_cmd(temp.path(), &["commit", "-q", "-m", "add extra"]);
+
+    Command::cargo_bin("tessera")
+        .unwrap()
+        .current_dir(temp.path())
+        .args([
+            "index",
+            temp.path().to_str().unwrap(),
+            "--db",
+            db.to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+
+    // Delete extra.rs
+    fs::remove_file(temp.path().join("extra.rs")).unwrap();
+    let diff_after_delete =
+        tessera_codegraph::query::diff_impact_conn(&conn, temp.path(), "HEAD", None, 2).unwrap();
+    assert!(diff_after_delete
+        .changed_symbols
+        .iter()
+        .any(|c| c.symbol.name == "extra_helper" && c.removed_lines > 0));
+}
