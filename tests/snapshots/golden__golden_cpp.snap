@@ -12,6 +12,8 @@ expression: graph_dump(& db)
     "src/store.cpp:6-9 function app.load [exported] | int load(int id) {",
     "src/store.hpp:1-8 namespace app [exported] | namespace app {",
     "src/store.hpp:2-5 class app.Store [exported] | class Store {",
+    "src/store.hpp:4-4 function app.Store.get [exported] | int get(int id) const;",
+    "src/store.hpp:7-7 function app.load [exported] | int load(int id);",
     "tests/store_test.cpp:3-3 function test_load [exported] | void test_load() { app::load(1); }"
   ],
   "refs": [
@@ -33,11 +35,15 @@ expression: graph_dump(& db)
   "edges": [
     "src/main.cpp main -call-> src/main.cpp:load [high/local]",
     "src/main.cpp main -call-> src/main.cpp:load [low/name]",
-    "src/main.cpp main -call-> src/store.cpp:app.get [medium/name]",
+    "src/main.cpp main -call-> src/store.cpp:app.get [low/name]",
     "src/main.cpp main -call-> src/store.cpp:app.load [low/name]",
+    "src/main.cpp main -call-> src/store.hpp:app.Store.get [low/name]",
+    "src/main.cpp main -call-> src/store.hpp:app.load [low/name]",
     "src/main.cpp main -new-> src/store.hpp:app.Store [medium/name]",
-    "src/store.cpp app.load -call-> src/store.cpp:app.get [medium/name]",
+    "src/store.cpp app.load -call-> src/store.cpp:app.get [low/name]",
+    "src/store.cpp app.load -call-> src/store.hpp:app.Store.get [low/name]",
     "tests/store_test.cpp test_load -call-> src/main.cpp:load [low/name]",
-    "tests/store_test.cpp test_load -call-> src/store.cpp:app.load [low/name]"
+    "tests/store_test.cpp test_load -call-> src/store.cpp:app.load [low/name]",
+    "tests/store_test.cpp test_load -call-> src/store.hpp:app.load [low/name]"
   ]
 }

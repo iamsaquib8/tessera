@@ -673,4 +673,107 @@ type Greeter interface {
             ]
         );
     }
+
+    #[test]
+    fn c_and_cpp_declarations_are_extracted() {
+        let c_src = r#"
+int calculate_sum(int a, int b);
+static int helper(void);
+struct Point {
+    int x;
+    int y;
+    void (*callback)(int);
+};
+"#;
+        let parsed_c = parse_file(Language::C, c_src).unwrap();
+        let c_syms: Vec<(&str, &str, &str, Option<&str>, bool)> = parsed_c
+            .symbols
+            .iter()
+            .map(|s| {
+                (
+                    s.name.as_str(),
+                    s.qualified_name.as_str(),
+                    s.kind.as_str(),
+                    s.container.as_deref(),
+                    s.exported,
+                )
+            })
+            .collect();
+        assert_eq!(
+            c_syms,
+            vec![
+                ("calculate_sum", "calculate_sum", "function", None, true),
+                ("helper", "helper", "function", None, false),
+                ("Point", "Point", "struct", None, true),
+            ]
+        );
+
+        let cpp_src = r#"
+namespace app {
+class Store {
+public:
+    Store();
+    virtual ~Store();
+    int get(int id) const;
+    virtual void reset() = 0;
+    bool operator==(const Store &other) const;
+private:
+    int count;
+};
+
+int load(int id);
+}
+"#;
+        let parsed_cpp = parse_file(Language::Cpp, cpp_src).unwrap();
+        let cpp_syms: Vec<(&str, &str, &str, Option<&str>, bool)> = parsed_cpp
+            .symbols
+            .iter()
+            .map(|s| {
+                (
+                    s.name.as_str(),
+                    s.qualified_name.as_str(),
+                    s.kind.as_str(),
+                    s.container.as_deref(),
+                    s.exported,
+                )
+            })
+            .collect();
+        assert_eq!(
+            cpp_syms,
+            vec![
+                ("app", "app", "namespace", None, true),
+                ("Store", "app.Store", "class", Some("app"), true),
+                (
+                    "Store",
+                    "app.Store.Store",
+                    "function",
+                    Some("app.Store"),
+                    true
+                ),
+                (
+                    "~Store",
+                    "app.Store.~Store",
+                    "function",
+                    Some("app.Store"),
+                    true
+                ),
+                ("get", "app.Store.get", "function", Some("app.Store"), true),
+                (
+                    "reset",
+                    "app.Store.reset",
+                    "function",
+                    Some("app.Store"),
+                    true
+                ),
+                (
+                    "operator==",
+                    "app.Store.operator==",
+                    "function",
+                    Some("app.Store"),
+                    true
+                ),
+                ("load", "app.load", "function", Some("app"), true),
+            ]
+        );
+    }
 }
