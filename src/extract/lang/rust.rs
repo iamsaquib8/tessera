@@ -16,7 +16,7 @@ impl LanguageSupport for Rust {
 
     fn symbol(&self, cx: &Cx<'_>, node: Node<'_>) -> Option<IndexedSymbol> {
         let kind = match node.kind() {
-            "function_item" => "function",
+            "function_item" | "function_signature_item" => "function",
             "struct_item" => "struct",
             "enum_item" => "enum",
             "trait_item" => "trait",
@@ -28,12 +28,17 @@ impl LanguageSupport for Rust {
             _ => return None,
         };
         let name = cx.text(node.child_by_field_name("name")?);
-        Some(cx.symbol(
-            name,
-            kind,
-            node,
-            has_child_kind(node, "visibility_modifier"),
-        ))
+        let is_trait_member = node
+            .parent()
+            .and_then(|p| p.parent())
+            .is_some_and(|p| p.kind() == "trait_item");
+        let exported = has_child_kind(node, "visibility_modifier")
+            || (is_trait_member
+                && node
+                    .parent()
+                    .and_then(|p| p.parent())
+                    .is_some_and(|p| has_child_kind(p, "visibility_modifier")));
+        Some(cx.symbol(name, kind, node, exported))
     }
 
     fn reference(&self, cx: &Cx<'_>, node: Node<'_>) -> Option<IndexedReference> {

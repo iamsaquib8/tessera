@@ -56,11 +56,13 @@ use rusqlite::Connection;
 
 pub use indexer::{IndexMode, IndexOptions, IndexReport};
 pub use query::{
-    BlastArgs, BlastResult, ContextArgs, ContextResult, CyclesArgs, CyclesResult, ExportGroupBy,
-    ExportOptions, FindArgs, FindResult, ImportCycle, ImportCycleLink, PathArgs, RefsArgs,
-    RefsResult, SearchArgs, SearchResults, StatusResult, VerifyArgs, VerifyResult,
+    signature_conn, BlastArgs, BlastResult, ContextArgs, ContextResult, CyclesArgs, CyclesResult,
+    ExportGroupBy, ExportOptions, FindArgs, FindResult, ImportCycle, ImportCycleLink, PathArgs,
+    RefsArgs, RefsResult, SearchArgs, SearchResults, StatusResult, VerifyArgs, VerifyResult,
 };
-pub use types::{ConnectResult, ExportResult, Language, ReferenceRecord, SymbolRecord};
+pub use types::{
+    ConnectResult, ExportResult, Language, ReferenceRecord, SignatureResult, SymbolRecord,
+};
 pub use workspace::Workspace;
 
 /// Read-only handle to a Tessera index.
@@ -126,6 +128,10 @@ impl Index {
 
     pub fn find(&self, args: &FindArgs) -> Result<FindResult> {
         query::find(&self.conn, &self.root, args)
+    }
+
+    pub fn signature(&self, symbol: &str) -> Result<SignatureResult> {
+        query::signature_conn(&self.conn, symbol)
     }
 
     pub fn search(&self, args: &SearchArgs) -> Result<SearchResults> {

@@ -584,4 +584,93 @@ mod tests {
         let parsed = parse_file(Language::JavaScript, &source).unwrap();
         assert!(parsed.symbols[0].signature.chars().count() <= 181);
     }
+
+    #[test]
+    fn rust_trait_and_go_interface_methods_are_extracted() {
+        let rust_src = r#"
+pub trait Greeter {
+    fn greet(&self, name: &str) -> String;
+    fn default_greet(&self) -> String {
+        "hello".to_string()
+    }
+}
+
+trait InternalTrait {
+    fn internal_method(&self);
+}
+"#;
+        let parsed_rust = parse_file(Language::Rust, rust_src).unwrap();
+        let rust_syms: Vec<(&str, &str, &str, Option<&str>, bool)> = parsed_rust
+            .symbols
+            .iter()
+            .map(|s| {
+                (
+                    s.name.as_str(),
+                    s.qualified_name.as_str(),
+                    s.kind.as_str(),
+                    s.container.as_deref(),
+                    s.exported,
+                )
+            })
+            .collect();
+        assert_eq!(
+            rust_syms,
+            vec![
+                ("Greeter", "Greeter", "trait", None, true),
+                ("greet", "Greeter.greet", "function", Some("Greeter"), true),
+                (
+                    "default_greet",
+                    "Greeter.default_greet",
+                    "function",
+                    Some("Greeter"),
+                    true
+                ),
+                ("InternalTrait", "InternalTrait", "trait", None, false),
+                (
+                    "internal_method",
+                    "InternalTrait.internal_method",
+                    "function",
+                    Some("InternalTrait"),
+                    false
+                ),
+            ]
+        );
+
+        let go_src = r#"
+package main
+
+type Greeter interface {
+    Greet(name string) string
+    greetInternal()
+}
+"#;
+        let parsed_go = parse_file(Language::Go, go_src).unwrap();
+        let go_syms: Vec<(&str, &str, &str, Option<&str>, bool)> = parsed_go
+            .symbols
+            .iter()
+            .map(|s| {
+                (
+                    s.name.as_str(),
+                    s.qualified_name.as_str(),
+                    s.kind.as_str(),
+                    s.container.as_deref(),
+                    s.exported,
+                )
+            })
+            .collect();
+        assert_eq!(
+            go_syms,
+            vec![
+                ("Greeter", "Greeter", "interface", None, true),
+                ("Greet", "Greeter.Greet", "method", Some("Greeter"), true),
+                (
+                    "greetInternal",
+                    "Greeter.greetInternal",
+                    "method",
+                    Some("Greeter"),
+                    false
+                ),
+            ]
+        );
+    }
 }

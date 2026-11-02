@@ -444,6 +444,47 @@ pub fn imports_conn(conn: &Connection, path: &str) -> Result<ImportsResult> {
     })
 }
 
+pub fn container_members(conn: &Connection, target: &SymbolRecord) -> Result<Vec<SignatureLine>> {
+    let mut stmt = conn.prepare(
+        "
+        SELECT s.id, s.name, s.qualified_name, s.kind, s.file_id, f.path, f.language,
+               s.start_line, s.end_line, s.signature, s.exported
+        FROM symbols s
+        JOIN files f ON f.id = s.file_id
+        WHERE s.file_id = ?1
+          AND s.id != ?2
+          AND (
+            s.container = ?5
+            OR (s.start_line > ?3 AND s.end_line <= ?4)
+          )
+        ORDER BY s.start_line
+        LIMIT 200
+        ",
+    )?;
+    let rows = stmt.query_map(
+        params![
+            target.file_id,
+            target.id,
+            target.start_line as i64,
+            target.end_line as i64,
+            target.qualified_name,
+        ],
+        db::map_symbol,
+    )?;
+    let mut members = Vec::new();
+    for row in rows {
+        let sym = row?;
+        members.push(SignatureLine {
+            qualified_name: sym.qualified_name,
+            kind: sym.kind,
+            path: sym.path,
+            line: sym.start_line,
+            signature: sym.signature,
+        });
+    }
+    Ok(members)
+}
+
 pub fn signature_conn(conn: &Connection, symbol: &str) -> Result<SignatureResult> {
     let Some(target) = db::resolve_symbol(conn, symbol)? else {
         return Ok(SignatureResult {
@@ -458,42 +499,11 @@ pub fn signature_conn(conn: &Connection, symbol: &str) -> Result<SignatureResult
         target.kind.as_str(),
         "class" | "struct" | "interface" | "trait" | "enum" | "record" | "impl" | "module"
     );
-    let mut members: Vec<SignatureLine> = Vec::new();
-    if container {
-        let mut stmt = conn.prepare(
-            "
-            SELECT s.id, s.name, s.qualified_name, s.kind, s.file_id, f.path, f.language,
-                   s.start_line, s.end_line, s.signature, s.exported
-            FROM symbols s
-            JOIN files f ON f.id = s.file_id
-            WHERE s.file_id = ?1
-              AND s.id != ?2
-              AND s.start_line > ?3
-              AND s.end_line <= ?4
-            ORDER BY s.start_line
-            LIMIT 200
-            ",
-        )?;
-        let rows = stmt.query_map(
-            params![
-                target.file_id,
-                target.id,
-                target.start_line as i64,
-                target.end_line as i64
-            ],
-            db::map_symbol,
-        )?;
-        for row in rows {
-            let sym = row?;
-            members.push(SignatureLine {
-                qualified_name: sym.qualified_name,
-                kind: sym.kind,
-                path: sym.path,
-                line: sym.start_line,
-                signature: sym.signature,
-            });
-        }
-    }
+    let members = if container {
+        container_members(conn, &target)?
+    } else {
+        Vec::new()
+    };
     let tokens = estimate_tokens(&members).max(50);
     Ok(SignatureResult {
         symbol: Some(target),
