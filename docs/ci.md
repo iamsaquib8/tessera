@@ -96,7 +96,9 @@ Over MCP the same selection is the `affected` tool.
 ## Index cache
 
 Building the index is the slow part of a CI run; checking a change
-against it is fast. `tessera cache export` and `tessera cache import`
+against it is fast. On microsoft/vscode (15,317 files), a cold index takes
+44 s and a cached run, 20 commits on, 23.5 s; on repositories whose cold
+index takes a few seconds the cache saves little. `tessera cache export` and `tessera cache import`
 move a built index between machines as one file, so a run starts from the
 index of the commit it branched from and re-indexes only what changed.
 Tessera only reads and writes the file: storing it (`actions/cache`,

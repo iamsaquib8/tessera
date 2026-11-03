@@ -19,7 +19,11 @@ codebase with known problems without turning the merge gate off.
   changes, or a `Tessera-No-Skip` commit trailer, select the whole suite
   and say why. `--format jest | vitest | pytest | go-test | cargo` prints
   the runner's command line. Also an MCP tool, `affected`
-  ([docs/ci.md](docs/ci.md#test-selection-tessera-affected)).
+  ([docs/ci.md](docs/ci.md#test-selection-tessera-affected)). Code inside
+  a function or class reaches the tests of its container; in Go, the
+  tests of every package that imports the changed one are selected. On
+  three public monorepos it selected 249 of 251 failing test files after
+  seeded breaks (tessera-bench).
 - **Index cache files**: `tessera cache export <file>` and `tessera cache
   import <file>` move the index between CI runs as one compressed file. A
   cache from another Tessera version, configuration or repository is
