@@ -104,6 +104,28 @@ fn which_jq() -> Result<String, ()> {
         .map_err(|_| ())
 }
 
+/// The bash the Action's `shell: bash` steps run in. On Windows that is
+/// Git's: a bare `bash` there resolves to the WSL launcher in System32
+/// before anything on PATH.
+fn bash() -> std::process::Command {
+    if !cfg!(windows) {
+        return std::process::Command::new("bash");
+    }
+    let out = std::process::Command::new("git")
+        .arg("--exec-path")
+        .output()
+        .unwrap();
+    // <git>/mingw64/libexec/git-core → <git>/bin/bash.exe
+    let exec = PathBuf::from(String::from_utf8(out.stdout).unwrap().trim());
+    let bash = exec
+        .ancestors()
+        .nth(3)
+        .map(|git| git.join("bin").join("bash.exe"))
+        .filter(|bash| bash.is_file())
+        .unwrap_or_else(|| panic!("no Git Bash next to {}", exec.display()));
+    std::process::Command::new(bash)
+}
+
 /// The `run` script of the step with `id`, and its `if` condition.
 fn step(id: &str) -> (String, Option<String>) {
     let action = repo_file("action/action.yml");
@@ -167,7 +189,7 @@ fn the_action_keys_the_index_cache_on_the_merge_base_tree() {
 
     let (script, _) = step("key");
     let outputs = root.join("outputs");
-    let run = std::process::Command::new("bash")
+    let run = bash()
         .args(["-e", "-c", &script])
         .current_dir(root)
         .env("BASE", &base)
@@ -245,7 +267,7 @@ fn affected_step(root: &std::path::Path, base: &str) -> std::collections::BTreeM
     let (script, _) = step("affected");
     let runner_temp = tempfile::TempDir::new().unwrap();
     let output = runner_temp.path().join("outputs");
-    let run = std::process::Command::new("bash")
+    let run = bash()
         .args(["-e", "-c", &script])
         .current_dir(root)
         .env("BASE", base)
@@ -332,7 +354,7 @@ fn the_action_outputs_the_tests_to_run_and_when_to_run_them_all() {
 
 fn run_step(id: &str, env: &[(&str, &str)]) -> std::process::Output {
     let (script, _) = step(id);
-    let mut command = std::process::Command::new("bash");
+    let mut command = bash();
     command.args(["-e", "-c", &script]);
     for (key, value) in env {
         command.env(key, value);
