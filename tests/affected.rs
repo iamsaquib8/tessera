@@ -929,3 +929,45 @@ fn unresolved_go_calls_reach_same_package_functions_and_every_implementation() {
         "an interface call reaches every implementation: {value:#}"
     );
 }
+
+/// A Go test runs only code its package imports, directly or not, so the
+/// tests of every package that imports the changed one are selected, even
+/// when the call reaches it through a function value no call graph sees.
+#[test]
+fn go_tests_of_packages_that_import_the_changed_one_are_selected() {
+    let temp = temp();
+    let root = temp.path();
+    write(root, "go.mod", "module example.com/r\n\ngo 1.22\n");
+    write(
+        root,
+        "core/core.go",
+        "package core\n\nfunc Double(n int) int {\n\treturn n * 2\n}\n",
+    );
+    write(root, "mid/mid.go", "package mid\n\nimport \"example.com/r/core\"\n\nvar op = core.Double\n\nfunc Apply(n int) int {\n\treturn op(n)\n}\n");
+    write(root, "top/top.go", "package top\n\nimport \"example.com/r/mid\"\n\nfunc Run() int {\n\treturn mid.Apply(2)\n}\n");
+    write(root, "top/top_test.go", "package top\n\nimport \"testing\"\n\nfunc TestRun(t *testing.T) {\n\tif Run() != 4 {\n\t\tt.Fatal()\n\t}\n}\n");
+    write(
+        root,
+        "other/other.go",
+        "package other\n\nfunc Name() string {\n\treturn \"other\"\n}\n",
+    );
+    write(root, "other/other_test.go", "package other\n\nimport \"testing\"\n\nfunc TestName(t *testing.T) {\n\tif Name() != \"other\" {\n\t\tt.Fatal()\n\t}\n}\n");
+    git(root, &["init", "-q"]);
+    git(root, &["add", "."]);
+    git(root, &["commit", "-q", "-m", "base"]);
+    edit(root, "core/core.go", "n * 2", "n * 3");
+    let value = affected_json(root, &[]);
+    assert_eq!(
+        selected(&value),
+        vec!["top/top_test.go reached"],
+        "{value:#}"
+    );
+    let reason = test(&value, "top/top_test.go")["reason"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert!(
+        reason.contains("example.com/r/mid") && reason.contains("example.com/r/core"),
+        "the reason names the import chain: {reason}"
+    );
+}

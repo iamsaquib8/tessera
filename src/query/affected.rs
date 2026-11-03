@@ -110,6 +110,8 @@ pub enum Link {
     /// The previous step is defined inside this one: a callback in its
     /// function, a method in its class. Whoever uses this one runs it.
     Inside,
+    /// The previous step's package imports this one (Go).
+    Imports,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -227,6 +229,9 @@ pub fn run(conn: &Connection, root: &Path, args: &AffectedArgs) -> Result<Affect
         }
     }
     for test in reached_tests(&seeds, &mut walk, &suite)? {
+        choose(&mut chosen, test);
+    }
+    for test in go_importers(conn, &changed, &mut packages, &suite)? {
         choose(&mut chosen, test);
     }
     let full_run = full_run(root, &changed, &changes, &base, walk.capped);
@@ -476,7 +481,9 @@ fn render(chain: &[Step]) -> String {
             .unwrap_or_default();
         let text = match step.link {
             _ if i == 0 => step.symbol.clone(),
-            Link::Test | Link::Calls | Link::Inside => format!(" → {}", step.symbol),
+            Link::Test | Link::Calls | Link::Inside | Link::Imports => {
+                format!(" → {}", step.symbol)
+            }
             Link::Contract => format!(" → {}{via}", step.symbol),
             Link::Client => format!(" ← {}{via}", step.symbol),
             Link::Removed => format!(" → {} (removed from {})", step.symbol, step.path),
@@ -485,6 +492,114 @@ fn render(chain: &[Step]) -> String {
         out.push_str(&text);
     }
     out
+}
+
+/// Go tests of every package that imports a changed package, directly or
+/// through others. A Go test runs only code its package imports, so this
+/// holds for calls no call graph sees: function values, interfaces and
+/// closures returned from other packages. Each test's chain is the import
+/// path from its package to the changed one.
+fn go_importers(
+    conn: &Connection,
+    changed: &HashSet<String>,
+    packages: &mut Packages,
+    suite: &BTreeSet<String>,
+) -> Result<Vec<AffectedTest>> {
+    let mut import_path = |file: &str| -> Option<String> {
+        let (module_dir, module) = packages.find(file)?;
+        let dir = parent(file);
+        let rel = if module_dir.is_empty() {
+            Some(dir.as_str())
+        } else if dir == module_dir {
+            Some("")
+        } else {
+            dir.strip_prefix(&format!("{module_dir}/"))
+        }?;
+        Some(if rel.is_empty() {
+            module
+        } else {
+            format!("{module}/{rel}")
+        })
+    };
+    let mut starts: BTreeMap<String, String> = BTreeMap::new();
+    for path in changed {
+        if path.ends_with(".go") && !path.ends_with("_test.go") {
+            if let Some(package) = import_path(path) {
+                starts.insert(package, parent(path));
+            }
+        }
+    }
+    if starts.is_empty() {
+        return Ok(Vec::new());
+    }
+    // Import path → the directories of the Go files that import it, and
+    // each directory's own import path.
+    let mut importers: HashMap<String, BTreeSet<String>> = HashMap::new();
+    let mut own: HashMap<String, Option<String>> = HashMap::new();
+    let mut rows = conn.prepare(
+        "SELECT f.path, i.source FROM imports i JOIN files f ON f.id = i.file_id
+         WHERE f.language = 'go' ORDER BY 1, 2",
+    )?;
+    for row in rows.query_map([], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+    })? {
+        let (file, source) = row?;
+        let dir = parent(&file);
+        own.entry(dir.clone()).or_insert_with(|| import_path(&file));
+        importers.entry(source).or_default().insert(dir);
+    }
+    // Breadth-first from the changed packages; each directory keeps the
+    // package it was first reached through.
+    let mut via: HashMap<String, (String, Option<String>)> = HashMap::new();
+    let mut queue: VecDeque<String> = VecDeque::new();
+    for (package, dir) in &starts {
+        via.insert(dir.clone(), (package.clone(), None));
+        queue.push_back(dir.clone());
+    }
+    while let Some(dir) = queue.pop_front() {
+        let Some(package) = via.get(&dir).map(|(p, _)| p.clone()) else {
+            continue;
+        };
+        for importer in importers.get(&package).into_iter().flatten() {
+            if via.contains_key(importer) {
+                continue;
+            }
+            let Some(Some(name)) = own.get(importer).cloned() else {
+                continue;
+            };
+            via.insert(importer.clone(), (name, Some(dir.clone())));
+            queue.push_back(importer.clone());
+        }
+    }
+    let mut out = Vec::new();
+    for test in suite.iter().filter(|t| t.ends_with("_test.go")) {
+        let mut dir = parent(test);
+        if !via.contains_key(&dir) {
+            continue;
+        }
+        let mut chain = vec![Step {
+            symbol: test.clone(),
+            path: test.clone(),
+            line: None,
+            link: Link::Test,
+            via: None,
+        }];
+        while let Some((package, next)) = via.get(&dir).cloned() {
+            chain.push(Step {
+                symbol: package,
+                path: dir.clone(),
+                line: None,
+                link: Link::Imports,
+                via: None,
+            });
+            match next {
+                Some(next) => dir = next,
+                None => break,
+            }
+        }
+        out.push(reached(test, chain, Vec::new(), true));
+    }
+    Ok(out)
 }
 
 /// A test file a runner can run; `conftest.py` and `__init__.py` hold
