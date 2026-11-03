@@ -393,7 +393,7 @@ fn affected_schema() -> Value {
                 "failed": { "type": "array", "items": { "type": "string" }, "description": "Test paths that failed in an earlier run; they always run." },
                 "explain": { "type": "string", "description": "A test path: say why it is or is not selected." },
                 "package": { "type": "string", "description": "Only tests in this workspace package." },
-                "depth": { "type": "integer", "minimum": 1, "maximum": 12, "description": "Calls or contracts a test may be from the change (default 6)." }
+                "depth": { "type": "integer", "minimum": 1, "maximum": 12, "description": "Calls or contracts a test may be from the change (default 12)." }
             }),
             paging(),
         ),

@@ -39,7 +39,7 @@ pub use verify::{
     with_tests_until, Changes, Finding, Problem, VerifyArgs, VerifyResult,
 };
 
-pub use affected::{require_git, run as affected};
+pub use affected::{require_git, run as affected, DEFAULT_DEPTH as AFFECTED_DEPTH};
 pub use blast::run as blast;
 pub use context::run as context;
 pub use cycles::run as cycles;

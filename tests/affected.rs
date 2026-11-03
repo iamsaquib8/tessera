@@ -507,7 +507,7 @@ fn explain_says_why_a_test_is_or_is_not_selected() {
     let (_, stdout, _) = affected(root, &["--explain", "./test/i18n.test.ts"]);
     assert_eq!(
         stdout,
-        "test/i18n.test.ts is not selected: no path from the changed symbols within depth 6\n"
+        "test/i18n.test.ts is not selected: no path from the changed symbols within depth 12\n"
     );
     let (_, stdout, _) = affected(root, &["--explain", "test/i18n.test.ts", "--depth", "2"]);
     assert!(stdout.contains("within depth 2"), "{stdout}");

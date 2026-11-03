@@ -157,7 +157,7 @@ enum Commands {
         #[arg(long, value_name = "NAME")]
         package: Option<String>,
         /// How many calls or contracts a test may be from the changed code.
-        #[arg(long, default_value_t = 6)]
+        #[arg(long, default_value_t = tessera_codegraph::query::AFFECTED_DEPTH)]
         depth: usize,
         /// Output: list (one test path per line), json, or the command line for a runner.
         #[arg(long, value_enum, default_value_t = AffectedFormat::List)]

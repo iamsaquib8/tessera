@@ -21,7 +21,7 @@ use crate::output::{paginate, AgentText, Page};
 use crate::types::Language;
 
 /// How many calls or contracts a test may be from the changed code.
-pub const DEFAULT_DEPTH: usize = 6;
+pub const DEFAULT_DEPTH: usize = 12;
 /// A change reaching more symbols than this runs every test: the walk stops
 /// there, and a partial selection could drop a test that should run.
 const MAX_VISITED: usize = 20_000;
