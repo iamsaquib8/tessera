@@ -34,6 +34,7 @@ const JAVA: &[Language] = &[Language::Java];
 const GO: &[Language] = &[Language::Go];
 const PYTHON: &[Language] = &[Language::Python];
 const RUBY: &[Language] = &[Language::Ruby];
+const RUST: &[Language] = &[Language::Rust];
 
 pub const PACKS: &[Pack] = &[
     Pack {
@@ -151,10 +152,22 @@ pub const PACKS: &[Pack] = &[
         query: include_str!("../../packs/rails.scm"),
     },
     Pack {
+        id: "sinatra",
+        languages: RUBY,
+        gate: r#"(?m)\b(Sinatra|sinatra)\b|^\s*(get|post|put|patch|delete|head|options)\s*(\(|\s)\s*['"/]"#,
+        query: include_str!("../../packs/sinatra.scm"),
+    },
+    Pack {
         id: "ruby-http-clients",
         languages: RUBY,
         gate: r"Net::HTTP|\b(Faraday|HTTParty|RestClient|HTTPX)\.|\b(conn|connection|faraday|http|client|\w+_client|\w+_conn|\w+_connection)\.(get|post|put|patch|delete|head|options)\b",
         query: include_str!("../../packs/ruby-http-clients.scm"),
+    },
+    Pack {
+        id: "actix-web",
+        languages: RUST,
+        gate: r"#\[(?:[\w:]+::)?(get|post|put|patch|delete|head)\(|route\(",
+        query: include_str!("../../packs/actix-web.scm"),
     },
 ];
 
@@ -877,5 +890,97 @@ mod tests {
         for compiled in COMPILED.iter() {
             assert!(compiled.query().pattern_count() > 0, "{}", compiled.pack.id);
         }
+    }
+
+    #[test]
+    fn test_actix_web_facts() {
+        let mut parser = tree_sitter::Parser::new();
+        let lang = support_for(Language::Rust).grammar();
+        parser.set_language(&lang).unwrap();
+        let src = r#"
+#[get("/users/{id}")]
+async fn get_user(path: web::Path<u32>) -> impl Responder {}
+
+#[post("/orders")]
+#[tracing::instrument]
+async fn create_order() {}
+
+fn config(cfg: &mut web::ServiceConfig) {
+    App::new()
+        .service(get_user)
+        .route("/health", web::get().to(health))
+        .service(
+            web::scope("/api")
+                .route("/items", web::post().to(create_item))
+                .route("/items/{id}", web::delete().to(delete_item)),
+        );
+}
+
+async fn health() -> impl Responder { "ok" }
+async fn create_item() -> impl Responder { "created" }
+async fn delete_item() -> impl Responder { "deleted" }
+
+// Look-alikes that must not match:
+fn helper() {
+    let _cache = vec![1, 2];
+    other.route("/not-a-web-route", not_to_handler);
+}
+#[inline]
+fn regular_func() {}
+"#;
+        let tree = parser.parse(src, None).unwrap();
+        let facts = run(Language::Rust, src, &tree);
+        let keys: Vec<(&str, &str, Option<&str>)> = facts
+            .iter()
+            .map(|f| (f.kind, f.key.as_str(), f.handler.as_deref()))
+            .collect();
+        assert_eq!(
+            keys,
+            vec![
+                ("route", "http GET /users/{}", Some("get_user")),
+                ("route", "http POST /orders", Some("create_order")),
+                ("route", "http GET /health", Some("health")),
+                ("route", "http POST /api/items", Some("create_item")),
+                ("route", "http DELETE /api/items/{}", Some("delete_item")),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_sinatra_facts() {
+        let mut parser = tree_sitter::Parser::new();
+        let lang = support_for(Language::Ruby).grammar();
+        parser.set_language(&lang).unwrap();
+        let src = r#"
+require "sinatra"
+
+class App < Sinatra::Base
+  get '/users/:id' do
+    "user"
+  end
+  post "/orders" do
+    "order"
+  end
+  delete('/users/:id') { "deleted" }
+  other.get '/not_a_route' do "no" end
+  get 123 do end
+  get '/plain_without_block'
+end
+get '/ping' do
+  "pong"
+end
+"#;
+        let tree = parser.parse(src, None).unwrap();
+        let facts = run(Language::Ruby, src, &tree);
+        let keys: Vec<(&str, &str)> = facts.iter().map(|f| (f.kind, f.key.as_str())).collect();
+        assert_eq!(
+            keys,
+            vec![
+                ("route", "http GET /users/{}"),
+                ("route", "http POST /orders"),
+                ("route", "http DELETE /users/{}"),
+                ("route", "http GET /ping"),
+            ]
+        );
     }
 }

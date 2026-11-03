@@ -51,8 +51,7 @@ pub fn run(conn: &Connection, root: &Path, args: &FindArgs) -> Result<FindResult
                     .then(|| read_body(root, &symbol).ok())
                     .flatten();
                 let members = if CONTAINER_KINDS.contains(&symbol.kind.as_str()) {
-                    legacy::signature_conn(conn, &symbol.qualified_name)?
-                        .members
+                    legacy::container_members(conn, &symbol)?
                         .into_iter()
                         .map(|m| m.signature)
                         .collect()

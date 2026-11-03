@@ -44,6 +44,14 @@
   "find required": [
     ""
   ],
+  "import_cycles": [
+    "format",
+    "limit",
+    "path"
+  ],
+  "import_cycles required": [
+    ""
+  ],
   "map": [
     "cursor",
     "format",

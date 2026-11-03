@@ -30,16 +30,69 @@ impl Workspace {
     }
 
     pub fn resolve(root: Option<&Path>, db: Option<&Path>, cwd: &Path) -> Workspace {
+        let explicit_db = db.map(|db| {
+            if db.is_absolute() {
+                db.to_path_buf()
+            } else {
+                cwd.join(db)
+            }
+        });
         let root = match root {
             Some(root) => {
                 let root = cwd.join(root);
                 root.canonicalize().unwrap_or(root)
             }
-            None => discover_root(cwd),
+            None => {
+                let discovered = discover_root(cwd);
+                let canonical_cwd = cwd.canonicalize().unwrap_or_else(|_| cwd.to_path_buf());
+                if discovered == canonical_cwd {
+                    if let Some(db_p) = explicit_db.as_ref() {
+                        if db_p.exists() {
+                            if let Some(parent) = db_p.parent() {
+                                if parent.file_name().and_then(|n| n.to_str()) == Some(".tessera") {
+                                    if let Some(repo_root) = parent.parent() {
+                                        if repo_root.is_dir() {
+                                            repo_root
+                                                .canonicalize()
+                                                .unwrap_or_else(|_| repo_root.to_path_buf())
+                                        } else {
+                                            discovered
+                                        }
+                                    } else {
+                                        discovered
+                                    }
+                                } else {
+                                    discovered
+                                }
+                            } else {
+                                discovered
+                            }
+                        } else {
+                            discovered
+                        }
+                    } else {
+                        discovered
+                    }
+                } else {
+                    discovered
+                }
+            }
         };
-        let db_path = match db {
-            Some(db) => cwd.join(db),
-            None => root.join(".tessera").join("tessera.db"),
+        let db_path = match explicit_db {
+            Some(p) => p,
+            None => {
+                let config = crate::config::TesseraConfig::load(&root);
+                if let Some(custom_db) = config.db {
+                    let p = PathBuf::from(custom_db);
+                    if p.is_absolute() {
+                        p
+                    } else {
+                        root.join(p)
+                    }
+                } else {
+                    root.join(".tessera").join("tessera.db")
+                }
+            }
         };
         Workspace { root, db_path }
     }
@@ -203,5 +256,38 @@ mod tests {
         let ws = Workspace::resolve(Some(Path::new(".")), Some(Path::new("x/t.db")), &cwd);
         assert_eq!(ws.db_path, cwd.join("x/t.db"));
         assert_eq!(ws.root, cwd);
+    }
+
+    #[test]
+    fn resolve_uses_config_db_when_unspecified() {
+        let temp = TempDir::new().unwrap();
+        let repo = temp.path().join("repo");
+        fs::create_dir_all(repo.join(".tessera")).unwrap();
+        fs::write(
+            repo.join(".tessera/config.toml"),
+            "[index]\ndb = \"custom_index.db\"\n",
+        )
+        .unwrap();
+
+        let ws = Workspace::resolve(Some(Path::new(".")), None, &repo);
+        assert_eq!(
+            ws.db_path,
+            repo.canonicalize().unwrap().join("custom_index.db")
+        );
+    }
+
+    #[test]
+    fn resolve_derives_root_from_explicit_db_when_outside_repo() {
+        let temp = TempDir::new().unwrap();
+        let outside = temp.path().join("outside");
+        let repo = temp.path().join("my_repo");
+        fs::create_dir_all(&outside).unwrap();
+        fs::create_dir_all(repo.join(".tessera")).unwrap();
+        let db_path = repo.join(".tessera").join("tessera.db");
+        fs::write(&db_path, "").unwrap();
+
+        let ws = Workspace::resolve(None, Some(&db_path), &outside);
+        assert_eq!(ws.root, repo.canonicalize().unwrap());
+        assert_eq!(ws.db_path, db_path);
     }
 }

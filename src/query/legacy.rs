@@ -90,7 +90,7 @@ pub fn find_definition_conn(conn: &Connection, symbol: &str) -> Result<Definitio
         .collect::<rusqlite::Result<Vec<_>>>()?;
     let mut match_kind = MatchKind::Exact;
     if matches.is_empty() {
-        let ranked = ranked_fuzzy_matches(conn, symbol, 5)?;
+        let ranked = ranked_fuzzy_matches(conn, symbol, None, 5)?;
         if let Some((score, _)) = ranked.first() {
             match_kind = MatchKind::Fuzzy { score: *score };
         }
@@ -294,17 +294,21 @@ pub fn diff_impact_conn(
     }
     let mut current: Option<FileHunks> = None;
     let mut hunks: Vec<FileHunks> = Vec::new();
+    let mut old_path: Option<String> = None;
     for line in diff.lines() {
-        if let Some(rest) = line.strip_prefix("+++ ") {
+        if let Some(rest) = line.strip_prefix("--- ") {
+            old_path = parse_diff_path(rest);
+        } else if let Some(rest) = line.strip_prefix("+++ ") {
             if let Some(cur) = current.take() {
                 hunks.push(cur);
             }
-            let path = rest
-                .trim_start_matches("b/")
-                .trim_start_matches("a/")
-                .trim()
-                .to_string();
-            if path != "/dev/null" {
+            let new_path = parse_diff_path(rest);
+            let path = match (old_path.take(), new_path) {
+                (_, Some(p)) if p != "/dev/null" => Some(p),
+                (Some(p), _) if p != "/dev/null" => Some(p),
+                _ => None,
+            };
+            if let Some(path) = path {
                 current = Some(FileHunks {
                     path,
                     ranges: Vec::new(),
@@ -338,9 +342,12 @@ pub fn diff_impact_conn(
         let Some((file_id, _)) = db::file_sha(conn, &fh.path)? else {
             continue;
         };
-        for (_, _, new_start, new_count) in &fh.ranges {
-            let hunk_start = *new_start;
-            let hunk_end = new_start + new_count.saturating_sub(1);
+        for (old_start, old_count, new_start, new_count) in &fh.ranges {
+            let (hunk_start, hunk_end) = if *new_count > 0 {
+                (*new_start, new_start + new_count.saturating_sub(1))
+            } else {
+                (*old_start, old_start + old_count.saturating_sub(1))
+            };
             let mut stmt = conn.prepare(
                 "
                 SELECT s.id, s.name, s.qualified_name, s.kind, s.file_id, f.path, f.language,
@@ -360,11 +367,12 @@ pub fn diff_impact_conn(
                 let sym = row?;
                 if let Some(existing) = changed_symbols.iter_mut().find(|c| c.symbol.id == sym.id) {
                     existing.added_lines += *new_count;
+                    existing.removed_lines += *old_count;
                 } else {
                     changed_symbols.push(DiffChangedSymbol {
                         symbol: sym,
                         added_lines: *new_count,
-                        removed_lines: 0,
+                        removed_lines: *old_count,
                     });
                 }
             }
@@ -417,6 +425,27 @@ fn parse_range(s: &str) -> Option<(usize, usize)> {
     Some((start, count))
 }
 
+fn parse_diff_path(rest: &str) -> Option<String> {
+    let trimmed = rest.trim();
+    if trimmed == "/dev/null" {
+        return Some("/dev/null".to_string());
+    }
+    let unquoted = if trimmed.starts_with('"') && trimmed.ends_with('"') && trimmed.len() >= 2 {
+        &trimmed[1..trimmed.len() - 1]
+    } else {
+        trimmed
+    };
+    let stripped = unquoted
+        .strip_prefix("b/")
+        .or_else(|| unquoted.strip_prefix("a/"))
+        .unwrap_or(unquoted);
+    if stripped.is_empty() {
+        None
+    } else {
+        Some(stripped.to_string())
+    }
+}
+
 pub fn imports_conn(conn: &Connection, path: &str) -> Result<ImportsResult> {
     let mut stmt = conn.prepare(
         "
@@ -451,6 +480,47 @@ pub fn imports_conn(conn: &Connection, path: &str) -> Result<ImportsResult> {
     })
 }
 
+pub fn container_members(conn: &Connection, target: &SymbolRecord) -> Result<Vec<SignatureLine>> {
+    let mut stmt = conn.prepare(
+        "
+        SELECT s.id, s.name, s.qualified_name, s.kind, s.file_id, f.path, f.language,
+               s.start_line, s.end_line, s.signature, s.exported
+        FROM symbols s
+        JOIN files f ON f.id = s.file_id
+        WHERE s.file_id = ?1
+          AND s.id != ?2
+          AND (
+            s.container = ?5
+            OR (s.start_line > ?3 AND s.end_line <= ?4)
+          )
+        ORDER BY s.start_line
+        LIMIT 200
+        ",
+    )?;
+    let rows = stmt.query_map(
+        params![
+            target.file_id,
+            target.id,
+            target.start_line as i64,
+            target.end_line as i64,
+            target.qualified_name,
+        ],
+        db::map_symbol,
+    )?;
+    let mut members = Vec::new();
+    for row in rows {
+        let sym = row?;
+        members.push(SignatureLine {
+            qualified_name: sym.qualified_name,
+            kind: sym.kind,
+            path: sym.path,
+            line: sym.start_line,
+            signature: sym.signature,
+        });
+    }
+    Ok(members)
+}
+
 pub fn signature_conn(conn: &Connection, symbol: &str) -> Result<SignatureResult> {
     let Some(target) = db::resolve_symbol(conn, symbol)? else {
         return Ok(SignatureResult {
@@ -465,42 +535,11 @@ pub fn signature_conn(conn: &Connection, symbol: &str) -> Result<SignatureResult
         target.kind.as_str(),
         "class" | "struct" | "interface" | "trait" | "enum" | "record" | "impl" | "module"
     );
-    let mut members: Vec<SignatureLine> = Vec::new();
-    if container {
-        let mut stmt = conn.prepare(
-            "
-            SELECT s.id, s.name, s.qualified_name, s.kind, s.file_id, f.path, f.language,
-                   s.start_line, s.end_line, s.signature, s.exported
-            FROM symbols s
-            JOIN files f ON f.id = s.file_id
-            WHERE s.file_id = ?1
-              AND s.id != ?2
-              AND s.start_line > ?3
-              AND s.end_line <= ?4
-            ORDER BY s.start_line
-            LIMIT 200
-            ",
-        )?;
-        let rows = stmt.query_map(
-            params![
-                target.file_id,
-                target.id,
-                target.start_line as i64,
-                target.end_line as i64
-            ],
-            db::map_symbol,
-        )?;
-        for row in rows {
-            let sym = row?;
-            members.push(SignatureLine {
-                qualified_name: sym.qualified_name,
-                kind: sym.kind,
-                path: sym.path,
-                line: sym.start_line,
-                signature: sym.signature,
-            });
-        }
-    }
+    let members = if container {
+        container_members(conn, &target)?
+    } else {
+        Vec::new()
+    };
     let tokens = estimate_tokens(&members).max(50);
     Ok(SignatureResult {
         symbol: Some(target),
@@ -577,11 +616,21 @@ pub fn search_conn(
     //   - if the pattern has `*`, treat it as a glob → SQL LIKE
     //   - otherwise fuzzy via FTS5 trigram + Jaro-Winkler
     let candidates: Vec<SymbolRecord> = if pattern.contains('*') {
-        glob_symbol_matches(conn, pattern, limit.saturating_mul(4).max(50))?
+        glob_symbol_matches(
+            conn,
+            pattern,
+            Some(&options),
+            limit.saturating_mul(4).max(50),
+        )?
     } else if pattern.is_empty() {
-        list_symbols(conn, limit.saturating_mul(4).max(50))?
+        list_symbols(conn, Some(&options), limit.saturating_mul(4).max(50))?
     } else {
-        fuzzy_symbol_matches(conn, pattern, limit.saturating_mul(4).max(50))?
+        fuzzy_symbol_matches(
+            conn,
+            pattern,
+            Some(&options),
+            limit.saturating_mul(4).max(50),
+        )?
     };
 
     let mut hits: Vec<SearchHit> = candidates
@@ -644,9 +693,11 @@ pub fn export_conn_with_options(conn: &Connection, options: ExportOptions) -> Re
         let mut visited: HashSet<i64> = HashSet::new();
         let mut queue: VecDeque<(SymbolRecord, usize)> = VecDeque::new();
         for s in &starts {
-            insert_graph_node(&mut node_meta, s);
-            if visited.insert(s.id) {
-                queue.push_back((s.clone(), 0));
+            if include_graph_node(s, &options) {
+                insert_graph_node(&mut node_meta, s);
+                if visited.insert(s.id) {
+                    queue.push_back((s.clone(), 0));
+                }
             }
         }
         'bfs: while let Some((node, d)) = queue.pop_front() {
@@ -654,11 +705,11 @@ pub fn export_conn_with_options(conn: &Connection, options: ExportOptions) -> Re
                 continue;
             }
             for callee in callees_for_symbol(conn, &node, 200)? {
-                insert_graph_node(&mut node_meta, &node);
-                insert_graph_node(&mut node_meta, &callee);
                 if !include_graph_node(&node, &options) || !include_graph_node(&callee, &options) {
                     continue;
                 }
+                insert_graph_node(&mut node_meta, &node);
+                insert_graph_node(&mut node_meta, &callee);
                 edges.push((node.qualified_name.clone(), callee.qualified_name.clone()));
                 if edges.len() >= limit {
                     truncated = true;
@@ -671,7 +722,7 @@ pub fn export_conn_with_options(conn: &Connection, options: ExportOptions) -> Re
         }
     } else {
         scope = "all".to_string();
-        let mut stmt = conn.prepare(
+        let mut sql = String::from(
             "
             SELECT DISTINCT
                 s1.qualified_name, f1.path, f1.language, s1.exported,
@@ -682,11 +733,15 @@ pub fn export_conn_with_options(conn: &Connection, options: ExportOptions) -> Re
             JOIN symbols s2 ON (s2.name = e.to_symbol_name OR s2.qualified_name = e.to_symbol_name)
             JOIN files f2 ON f2.id = s2.file_id
             WHERE s1.id != s2.id
-            ORDER BY s1.qualified_name, s2.qualified_name
-            LIMIT ?1
             ",
-        )?;
-        let rows = stmt.query_map(params![(limit + 1) as i64], |row| {
+        );
+        if options.exported_only {
+            sql.push_str(" AND s1.exported != 0 AND s2.exported != 0");
+        }
+        sql.push_str(" ORDER BY s1.qualified_name, s2.qualified_name");
+
+        let mut stmt = conn.prepare(&sql)?;
+        let rows = stmt.query_map([], |row| {
             Ok((
                 GraphNode {
                     name: row.get(0)?,
@@ -704,18 +759,19 @@ pub fn export_conn_with_options(conn: &Connection, options: ExportOptions) -> Re
         })?;
         for row in rows {
             let (from_node, to_node) = row?;
-            node_meta.insert(from_node.name.clone(), from_node.clone());
-            node_meta.insert(to_node.name.clone(), to_node.clone());
             if !include_graph_node_raw(&from_node, &options)
                 || !include_graph_node_raw(&to_node, &options)
             {
                 continue;
             }
+            node_meta.insert(from_node.name.clone(), from_node.clone());
+            node_meta.insert(to_node.name.clone(), to_node.clone());
             edges.push((from_node.name, to_node.name));
-        }
-        if edges.len() > limit {
-            truncated = true;
-            edges.truncate(limit);
+            if edges.len() > limit {
+                truncated = true;
+                edges.truncate(limit);
+                break;
+            }
         }
     }
 
@@ -1079,7 +1135,7 @@ fn fuzzy_candidates(
     symbol: &str,
     limit: usize,
 ) -> Result<Vec<SymbolSuggestion>> {
-    let matches = fuzzy_symbol_matches(conn, symbol, limit)?;
+    let matches = fuzzy_symbol_matches(conn, symbol, None, limit)?;
     let mut suggestions: Vec<SymbolSuggestion> = matches
         .into_iter()
         .map(|s| {
@@ -1110,17 +1166,65 @@ fn fuzzy_candidates(
 fn fuzzy_symbol_matches(
     conn: &Connection,
     symbol: &str,
+    options: Option<&SearchOptions>,
     limit: usize,
 ) -> Result<Vec<SymbolRecord>> {
-    Ok(ranked_fuzzy_matches(conn, symbol, limit)?
+    Ok(ranked_fuzzy_matches(conn, symbol, options, limit)?
         .into_iter()
         .map(|(_, s)| s)
         .collect())
 }
 
+fn append_symbol_filters(
+    sql: &mut String,
+    params: &mut Vec<rusqlite::types::Value>,
+    options: Option<&SearchOptions>,
+) {
+    let Some(options) = options else {
+        return;
+    };
+    if !options.kinds.is_empty() {
+        sql.push_str(" AND s.kind IN (");
+        for (i, kind) in options.kinds.iter().enumerate() {
+            if i > 0 {
+                sql.push_str(", ");
+            }
+            sql.push('?');
+            params.push(rusqlite::types::Value::Text(kind.clone()));
+        }
+        sql.push(')');
+    }
+    if !options.languages.is_empty() {
+        sql.push_str(" AND f.language IN (");
+        for (i, lang) in options.languages.iter().enumerate() {
+            if i > 0 {
+                sql.push_str(", ");
+            }
+            sql.push('?');
+            params.push(rusqlite::types::Value::Text(lang.clone()));
+        }
+        sql.push(')');
+    }
+    if let Some(exported) = options.exported {
+        sql.push_str(" AND s.exported = ?");
+        params.push(rusqlite::types::Value::Integer(if exported {
+            1
+        } else {
+            0
+        }));
+    }
+    if let Some(prefix) = &options.path_prefix {
+        if !prefix.is_empty() {
+            sql.push_str(" AND instr(f.path, ?) = 1");
+            params.push(rusqlite::types::Value::Text(prefix.clone()));
+        }
+    }
+}
+
 fn ranked_fuzzy_matches(
     conn: &Connection,
     symbol: &str,
+    options: Option<&SearchOptions>,
     limit: usize,
 ) -> Result<Vec<(f32, SymbolRecord)>> {
     // First try FTS5 (cheap, indexed). If unavailable or no hits, fall back to
@@ -1128,34 +1232,44 @@ fn ranked_fuzzy_matches(
     let escaped = escape_fts_term(symbol);
     let fts_query = format!("{}*", escaped);
     let fts_attempt: rusqlite::Result<Vec<SymbolRecord>> = (|| {
-        let mut stmt = conn.prepare(
+        let mut sql = String::from(
             "
             SELECT s.id, s.name, s.qualified_name, s.kind, s.file_id, f.path, f.language,
                    s.start_line, s.end_line, s.signature, s.exported
             FROM symbols_fts fts
             JOIN symbols s ON s.id = fts.rowid
             JOIN files f ON f.id = s.file_id
-            WHERE symbols_fts MATCH ?1
-            LIMIT ?2
+            WHERE symbols_fts MATCH ?
             ",
-        )?;
-        let rows = stmt.query_map(params![fts_query, (limit * 4) as i64], db::map_symbol)?;
+        );
+        let mut params = vec![rusqlite::types::Value::Text(fts_query)];
+        append_symbol_filters(&mut sql, &mut params, options);
+        sql.push_str(" LIMIT ?");
+        params.push(rusqlite::types::Value::Integer((limit * 4) as i64));
+
+        let mut stmt = conn.prepare(&sql)?;
+        let rows = stmt.query_map(rusqlite::params_from_iter(params), db::map_symbol)?;
         rows.collect::<rusqlite::Result<Vec<_>>>()
     })();
 
     let mut candidates = fts_attempt.unwrap_or_default();
 
     if candidates.is_empty() {
-        let mut stmt = conn.prepare(
+        let mut sql = String::from(
             "
             SELECT s.id, s.name, s.qualified_name, s.kind, s.file_id, f.path, f.language,
                    s.start_line, s.end_line, s.signature, s.exported
             FROM symbols s
             JOIN files f ON f.id = s.file_id
-            LIMIT 5000
+            WHERE 1=1
             ",
-        )?;
-        let rows = stmt.query_map([], db::map_symbol)?;
+        );
+        let mut params = Vec::new();
+        append_symbol_filters(&mut sql, &mut params, options);
+        sql.push_str(" LIMIT 5000");
+
+        let mut stmt = conn.prepare(&sql)?;
+        let rows = stmt.query_map(rusqlite::params_from_iter(params), db::map_symbol)?;
         for row in rows {
             candidates.push(row?);
         }
@@ -1190,6 +1304,7 @@ fn escape_fts_term(term: &str) -> String {
 fn glob_symbol_matches(
     conn: &Connection,
     pattern: &str,
+    options: Option<&SearchOptions>,
     limit: usize,
 ) -> Result<Vec<SymbolRecord>> {
     // Translate `*` → SQL `%`; escape SQL wildcards in the literal part.
@@ -1198,33 +1313,49 @@ fn glob_symbol_matches(
         .replace('%', "\\%")
         .replace('_', "\\_")
         .replace('*', "%");
-    let mut stmt = conn.prepare(
+    let mut sql = String::from(
         "
         SELECT s.id, s.name, s.qualified_name, s.kind, s.file_id, f.path, f.language,
                s.start_line, s.end_line, s.signature, s.exported
         FROM symbols s
         JOIN files f ON f.id = s.file_id
-        WHERE s.name LIKE ?1 ESCAPE '\\' OR s.qualified_name LIKE ?1 ESCAPE '\\'
-        ORDER BY length(s.qualified_name), s.qualified_name
-        LIMIT ?2
+        WHERE (s.name LIKE ? ESCAPE '\\' OR s.qualified_name LIKE ? ESCAPE '\\')
         ",
-    )?;
-    let rows = stmt.query_map(params![like, limit as i64], db::map_symbol)?;
+    );
+    let mut params = vec![
+        rusqlite::types::Value::Text(like.clone()),
+        rusqlite::types::Value::Text(like),
+    ];
+    append_symbol_filters(&mut sql, &mut params, options);
+    sql.push_str(" ORDER BY length(s.qualified_name), s.qualified_name LIMIT ?");
+    params.push(rusqlite::types::Value::Integer(limit as i64));
+
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map(rusqlite::params_from_iter(params), db::map_symbol)?;
     Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
 }
 
-fn list_symbols(conn: &Connection, limit: usize) -> Result<Vec<SymbolRecord>> {
-    let mut stmt = conn.prepare(
+fn list_symbols(
+    conn: &Connection,
+    options: Option<&SearchOptions>,
+    limit: usize,
+) -> Result<Vec<SymbolRecord>> {
+    let mut sql = String::from(
         "
         SELECT s.id, s.name, s.qualified_name, s.kind, s.file_id, f.path, f.language,
                s.start_line, s.end_line, s.signature, s.exported
         FROM symbols s
         JOIN files f ON f.id = s.file_id
-        ORDER BY s.qualified_name
-        LIMIT ?1
+        WHERE 1=1
         ",
-    )?;
-    let rows = stmt.query_map(params![limit as i64], db::map_symbol)?;
+    );
+    let mut params = Vec::new();
+    append_symbol_filters(&mut sql, &mut params, options);
+    sql.push_str(" ORDER BY s.qualified_name LIMIT ?");
+    params.push(rusqlite::types::Value::Integer(limit as i64));
+
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map(rusqlite::params_from_iter(params), db::map_symbol)?;
     Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
 }
 
@@ -1251,14 +1382,15 @@ fn glob_score(pattern: &str, name: &str) -> f32 {
 const TEST_DIRS: &[&str] = &["test", "tests", "__tests__", "spec", "specs", "e2e"];
 
 pub fn is_test_path(path: &str) -> bool {
-    let lower = path.to_lowercase();
+    let normalized = path.replace('\\', "/");
+    let lower = normalized.to_lowercase();
     let mut segments: Vec<&str> = lower.split('/').collect();
     let file = segments.pop().unwrap_or_default();
     if segments.iter().any(|segment| TEST_DIRS.contains(segment)) {
         return true;
     }
     let stem = file.split('.').next().unwrap_or_default();
-    let java_stem = path
+    let java_stem = normalized
         .rsplit('/')
         .next()
         .and_then(|name| name.strip_suffix(".java"))
@@ -1306,6 +1438,14 @@ mod tests {
     fn test_path_rules() {
         for path in [
             "tests/a.rs",
+            "tests/e2e.rs",
+            "tests/snapshot.rs",
+            "test/helpers.py",
+            "tests\\e2e.rs",
+            "tests\\snapshot.rs",
+            "test\\helpers.py",
+            "src\\__tests__\\a.ts",
+            "src\\test\\java\\FooTest.java",
             "src/__tests__/a.ts",
             "a.test.ts",
             "a.spec.js",
@@ -1328,5 +1468,42 @@ mod tests {
         ] {
             assert!(!is_test_path(path), "{path} should not be a test path");
         }
+    }
+
+    #[test]
+    fn test_parse_diff_path() {
+        assert_eq!(
+            parse_diff_path("b/src/service.rs"),
+            Some("src/service.rs".to_string())
+        );
+        assert_eq!(
+            parse_diff_path("a/src/service.rs"),
+            Some("src/service.rs".to_string())
+        );
+        assert_eq!(parse_diff_path("/dev/null"), Some("/dev/null".to_string()));
+        assert_eq!(
+            parse_diff_path("b/b/service.rs"),
+            Some("b/service.rs".to_string())
+        );
+        assert_eq!(
+            parse_diff_path("a/a/service.rs"),
+            Some("a/service.rs".to_string())
+        );
+        assert_eq!(
+            parse_diff_path("b/a/service.rs"),
+            Some("a/service.rs".to_string())
+        );
+        assert_eq!(
+            parse_diff_path("a/b/service.rs"),
+            Some("b/service.rs".to_string())
+        );
+        assert_eq!(
+            parse_diff_path("\"b/path with spaces/file.rs\""),
+            Some("path with spaces/file.rs".to_string())
+        );
+        assert_eq!(
+            parse_diff_path("\"b/b/file.rs\""),
+            Some("b/file.rs".to_string())
+        );
     }
 }

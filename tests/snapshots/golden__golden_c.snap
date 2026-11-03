@@ -10,6 +10,7 @@ expression: graph_dump(& db)
     "src/store.c:3-5 struct item [exported] | struct item {",
     "src/store.c:7-7 function lookup | static int lookup(int id) { return id; }",
     "src/store.c:9-9 function store_load [exported] | int store_load(int id) { return lookup(id); }",
+    "src/store.h:1-1 function store_load [exported] | int store_load(int id);",
     "tests/test_store.c:3-3 function test_store_load [exported] | int test_store_load(void) { return store_load(1) == 1; }"
   ],
   "refs": [
@@ -28,8 +29,10 @@ expression: graph_dump(& db)
   ],
   "edges": [
     "src/main.c main -call-> src/main.c:lookup [high/local]",
-    "src/main.c main -call-> src/store.c:store_load [medium/name]",
+    "src/main.c main -call-> src/store.c:store_load [low/name]",
+    "src/main.c main -call-> src/store.h:store_load [low/name]",
     "src/store.c store_load -call-> src/store.c:lookup [high/local]",
-    "tests/test_store.c test_store_load -call-> src/store.c:store_load [medium/name]"
+    "tests/test_store.c test_store_load -call-> src/store.c:store_load [low/name]",
+    "tests/test_store.c test_store_load -call-> src/store.h:store_load [low/name]"
   ]
 }

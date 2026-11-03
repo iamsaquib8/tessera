@@ -57,11 +57,15 @@ use rusqlite::Connection;
 
 pub use indexer::{IndexMode, IndexOptions, IndexReport};
 pub use query::{
-    BlastArgs, BlastResult, ContextArgs, ContextResult, ExportGroupBy, ExportOptions, FindArgs,
-    FindResult, PathArgs, RefsArgs, RefsResult, SearchArgs, SearchResults, StatusResult,
+    diff_impact_conn, signature_conn, BlastArgs, BlastResult, ContextArgs, ContextResult,
+    CyclesArgs, CyclesResult, ExportGroupBy, ExportOptions, FindArgs, FindResult, ImportCycle,
+    ImportCycleLink, PathArgs, RefsArgs, RefsResult, SearchArgs, SearchResults, StatusResult,
     VerifyArgs, VerifyResult,
 };
-pub use types::{ConnectResult, ExportResult, Language, ReferenceRecord, SymbolRecord};
+pub use types::{
+    ConnectResult, DiffImpactResult, ExportResult, Language, ReferenceRecord, SignatureResult,
+    SymbolRecord,
+};
 pub use workspace::Workspace;
 
 /// Read-only handle to a Tessera index.
@@ -76,9 +80,20 @@ impl Index {
     pub fn open(db_path: impl AsRef<Path>) -> Result<Self> {
         let db_path = db_path.as_ref().to_path_buf();
         let conn = db::open_ro(&db_path)?;
-        let root = db::get_meta(&conn, "root")?
-            .map(PathBuf::from)
-            .unwrap_or_else(|| db_path.parent().unwrap_or(Path::new(".")).to_path_buf());
+        let stored_root = db::get_meta(&conn, "root")?.map(PathBuf::from);
+        let root = stored_root
+            .filter(|p| p.is_dir())
+            .or_else(|| {
+                db_path.parent().and_then(|parent| {
+                    if parent.file_name().and_then(|n| n.to_str()) == Some(".tessera") {
+                        parent.parent().map(|p| p.to_path_buf())
+                    } else {
+                        Some(parent.to_path_buf())
+                    }
+                })
+            })
+            .or_else(|| std::env::current_dir().ok())
+            .unwrap_or_else(|| PathBuf::from("."));
         Ok(Self {
             conn,
             db_path,
@@ -129,6 +144,10 @@ impl Index {
         query::find(&self.conn, &self.root, args)
     }
 
+    pub fn signature(&self, symbol: &str) -> Result<SignatureResult> {
+        query::signature_conn(&self.conn, symbol)
+    }
+
     pub fn search(&self, args: &SearchArgs) -> Result<SearchResults> {
         query::search(&self.conn, args)
     }
@@ -141,12 +160,25 @@ impl Index {
         query::blast(&self.conn, &self.root, args)
     }
 
+    pub fn diff_impact(
+        &self,
+        from_ref: &str,
+        to_ref: Option<&str>,
+        depth: usize,
+    ) -> Result<DiffImpactResult> {
+        query::diff_impact_conn(&self.conn, &self.root, from_ref, to_ref, depth)
+    }
+
     pub fn path(&self, args: &PathArgs) -> Result<ConnectResult> {
         query::path(&self.conn, &self.root, args)
     }
 
     pub fn context(&self, args: &ContextArgs) -> Result<ContextResult> {
         query::context(&self.conn, &self.root, args)
+    }
+
+    pub fn cycles(&self, args: &CyclesArgs) -> Result<CyclesResult> {
+        query::cycles(&self.conn, &self.root, args)
     }
 
     pub fn verify(&self, args: &VerifyArgs) -> Result<VerifyResult> {

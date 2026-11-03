@@ -2,6 +2,7 @@ mod affected;
 mod blast;
 pub mod common;
 mod context;
+pub mod cycles;
 mod find;
 mod formats;
 pub mod graph;
@@ -21,8 +22,12 @@ pub use affected::{
 };
 pub use blast::{BlastArgs, BlastCaller, BlastResult};
 pub use context::{ContextArgs, ContextResult};
+pub use cycles::{CyclesArgs, CyclesResult, ImportCycle, ImportCycleLink};
 pub use find::{FindArgs, FindMatch, FindResult};
-pub use legacy::{export_conn_with_options, ExportGroupBy, ExportOptions};
+pub use legacy::{
+    container_members, diff_impact_conn, export_conn_with_options, find_definition_conn,
+    search_conn, signature_conn, validate_conn, ExportGroupBy, ExportOptions,
+};
 pub use map::{MapArgs, MapResult};
 pub use path::PathArgs;
 pub use refs::{RefHit, RefsArgs, RefsResult};
@@ -37,6 +42,7 @@ pub use verify::{
 pub use affected::{require_git, run as affected};
 pub use blast::run as blast;
 pub use context::run as context;
+pub use cycles::run as cycles;
 pub use find::run as find;
 pub use map::run as map;
 pub use path::run as path;

@@ -41,6 +41,42 @@ fn find_returns_exact_matches_with_bodies() {
 }
 
 #[test]
+fn index_open_on_moved_repo_finds_symbol_body() {
+    let temp = TempDir::new().unwrap();
+    let root = temp.path().join("repo");
+    support::copy_dir(&support::fixture_dir("typescript"), &root);
+    let db = root.join(".tessera").join("tessera.db");
+    Index::build(
+        &root,
+        &db,
+        IndexOptions {
+            full: true,
+            ..IndexOptions::default()
+        },
+    )
+    .unwrap();
+
+    let moved_repo = temp.path().join("repo_moved");
+    std::fs::rename(&root, &moved_repo).unwrap();
+    let moved_db = moved_repo.join(".tessera").join("tessera.db");
+
+    let index = Index::open(&moved_db).unwrap();
+    let result = index
+        .find(&FindArgs {
+            include_body: true,
+            ..symbol("findById")
+        })
+        .unwrap();
+    let first = &result.matches[0];
+    assert_eq!(first.match_kind, MatchKind::Exact);
+    assert!(first
+        .body
+        .as_deref()
+        .unwrap()
+        .contains("formatName(this.lookup(id))"));
+}
+
+#[test]
 fn find_labels_fuzzy_matches() {
     let (_temp, index) = open("typescript");
     let result = index.find(&symbol("findByIdd")).unwrap();

@@ -817,7 +817,39 @@ fn rails_routes_link_to_ruby_clients() {
             || c.contains("/reviews/new")),
         "{got:#?}"
     );
-    assert_eq!(got.len(), 20, "{got:#?}");
+    let rails: Vec<_> = got
+        .iter()
+        .filter(|c| c.contains("shop/config/routes.rb"))
+        .collect();
+    assert_eq!(rails.len(), 20, "{rails:#?}");
+}
+
+#[test]
+fn sinatra_routes_link_to_ruby_clients() {
+    let temp = fixture("contracts-ruby");
+    let got = summary(&map(temp.path(), &["route"]));
+    let sinatra = "admin/app.rb";
+    let client = "client/lib/shop_client.rb";
+    for expected in [
+        format!("GET /admin/stats: {sinatra} -> {client}"),
+        format!("POST /admin/users: {sinatra} -> "),
+        format!("PUT /admin/users/{{}}: {sinatra} -> "),
+        format!("PATCH /admin/users/{{}}: {sinatra} -> "),
+        format!("DELETE /admin/users/{{}}: {sinatra} -> {client}"),
+        format!("HEAD /admin/health: {sinatra} -> "),
+        format!("OPTIONS /admin/health: {sinatra} -> "),
+        format!("GET /ping: {sinatra} -> {client}"),
+    ] {
+        assert!(got.contains(&expected), "missing {expected:?} in {got:#?}");
+    }
+    // Verify lookalikes:
+    // `cache.get "/admin/stats"` and plain `get "/admin/stats"` without a block
+    // must not produce extra routes.
+    let admin_stats_routes: Vec<_> = got
+        .iter()
+        .filter(|c| c.starts_with("GET /admin/stats:"))
+        .collect();
+    assert_eq!(admin_stats_routes.len(), 1, "{admin_stats_routes:#?}");
 }
 
 #[test]
@@ -836,4 +868,53 @@ fn a_spring_mapping_with_several_methods_serves_each() {
             && got.iter().any(|c| c.starts_with("POST /fallback:")),
         "{got:#?}"
     );
+}
+
+#[test]
+fn actix_web_routes_link_to_their_clients() {
+    let temp = fixture("contracts-rust");
+    let got = summary(&map(temp.path(), &["route"]));
+    let server = "server/src/main.rs";
+    let client = "client/src/client.ts";
+    for expected in [
+        format!("GET /users/{{}}: {server} -> {client}"),
+        format!("POST /orders: {server} -> {client}"),
+        format!("PUT /users/{{}}: {server} -> {client}"),
+        format!("PATCH /users/{{}}: {server} -> "),
+        format!("DELETE /users/{{}}: {server} -> "),
+        format!("GET /health: {server} -> {client}"),
+        format!("HEAD /health: {server} -> "),
+        format!("POST /api/items: {server} -> {client}"),
+        format!("DELETE /api/items/{{}}: {server} -> {client}"),
+    ] {
+        assert!(got.contains(&expected), "missing {expected:?} in {got:#?}");
+    }
+    assert_eq!(got.len(), 9, "{got:#?}");
+}
+
+#[test]
+fn actix_web_route_handlers_and_lookalikes() {
+    let temp = fixture("contracts-rust");
+    let result = map(temp.path(), &["route", "/users/{}"]);
+    let contracts = result["contracts"].as_array().unwrap();
+    let get_contract = contracts
+        .iter()
+        .find(|c| c["name"] == "GET /users/{}")
+        .expect("missing GET /users/{}");
+    assert_eq!(
+        get_contract["providers"][0]["symbol"], "get_user",
+        "{result}"
+    );
+    assert_eq!(
+        get_contract["consumers"][0]["symbol"], "getUser",
+        "{result}"
+    );
+
+    let result_all = map(temp.path(), &["route"]);
+    let text = result_all.to_string();
+    assert!(
+        !text.contains("not-a-web-route"),
+        "lookalike captured: {text}"
+    );
+    assert!(!text.contains("helper"), "helper captured: {text}");
 }

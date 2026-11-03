@@ -15,7 +15,7 @@ use tessera_codegraph::indexer::{self, IndexMode, IndexOptions, IndexReport};
 use tessera_codegraph::init::{self, InitOptions};
 use tessera_codegraph::output::Confidence;
 use tessera_codegraph::query::{
-    self, BlastArgs, ContextArgs, FindArgs, PathArgs, RefsArgs, SearchArgs, VerifyArgs,
+    self, BlastArgs, ContextArgs, CyclesArgs, FindArgs, PathArgs, RefsArgs, SearchArgs, VerifyArgs,
 };
 use tessera_codegraph::types::Language;
 use tessera_codegraph::watch::{self, WatchOptions};
@@ -252,6 +252,19 @@ enum Commands {
         #[arg(long, default_value_t = 8)]
         depth: usize,
     },
+    /// Detect circular import dependencies between modules.
+    #[command(alias = "imports")]
+    Cycles {
+        /// Only cycles involving modules under this path prefix.
+        #[arg(long)]
+        path: Option<String>,
+        /// List circular dependency cycles (default: true).
+        #[arg(long, default_value_t = true)]
+        cycles: bool,
+        /// Maximum number of cycles to return (default: 100).
+        #[arg(long, default_value_t = 100)]
+        limit: usize,
+    },
     /// Export the call graph as Mermaid or Graphviz DOT.
     Export {
         /// Output format.
@@ -303,8 +316,8 @@ enum Commands {
     /// Keep the index fresh while files change.
     Watch {
         /// Wait this long after a change before re-indexing.
-        #[arg(long, default_value_t = 200)]
-        debounce_ms: u64,
+        #[arg(long, value_name = "MS")]
+        debounce_ms: Option<u64>,
         /// Index once and exit.
         #[arg(long)]
         once: bool,
@@ -804,6 +817,16 @@ fn run() -> Result<u8> {
             };
             out.print(&index.path(&PathArgs { from, to, depth })?)?;
         }
+        Commands::Cycles {
+            path,
+            cycles: _,
+            limit,
+        } => {
+            let Some(index) = open_fresh(&ws, &out)? else {
+                return Ok(0);
+            };
+            out.print(&index.cycles(&CyclesArgs { path, limit })?)?;
+        }
         Commands::Export {
             format,
             from,
@@ -854,11 +877,18 @@ fn run() -> Result<u8> {
             once,
             full,
         } => {
+            let debounce = match debounce_ms {
+                Some(ms) => Duration::from_millis(ms),
+                None => {
+                    let config = tessera_codegraph::config::TesseraConfig::load(&ws.root);
+                    Duration::from_millis(config.watch_debounce_ms.unwrap_or(200))
+                }
+            };
             watch::watch_path(
                 &ws.root,
                 &ws.db_path,
                 WatchOptions {
-                    debounce: Duration::from_millis(debounce_ms),
+                    debounce,
                     index_options: IndexOptions {
                         full,
                         excludes: None,

@@ -220,3 +220,33 @@ fn the_docker_build_copies_every_embedded_directory() {
         );
     }
 }
+
+#[test]
+fn npm_publishes_with_trusted_publishing_and_has_a_local_fallback() {
+    let workflow = fs::read_to_string(".github/workflows/release.yml").unwrap();
+    let npm_job = workflow
+        .split("  npm:\n")
+        .nth(1)
+        .and_then(|rest| rest.split("\n  homebrew:").next())
+        .unwrap();
+    assert!(
+        npm_job.contains("npm install -g npm@"),
+        "trusted publishing (OIDC) needs npm 11.5.1 or later"
+    );
+    assert!(
+        !npm_job.contains("skipping npm"),
+        "a missing token falls through to trusted publishing, not a silent skip"
+    );
+    let script = fs::read_to_string("npm/scripts/publish-local.sh").unwrap();
+    assert!(script.contains("gh release download"), "{script}");
+    assert!(script.contains("build-platform-packages.js"), "{script}");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = fs::metadata("npm/scripts/publish-local.sh")
+            .unwrap()
+            .permissions()
+            .mode();
+        assert!(mode & 0o111 != 0, "publish-local.sh is executable");
+    }
+}

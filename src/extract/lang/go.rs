@@ -43,6 +43,11 @@ impl LanguageSupport for Go {
                 let exported = is_go_exported(&name);
                 Some(cx.symbol(name, kind, node, exported))
             }
+            "method_elem" | "method_spec" => {
+                let name = cx.text(node.child_by_field_name("name")?);
+                let exported = is_go_exported(&name);
+                Some(cx.symbol(name, "method", node, exported))
+            }
             _ => None,
         }
     }
