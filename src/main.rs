@@ -182,7 +182,7 @@ enum Commands {
         /// Check the working tree against this git revision.
         #[arg(long, value_name = "REV", conflicts_with_all = ["symbol", "snippet"])]
         diff: Option<String>,
-        /// Output: human (default), agent (one line per blocking problem), json, sarif, markdown (a pull-request comment), gitlab (Code Quality), azure (logging commands), bitbucket (Code Insights), or ndjson (one finding per line).
+        /// Output: human (default), agent (one line per blocking problem), json, sarif, markdown (a pull-request comment), gitlab (Code Quality), azure (logging commands), bitbucket (Code Insights), ndjson (one finding per line), or junit (completed checks).
         #[arg(long, value_enum, default_value_t = VerifyFormat::Human)]
         format: VerifyFormat,
         /// Count baselined and accepted findings as new.
@@ -443,6 +443,8 @@ enum VerifyFormat {
     Bitbucket,
     /// One finding per line, then a summary line.
     Ndjson,
+    /// JUnit XML for completed checks in a change.
+    Junit,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -724,6 +726,22 @@ fn run() -> Result<u8> {
             if snippet.is_some() && language.is_none() {
                 return Err(usage("--snippet needs --language"));
             }
+            let junit = matches!(format, VerifyFormat::Junit) && !out.json;
+            if junit && !changes {
+                return Err(usage("--format junit needs --changed, --staged, or --diff"));
+            }
+            if junit {
+                let index = open_fresh_allow_empty(&ws, &out)?;
+                let (result, xml) = index.verify_junit(&VerifyArgs {
+                    changed,
+                    staged,
+                    diff_from: diff,
+                    no_baseline,
+                    ..VerifyArgs::default()
+                })?;
+                print!("{xml}");
+                return Ok(if result.ok { 0 } else { EXIT_FINDINGS });
+            }
             let snippet = snippet.map(|source| read_snippet(&source)).transpose()?;
             let Some(index) = open_fresh(&ws, &out)? else {
                 return Ok(0);
@@ -774,7 +792,7 @@ fn run() -> Result<u8> {
                     println!("{}", serde_json::to_string_pretty(&result.bitbucket())?)
                 }
                 VerifyFormat::Ndjson => print!("{}", result.ndjson()),
-                VerifyFormat::Markdown => unreachable!("handled above"),
+                VerifyFormat::Markdown | VerifyFormat::Junit => unreachable!("handled above"),
             }
             if !result.ok {
                 return Ok(EXIT_FINDINGS);
@@ -1044,6 +1062,23 @@ fn run_hook(agent: &str, event: &str, cli: &Cli) -> u8 {
 }
 
 fn open_fresh(ws: &Workspace, out: &Output) -> Result<Option<Index>> {
+    let index = open_fresh_allow_empty(ws, out)?;
+    if db::count_files(index.connection())? == 0 {
+        let message = format!(
+            "No supported source files found under {}.",
+            ws.root.display()
+        );
+        if out.json {
+            out.print_json(&serde_json::json!({ "files": 0, "message": message }))?;
+        } else {
+            println!("{message}");
+        }
+        return Ok(None);
+    }
+    Ok(Some(index))
+}
+
+fn open_fresh_allow_empty(ws: &Workspace, out: &Output) -> Result<Index> {
     if fresh::check(ws)? != Freshness::Fresh {
         out.progress(&format!("indexing {} …", ws.root.display()));
         match fresh::refresh(ws)? {
@@ -1066,20 +1101,7 @@ fn open_fresh(ws: &Workspace, out: &Output) -> Result<Option<Index>> {
             ),
         }
     }
-    let index = Index::open_workspace(ws)?;
-    if db::count_files(index.connection())? == 0 {
-        let message = format!(
-            "No supported source files found under {}.",
-            ws.root.display()
-        );
-        if out.json {
-            out.print_json(&serde_json::json!({ "files": 0, "message": message }))?;
-        } else {
-            println!("{message}");
-        }
-        return Ok(None);
-    }
-    Ok(Some(index))
+    Index::open_workspace(ws)
 }
 
 /// `affected`: the selection on stdout in the format asked for, the counts

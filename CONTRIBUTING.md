@@ -28,6 +28,9 @@ cargo clippy --all-targets --all-features -- -D warnings
 cargo test --all-targets --all-features
 cargo test --release --test perf -- --ignored   # perf budgets
 node --test npm/test/                            # npm launcher
+python -m pip install -r tests/junit-requirements.txt
+cargo build --locked
+python tests/junit_schema.py target/debug/tessera # JUnit schema and CLI
 ```
 
 ## How the tests are organised

@@ -292,6 +292,7 @@
     "--format=gitlab",
     "--format=human",
     "--format=json",
+    "--format=junit",
     "--format=markdown",
     "--format=ndjson",
     "--format=sarif",

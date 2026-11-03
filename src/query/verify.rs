@@ -11,6 +11,7 @@ use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
 
 use super::common::{is_test_path, known_global};
+use super::junit::ExecutionReport;
 use super::waivers::Waivers;
 use super::{graph, legacy};
 use crate::extract::parse_file;
@@ -147,6 +148,40 @@ impl VerifyResult {
 }
 
 pub fn run(conn: &Connection, root: &Path, args: &VerifyArgs) -> Result<VerifyResult> {
+    run_with_report(conn, root, args, None)
+}
+
+/// Verify a change once and render its completed checks as JUnit XML.
+pub fn run_junit(
+    conn: &Connection,
+    root: &Path,
+    args: &VerifyArgs,
+) -> Result<(VerifyResult, String)> {
+    if !(args.changed || args.staged || args.diff_from.is_some()) {
+        bail!("JUnit needs --changed, --staged, or --diff");
+    }
+    let mut report = ExecutionReport::with_parse_errors(crate::db::parse_error_paths(conn)?);
+    for path in crate::db::unreadable_paths(conn)? {
+        report.note(&format!(
+            "{path}: current source is unreadable and was not checked"
+        ));
+    }
+    let result = if crate::db::count_files(conn)? == 0 {
+        report.note("The index contains no supported files");
+        VerifyResult::new(Vec::new(), Vec::new())
+    } else {
+        run_with_report(conn, root, args, Some(&mut report))?
+    };
+    let xml = report.render(&result);
+    Ok((result, xml))
+}
+
+fn run_with_report(
+    conn: &Connection,
+    root: &Path,
+    args: &VerifyArgs,
+    report: Option<&mut ExecutionReport>,
+) -> Result<VerifyResult> {
     if args.changed || args.staged || args.diff_from.is_some() {
         let changes = if args.staged {
             Changes::Staged
@@ -160,7 +195,8 @@ pub fn run(conn: &Connection, root: &Path, args: &VerifyArgs) -> Result<VerifyRe
         } else {
             Waivers::load(root)
         };
-        return verify_changes_with(conn, root, &changes, &waivers);
+        let changed = changed_paths(root, &changes)?;
+        return verify_paths_with_report(conn, root, &changed, &changes, &waivers, report);
     }
     let mut findings = Vec::new();
     if let Some(symbol) = &args.symbol {
@@ -266,7 +302,18 @@ pub fn verify_paths_with(
     changes: &Changes,
     waivers: &Waivers,
 ) -> Result<VerifyResult> {
-    let findings = problems_with(conn, root, changed, changes, waivers)?
+    verify_paths_with_report(conn, root, changed, changes, waivers, None)
+}
+
+fn verify_paths_with_report(
+    conn: &Connection,
+    root: &Path,
+    changed: &HashSet<String>,
+    changes: &Changes,
+    waivers: &Waivers,
+    report: Option<&mut ExecutionReport>,
+) -> Result<VerifyResult> {
+    let findings = problems_with_report(conn, root, changed, changes, waivers, report)?
         .into_iter()
         .map(|p| p.finding)
         .collect();
@@ -353,16 +400,27 @@ pub fn problems_with(
     changes: &Changes,
     waivers: &Waivers,
 ) -> Result<Vec<Problem>> {
+    problems_with_report(conn, root, changed, changes, waivers, None)
+}
+
+fn problems_with_report(
+    conn: &Connection,
+    root: &Path,
+    changed: &HashSet<String>,
+    changes: &Changes,
+    waivers: &Waivers,
+    mut report: Option<&mut ExecutionReport>,
+) -> Result<Vec<Problem>> {
     let rev = match changes {
         Changes::Since(rev) => rev.as_str(),
         _ => "HEAD",
     };
     let barrels = barrels_over(conn, changed)?;
     let mut out = Vec::new();
-    missing_names(conn, changed, &barrels, &mut out)?;
-    lost_imports(conn, root, changed, rev, &mut out)?;
-    arity_mismatches(conn, changed, &mut out)?;
-    broken_imports(conn, changed, &barrels, &mut out)?;
+    missing_names(conn, changed, &barrels, &mut out, report.as_deref_mut())?;
+    lost_imports(conn, root, changed, rev, &mut out, report.as_deref_mut())?;
+    arity_mismatches(conn, changed, &mut out, report.as_deref_mut())?;
+    broken_imports(conn, changed, &barrels, &mut out, report.as_deref_mut())?;
     // V5 reads every changed file at `rev`; only a client can lose what a
     // change removed, so an index without clients skips it.
     let clients: bool = conn.query_row(
@@ -372,8 +430,20 @@ pub fn problems_with(
     )?;
     if clients {
         let mut contracts = Vec::new();
-        contract_breaks(conn, root, changed, rev, &mut contracts)?;
+        contract_breaks(
+            conn,
+            root,
+            changed,
+            rev,
+            &mut contracts,
+            report.as_deref_mut(),
+        )?;
         out.extend(contracts.into_iter().map(contract_problem));
+    }
+    if !clients {
+        if let Some(report) = report {
+            report.note("V5 omitted: the index has no contract clients");
+        }
     }
     for problem in &mut out {
         problem.finding.fingerprint = fingerprint(&problem.key);
@@ -404,17 +474,17 @@ pub fn problem_keys(
     let clear = |paths: &[&str]| !paths.iter().any(|p| skip.contains(*p));
     let skip_stems: HashSet<String> = skip.iter().map(|p| strip_extension(p)).collect();
     let mut keys = Vec::new();
-    for row in missing_rows(conn)? {
+    for row in missing_rows(conn, false)? {
         if clear(&[&row.path, row.missing_in.as_deref().unwrap_or_default()]) {
             keys.push(row.key());
         }
     }
-    for row in arity_rows(conn)? {
+    for row in arity_rows(conn, false)? {
         if clear(&[&row.path, &row.target_path]) {
             keys.push(row.key());
         }
     }
-    for row in binding_rows(conn)? {
+    for row in binding_rows(conn, false)? {
         let lexical = lexical_target(&row.path, &row.source).is_some_and(|candidate| {
             skip_stems.contains(&candidate) || skip_stems.contains(&format!("{candidate}/index"))
         });
@@ -423,10 +493,10 @@ pub fn problem_keys(
         }
     }
     let mut lost = Vec::new();
-    lost_imports(conn, root, contract_paths, "HEAD", &mut lost)?;
+    lost_imports(conn, root, contract_paths, "HEAD", &mut lost, None)?;
     keys.extend(lost.into_iter().map(|p| p.key));
     let mut contracts = Vec::new();
-    contract_breaks(conn, root, contract_paths, "HEAD", &mut contracts)?;
+    contract_breaks(conn, root, contract_paths, "HEAD", &mut contracts, None)?;
     keys.extend(contracts.into_iter().map(|f| contract_problem(f).key));
     Ok(keys)
 }
@@ -478,6 +548,7 @@ fn contract_breaks(
     changed: &HashSet<String>,
     rev: &str,
     findings: &mut Vec<Finding>,
+    mut report: Option<&mut ExecutionReport>,
 ) -> Result<()> {
     // Nothing can lose a client in an index without clients.
     let clients: i64 = conn.query_row(
@@ -493,27 +564,46 @@ fn contract_breaks(
         .filter(|path| Language::from_path(Path::new(path.as_str())).is_some())
         .collect();
     let before = files_at(root, rev, &candidates);
-    let mut removed: Vec<(crate::facts::IndexedFact, String)> = Vec::new();
+    let mut removed: Vec<(crate::facts::IndexedFact, String, bool)> = Vec::new();
     for path in candidates {
         let (Some(language), Some(before)) =
             (Language::from_path(Path::new(path)), before.get(path))
         else {
+            if let Some(report) = report.as_deref_mut() {
+                report.incomplete("V5", path, "historical source unavailable");
+            }
             continue;
         };
         let Ok(parsed) = crate::extract::parse_file_at(language, path, before) else {
+            if let Some(report) = report.as_deref_mut() {
+                report.incomplete("V5", path, "historical source could not be parsed");
+            }
             continue;
         };
+        if parsed.has_errors {
+            if let Some(report) = report.as_deref_mut() {
+                report.incomplete("V5", path, "historical source has parse errors");
+            }
+        }
         for fact in parsed
             .facts
             .into_iter()
             .filter(|f| PROVIDERS.contains(&f.kind))
         {
-            if !still_offered(conn, &fact)? {
-                removed.push((fact, path.clone()));
+            if still_offered(conn, &fact)? {
+                if !parsed.has_errors {
+                    if let Some(report) = report.as_deref_mut() {
+                        for consumer in consumers_of(conn, &fact)? {
+                            report.checked_contract(&consumer.path);
+                        }
+                    }
+                }
+            } else {
+                removed.push((fact, path.clone(), parsed.has_errors));
             }
         }
     }
-    for (fact, from) in removed {
+    for (fact, from, parse_errors) in removed {
         let consumers = consumers_of(conn, &fact)?;
         let name = declared_name(conn, &fact)?;
         let (verb, user) = match fact.kind {
@@ -525,6 +615,12 @@ fn contract_breaks(
         let mounted = fact.kind == kind::ROUTE
             && (served_under_a_prefix(conn, &fact)? || mounts_a_router(&root.join(&from)));
         for consumer in consumers {
+            if let Some(report) = report.as_deref_mut() {
+                report.checked_contract(&consumer.path);
+                if parse_errors {
+                    report.incomplete("V5", &consumer.path, "historical provider has parse errors");
+                }
+            }
             let high = fact.confidence == "high" && consumer.confidence == "high";
             let blocking = high && consumer.exact && !mounted && fact.kind != kind::PRODUCER;
             findings.push(Finding {
@@ -820,6 +916,9 @@ struct MissingRow {
     line: usize,
     name: String,
     missing_in: Option<String>,
+    missing: bool,
+    target_path: Option<String>,
+    via_path: Option<String>,
 }
 
 impl MissingRow {
@@ -833,19 +932,27 @@ impl MissingRow {
     }
 }
 
-fn missing_rows(conn: &Connection) -> Result<Vec<MissingRow>> {
+fn missing_rows(conn: &Connection, completed: bool) -> Result<Vec<MissingRow>> {
     let mut stmt = conn.prepare(
-        "SELECT f.path, r.line, r.symbol_name, e.missing_in
+        "SELECT f.path, r.line, r.symbol_name, e.missing_in, e.resolver = 'missing', tf.path,
+           CASE WHEN ?1 AND e.resolver = 'import' THEN (
+             SELECT b.target_path FROM import_bindings b WHERE b.file_id = r.file_id
+               AND b.local IN (r.symbol_name, r.receiver_name)
+               AND b.target_path IS NOT NULL ORDER BY b.id LIMIT 1) END
          FROM edges e JOIN refs r ON r.id = e.ref_id JOIN files f ON f.id = r.file_id
-         WHERE e.resolver = 'missing'",
+         LEFT JOIN symbols ts ON ts.id = e.to_symbol_id LEFT JOIN files tf ON tf.id = ts.file_id
+         WHERE e.resolver = 'missing' OR (?1 AND e.confidence = 'high' AND ts.id IS NOT NULL)",
     )?;
     let rows = stmt
-        .query_map([], |row| {
+        .query_map([completed], |row| {
             Ok(MissingRow {
                 path: row.get(0)?,
                 line: row.get::<_, i64>(1)? as usize,
                 name: row.get(2)?,
                 missing_in: row.get(3)?,
+                missing: row.get::<_, Option<bool>>(4)?.unwrap_or(false),
+                target_path: row.get(5)?,
+                via_path: row.get(6)?,
             })
         })?
         .collect::<rusqlite::Result<_>>()?;
@@ -886,14 +993,37 @@ fn missing_names(
     changed: &HashSet<String>,
     barrels: &HashSet<String>,
     problems: &mut Vec<Problem>,
+    mut report: Option<&mut ExecutionReport>,
 ) -> Result<()> {
-    for row in missing_rows(conn)? {
+    for row in missing_rows(conn, report.is_some())? {
+        let target = row.missing_in.as_ref().or(row.target_path.as_ref());
+        let id = if changed.contains(&row.path) {
+            "V1"
+        } else if target
+            .into_iter()
+            .chain(row.via_path.as_ref())
+            .any(|p| changed.contains(p) || barrels.contains(p))
+        {
+            "V3"
+        } else {
+            continue;
+        };
+        if let Some(report) = report.as_deref_mut() {
+            report.checked_using(id, &row.path, target.map(String::as_str));
+            if let Some(via) = row.via_path.as_ref() {
+                report.check_target(id, &row.path, via);
+            }
+        }
+        if !row.missing {
+            continue;
+        }
         let key = row.key();
         let MissingRow {
             path,
             line,
             name,
             missing_in,
+            ..
         } = row;
         let missing_in = missing_in.unwrap_or_default();
         let finding = if changed.contains(&path) {
@@ -941,16 +1071,21 @@ fn lost_imports(
     changed: &HashSet<String>,
     rev: &str,
     problems: &mut Vec<Problem>,
+    mut report: Option<&mut ExecutionReport>,
 ) -> Result<()> {
     let mut unbound = conn.prepare_cached(
-        "SELECT r.line, r.symbol_name FROM refs r JOIN files f ON f.id = r.file_id
-         WHERE f.path = ?1 AND r.receiver = 'none'
-           AND NOT EXISTS (SELECT 1 FROM edges e WHERE e.ref_id = r.id
+        "SELECT r.line, r.symbol_name,
+           (NOT EXISTS (SELECT 1 FROM edges e WHERE e.ref_id = r.id
                            AND (e.confidence != 'name' OR e.resolver = 'missing'))
            AND NOT EXISTS (SELECT 1 FROM import_bindings b
                            WHERE b.file_id = r.file_id AND b.local = r.symbol_name)
            AND NOT EXISTS (SELECT 1 FROM symbols s
-                           WHERE s.file_id = r.file_id AND s.name = r.symbol_name)",
+                           WHERE s.file_id = r.file_id AND s.name = r.symbol_name)) AS unbound
+         FROM refs r JOIN files f ON f.id = r.file_id
+         WHERE f.path = ?1 AND r.receiver = 'none'
+           AND (unbound OR (?2 AND EXISTS (
+               SELECT 1 FROM edges e WHERE e.ref_id = r.id
+               AND e.confidence = 'high' AND e.to_symbol_id IS NOT NULL)))",
     )?;
     let mut paths: Vec<&String> = changed.iter().filter(|p| blocks(p)).collect();
     paths.sort();
@@ -959,13 +1094,17 @@ fn lost_imports(
         let Some(language) = Language::from_path(Path::new(path)) else {
             continue;
         };
-        let refs: Vec<(usize, String)> = unbound
-            .query_map(params![path], |row| {
-                Ok((row.get::<_, i64>(0)? as usize, row.get::<_, String>(1)?))
+        let refs: Vec<(usize, String, bool)> = unbound
+            .query_map(params![path, report.is_some()], |row| {
+                Ok((
+                    row.get::<_, i64>(0)? as usize,
+                    row.get::<_, String>(1)?,
+                    row.get(2)?,
+                ))
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?
             .into_iter()
-            .filter(|(_, name)| !known_global(language, name))
+            .filter(|(_, name, _)| !known_global(language, name))
             .collect();
         if !refs.is_empty() {
             candidates.push((path.clone(), language, refs));
@@ -981,21 +1120,38 @@ fn lost_imports(
     )?;
     for (path, language, refs) in candidates {
         let Some(old) = before.get(&path) else {
+            if let Some(report) = report.as_deref_mut() {
+                report.incomplete("V3", &path, "historical source unavailable");
+            }
             continue;
         };
         let Ok(parsed) = parse_file(language, old) else {
+            if let Some(report) = report.as_deref_mut() {
+                report.incomplete("V3", &path, "historical source could not be parsed");
+            }
             continue;
         };
+        if parsed.has_errors {
+            if let Some(report) = report.as_deref_mut() {
+                report.incomplete("V3", &path, "historical source has parse errors");
+            }
+        }
         let imported: HashMap<String, String> = parsed
             .bindings
             .into_iter()
             .map(|b| (b.local, b.source))
             .collect();
-        for (line, name) in refs {
+        for (line, name, unbound) in refs {
             let Some(source) = imported.get(&name) else {
                 continue;
             };
             if !source.starts_with('.') && !in_repo.query_row(params![source], |row| row.get(0))? {
+                continue;
+            }
+            if let Some(report) = report.as_deref_mut() {
+                report.checked("V3", &path);
+            }
+            if !unbound {
                 continue;
             }
             problems.push(Problem {
@@ -1022,6 +1178,7 @@ struct ArityRow {
     min: Option<i64>,
     max: Option<i64>,
     target_path: String,
+    mismatch: bool,
 }
 
 impl ArityRow {
@@ -1036,15 +1193,20 @@ impl ArityRow {
     }
 }
 
-fn arity_rows(conn: &Connection) -> Result<Vec<ArityRow>> {
+fn arity_rows(conn: &Connection, completed: bool) -> Result<Vec<ArityRow>> {
     let mut stmt = conn.prepare(
-        "SELECT f.path, r.line, r.arg_count, ts.qualified_name, ts.arity_min, ts.arity_max, tf.path
+        "SELECT f.path, r.line, r.arg_count, ts.qualified_name, ts.arity_min, ts.arity_max, tf.path, e.arity_mismatch
          FROM edges e JOIN refs r ON r.id = e.ref_id JOIN files f ON f.id = r.file_id
          JOIN symbols ts ON ts.id = e.to_symbol_id JOIN files tf ON tf.id = ts.file_id
-         WHERE e.arity_mismatch = 1 AND e.confidence = 'high'",
+         WHERE e.confidence = 'high' AND (e.arity_mismatch = 1
+             OR (?1 AND r.arg_count IS NOT NULL AND ts.arity_min IS NOT NULL
+                 AND tf.language IN ('typescript', 'tsx', 'java')
+                 AND NOT EXISTS (SELECT 1 FROM edges other JOIN symbols candidate
+                     ON candidate.id = other.to_symbol_id
+                     WHERE other.ref_id = r.id AND candidate.arity_min IS NULL)))",
     )?;
     let rows = stmt
-        .query_map([], |row| {
+        .query_map([completed], |row| {
             Ok(ArityRow {
                 path: row.get(0)?,
                 line: row.get::<_, i64>(1)? as usize,
@@ -1053,6 +1215,7 @@ fn arity_rows(conn: &Connection) -> Result<Vec<ArityRow>> {
                 min: row.get(4)?,
                 max: row.get(5)?,
                 target_path: row.get(6)?,
+                mismatch: row.get(7)?,
             })
         })?
         .collect::<rusqlite::Result<_>>()?;
@@ -1065,9 +1228,16 @@ fn arity_mismatches(
     conn: &Connection,
     changed: &HashSet<String>,
     problems: &mut Vec<Problem>,
+    mut report: Option<&mut ExecutionReport>,
 ) -> Result<()> {
-    for row in arity_rows(conn)? {
+    for row in arity_rows(conn, report.is_some())? {
         if !changed.contains(&row.path) && !changed.contains(&row.target_path) {
+            continue;
+        }
+        if let Some(report) = report.as_deref_mut() {
+            report.checked_using("V2", &row.path, Some(&row.target_path));
+        }
+        if !row.mismatch {
             continue;
         }
         let key = row.key();
@@ -1115,14 +1285,16 @@ impl BindingRow {
     }
 }
 
-fn binding_rows(conn: &Connection) -> Result<Vec<BindingRow>> {
+fn binding_rows(conn: &Connection, completed: bool) -> Result<Vec<BindingRow>> {
     let mut stmt = conn.prepare(
         "SELECT f.path, b.line, b.local, b.imported, b.source, b.status, b.target_path, b.kind
          FROM import_bindings b JOIN files f ON f.id = b.file_id
-         WHERE b.status != 'ok'",
+         WHERE b.status != 'ok' OR (?1 AND b.target_path IS NOT NULL
+             AND b.kind IN ('named', 'default', 'require_member', 'require', 'namespace',
+                            're_export', 're_export_all', 'java_single') AND b.source != '.')",
     )?;
     let rows = stmt
-        .query_map([], |row| {
+        .query_map([completed], |row| {
             Ok(BindingRow {
                 path: row.get(0)?,
                 line: row.get::<_, i64>(1)? as usize,
@@ -1145,9 +1317,10 @@ fn broken_imports(
     changed: &HashSet<String>,
     barrels: &HashSet<String>,
     problems: &mut Vec<Problem>,
+    mut report: Option<&mut ExecutionReport>,
 ) -> Result<()> {
     let changed_stems: HashSet<String> = changed.iter().map(|p| strip_extension(p)).collect();
-    for row in binding_rows(conn)? {
+    for row in binding_rows(conn, report.is_some())? {
         let points_at_change = row
             .target
             .as_ref()
@@ -1157,6 +1330,12 @@ fn broken_imports(
                     || changed_stems.contains(&format!("{candidate}/index"))
             });
         if !changed.contains(&row.path) && !points_at_change {
+            continue;
+        }
+        if let Some(report) = report.as_deref_mut() {
+            report.checked_using("V4", &row.path, row.target.as_deref());
+        }
+        if row.status == "ok" {
             continue;
         }
         let key = row.key();

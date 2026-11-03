@@ -185,6 +185,11 @@ impl Index {
         query::verify(&self.conn, &self.root, args)
     }
 
+    /// Verify a change once and return its result with a JUnit execution report.
+    pub fn verify_junit(&self, args: &VerifyArgs) -> Result<(VerifyResult, String)> {
+        query::verify_junit(&self.conn, &self.root, args)
+    }
+
     /// Records today's blocking findings as the baseline (`prune`: keep only
     /// those that still fire).
     pub fn baseline(&self, prune: bool) -> Result<query::waivers::BaselineReport> {
