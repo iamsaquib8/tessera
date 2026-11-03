@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 
 use super::common::{is_test_path, limit_or_default, TYPE_KINDS};
 use super::find::page_footer;
-use super::{graph, legacy};
+use super::legacy;
 use crate::db;
 use crate::output::{paginate, AgentText, Page};
 use crate::types::{SearchHit, SearchOptions};
@@ -99,49 +99,91 @@ const TYPE_REFERENCE_LANGUAGES: &[&str] = &["typescript", "javascript", "java"];
 
 /// Symbols nothing resolves to and no unresolved reference names.
 fn unused(conn: &Connection, args: &SearchArgs) -> Result<Vec<SearchHit>> {
-    let mut stmt = conn.prepare(
+    let mut sql = String::from(
         "SELECT s.id, s.name, s.qualified_name, s.kind, s.file_id, f.path, f.language,
                 s.start_line, s.end_line, s.signature, s.exported, p.kind
          FROM symbols s JOIN files f ON f.id = s.file_id
          LEFT JOIN symbols p ON p.file_id = s.file_id AND p.qualified_name = s.container
-         ORDER BY s.qualified_name, s.id",
-    )?;
-    let rows = stmt.query_map([], |row| {
+         WHERE NOT EXISTS (SELECT 1 FROM edges e WHERE e.to_symbol_id = s.id)
+           AND NOT EXISTS (
+               SELECT 1 FROM refs r
+               WHERE r.symbol_name = s.name
+                 AND EXISTS (SELECT 1 FROM edges e WHERE e.ref_id = r.id AND e.to_symbol_id IS NULL AND e.resolver IS NULL)
+           )",
+    );
+
+    let mut params_vec: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
+
+    if let Some(exported) = args.exported {
+        sql.push_str(" AND s.exported = ?");
+        params_vec.push(Box::new(exported as i32));
+    }
+    if let Some(path) = &args.path {
+        sql.push_str(" AND instr(f.path, ?) = 1");
+        params_vec.push(Box::new(path.clone()));
+    }
+    let pattern = args.pattern.trim_matches('*');
+    if !pattern.is_empty() {
+        sql.push_str(" AND instr(s.name, ?) > 0");
+        params_vec.push(Box::new(pattern.to_string()));
+    }
+    if !args.languages.is_empty() {
+        let placeholders = std::iter::repeat_n("?", args.languages.len())
+            .collect::<Vec<_>>()
+            .join(",");
+        sql.push_str(&format!(" AND f.language IN ({placeholders})"));
+        for lang in &args.languages {
+            params_vec.push(Box::new(lang.clone()));
+        }
+    }
+    if !args.kinds.is_empty() {
+        let placeholders = std::iter::repeat_n("?", args.kinds.len())
+            .collect::<Vec<_>>()
+            .join(",");
+        sql.push_str(&format!(" AND s.kind IN ({placeholders})"));
+        for kind in &args.kinds {
+            params_vec.push(Box::new(kind.clone()));
+        }
+    } else {
+        let type_placeholders = std::iter::repeat_n("?", TYPE_KINDS.len())
+            .collect::<Vec<_>>()
+            .join(",");
+        let lang_placeholders = std::iter::repeat_n("?", TYPE_REFERENCE_LANGUAGES.len())
+            .collect::<Vec<_>>()
+            .join(",");
+        sql.push_str(&format!(
+            " AND (
+                s.kind IN ('function', 'method')
+                OR (s.kind IN ({type_placeholders}) AND f.language IN ({lang_placeholders}))
+            )"
+        ));
+        for kind in TYPE_KINDS {
+            params_vec.push(Box::new(kind.to_string()));
+        }
+        for lang in TYPE_REFERENCE_LANGUAGES {
+            params_vec.push(Box::new(lang.to_string()));
+        }
+    }
+
+    sql.push_str(" ORDER BY s.qualified_name, s.id");
+
+    let params_refs: Vec<&dyn rusqlite::ToSql> = params_vec.iter().map(|b| b.as_ref()).collect();
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map(params_refs.as_slice(), |row| {
         Ok((db::map_symbol(row)?, row.get::<_, Option<String>>(11)?))
     })?;
-    let pattern = args.pattern.trim_matches('*');
+
     let mut hits = Vec::new();
     for row in rows {
         let (symbol, owner_kind) = row?;
-        let is_type = TYPE_KINDS.contains(&symbol.kind.as_str());
-        let kind_wanted = if args.kinds.is_empty() {
-            matches!(symbol.kind.as_str(), "function" | "method")
-                || (is_type && TYPE_REFERENCE_LANGUAGES.contains(&symbol.language.as_str()))
-        } else {
-            args.kinds.contains(&symbol.kind)
-        };
         let abstract_member = owner_kind.as_deref() == Some("interface")
             || symbol.signature.trim_start().starts_with("abstract ");
-        if !kind_wanted
-            || abstract_member
-            || is_test_path(&symbol.path)
-            || (!pattern.is_empty() && !symbol.name.contains(pattern))
-            || (!args.languages.is_empty() && !args.languages.contains(&symbol.language))
-            || args
-                .exported
-                .is_some_and(|exported| symbol.exported != exported)
-            || args
-                .path
-                .as_deref()
-                .is_some_and(|prefix| !symbol.path.starts_with(prefix))
-        {
+        if abstract_member || is_test_path(&symbol.path) {
             continue;
         }
-        if !graph::is_referenced(conn, &symbol)? {
-            hits.push(SearchHit { symbol, score: 0.0 });
-            if hits.len() >= UNUSED_SCAN_LIMIT {
-                break;
-            }
+        hits.push(SearchHit { symbol, score: 0.0 });
+        if hits.len() >= UNUSED_SCAN_LIMIT {
+            break;
         }
     }
     Ok(hits)

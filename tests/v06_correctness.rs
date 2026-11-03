@@ -1308,3 +1308,234 @@ enum LogLevel {
         "UserId"
     );
 }
+
+#[test]
+fn unused_query_resolves_via_single_sql_query_with_filters() {
+    let temp = TempDir::new().unwrap();
+    let src = temp.path().join("src");
+    fs::create_dir_all(&src).unwrap();
+
+    fs::write(
+        src.join("main.ts"),
+        r#"
+import { helper1 } from "./helper";
+
+export function liveFn() {
+    return helper1();
+}
+
+function deadFn() {
+    return 100;
+}
+
+export function exportedDeadFn() {
+    return 200;
+}
+"#,
+    )
+    .unwrap();
+
+    fs::write(
+        src.join("helper.ts"),
+        r#"
+export function helper1() {
+    return 1;
+}
+
+export function unusedHelper() {
+    return 2;
+}
+"#,
+    )
+    .unwrap();
+
+    fs::write(
+        src.join("api.py"),
+        r#"
+def used_python():
+    return 1
+
+def unused_python():
+    return 2
+"#,
+    )
+    .unwrap();
+
+    fs::write(
+        src.join("run.py"),
+        r#"
+from api import used_python
+
+def runner():
+    return used_python()
+"#,
+    )
+    .unwrap();
+
+    let db = temp.path().join(".tessera/tessera.db");
+    Command::cargo_bin("tessera")
+        .unwrap()
+        .args([
+            "index",
+            temp.path().to_str().unwrap(),
+            "--db",
+            db.to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+
+    // 1. All unused symbols
+    let output_all = Command::cargo_bin("tessera")
+        .unwrap()
+        .current_dir(temp.path())
+        .args([
+            "--root",
+            temp.path().to_str().unwrap(),
+            "search",
+            "*",
+            "--unused",
+            "--json",
+        ])
+        .output()
+        .unwrap();
+    assert!(output_all.status.success());
+    let parsed_all: serde_json::Value = serde_json::from_slice(&output_all.stdout).unwrap();
+    let all_names: Vec<&str> = parsed_all["hits"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|h| h["symbol"]["name"].as_str().unwrap())
+        .collect();
+
+    assert!(
+        all_names.contains(&"deadFn"),
+        "expected deadFn in {all_names:?}"
+    );
+    assert!(
+        all_names.contains(&"exportedDeadFn"),
+        "expected exportedDeadFn in {all_names:?}"
+    );
+    assert!(
+        all_names.contains(&"unusedHelper"),
+        "expected unusedHelper in {all_names:?}"
+    );
+    assert!(
+        all_names.contains(&"unused_python"),
+        "expected unused_python in {all_names:?}"
+    );
+    assert!(
+        !all_names.contains(&"helper1"),
+        "helper1 is used: {all_names:?}"
+    );
+    assert!(
+        !all_names.contains(&"used_python"),
+        "used_python is used: {all_names:?}"
+    );
+
+    // 2. Filter by --exported
+    let output_exp = Command::cargo_bin("tessera")
+        .unwrap()
+        .current_dir(temp.path())
+        .args([
+            "--root",
+            temp.path().to_str().unwrap(),
+            "search",
+            "*",
+            "--unused",
+            "--exported",
+            "--json",
+        ])
+        .output()
+        .unwrap();
+    assert!(output_exp.status.success());
+    let parsed_exp: serde_json::Value = serde_json::from_slice(&output_exp.stdout).unwrap();
+    let exp_names: Vec<&str> = parsed_exp["hits"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|h| h["symbol"]["name"].as_str().unwrap())
+        .collect();
+    assert!(exp_names.contains(&"exportedDeadFn"));
+    assert!(exp_names.contains(&"unusedHelper"));
+    assert!(!exp_names.contains(&"deadFn"));
+
+    // 3. Filter by --lang python
+    let output_py = Command::cargo_bin("tessera")
+        .unwrap()
+        .current_dir(temp.path())
+        .args([
+            "--root",
+            temp.path().to_str().unwrap(),
+            "search",
+            "*",
+            "--unused",
+            "--language",
+            "python",
+            "--json",
+        ])
+        .output()
+        .unwrap();
+    assert!(output_py.status.success());
+    let parsed_py: serde_json::Value = serde_json::from_slice(&output_py.stdout).unwrap();
+    let py_names: Vec<&str> = parsed_py["hits"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|h| h["symbol"]["name"].as_str().unwrap())
+        .collect();
+    assert!(py_names.contains(&"unused_python"));
+    assert!(py_names.contains(&"runner"));
+    assert!(!py_names.contains(&"used_python"));
+
+    // 4. Filter by --path src/helper.ts
+    let output_path = Command::cargo_bin("tessera")
+        .unwrap()
+        .current_dir(temp.path())
+        .args([
+            "--root",
+            temp.path().to_str().unwrap(),
+            "search",
+            "*",
+            "--unused",
+            "--path",
+            "src/helper.ts",
+            "--json",
+        ])
+        .output()
+        .unwrap();
+    assert!(output_path.status.success());
+    let parsed_path: serde_json::Value = serde_json::from_slice(&output_path.stdout).unwrap();
+    let path_names: Vec<&str> = parsed_path["hits"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|h| h["symbol"]["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(path_names, vec!["unusedHelper"]);
+
+    // 5. Filter by pattern *Fn*
+    let output_pat = Command::cargo_bin("tessera")
+        .unwrap()
+        .current_dir(temp.path())
+        .args([
+            "--root",
+            temp.path().to_str().unwrap(),
+            "search",
+            "*Fn*",
+            "--unused",
+            "--json",
+        ])
+        .output()
+        .unwrap();
+    assert!(output_pat.status.success());
+    let parsed_pat: serde_json::Value = serde_json::from_slice(&output_pat.stdout).unwrap();
+    let pat_names: Vec<&str> = parsed_pat["hits"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|h| h["symbol"]["name"].as_str().unwrap())
+        .collect();
+    assert!(pat_names.contains(&"deadFn"));
+    assert!(pat_names.contains(&"exportedDeadFn"));
+    assert!(!pat_names.contains(&"unusedHelper"));
+}
