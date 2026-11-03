@@ -14,8 +14,8 @@ what other tools do, and what this roadmap takes from them, is in
 | Version | Focus | What you get | Status |
 | --- | --- | --- | --- |
 | v1.0 | Visible and stable | Change-impact UI, pull-request comment, 1.x contracts frozen | released (1.0.1) |
-| v1.1 | Contract map, completed | Express mounts, GraphQL, config keys, `path` across repositories, Go/Python/Ruby frameworks | merged, release pending |
-| v1.2 | Team and CI | Explainable test selection, a shared index cache, findings in code review tools, a merge gate | next |
+| v1.1 | Contract map, completed | Express mounts, GraphQL, config keys, `path` across repositories, Go/Python/Ruby frameworks | released in 1.2.0 |
+| v1.2 | Team and CI | Explainable test selection, a shared index cache, findings in code review tools, a merge gate | released (1.2.0) |
 | v1.3 | Contracts that know their fields | Field-level breaking changes joined to the consumers they break, spec drift, payload compatibility | planned |
 | v1.4 | Inside the agent loop | Graph context in the agent's own tools, an LSP server, edit plans, the refactor eval published | planned |
 | v1.5 | Deep tier for Python and Go, precise mode | Import- and type-aware Python and Go, SCIP import and export | planned |

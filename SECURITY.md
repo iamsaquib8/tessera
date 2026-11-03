@@ -2,8 +2,17 @@
 
 ## Supported versions
 
-Security fixes go into the latest release. Before 1.0, only the newest minor
-version is supported.
+Security fixes go into the latest 1.x release; upgrade within 1.x to get
+them (the [stability contract](docs/stability.md) keeps 1.x upgrades
+compatible).
+
+| Version | Supported |
+| --- | --- |
+| 1.2.x | yes |
+| earlier | no |
+
+Release archives carry GitHub build provenance; check one with
+`gh attestation verify <archive> --repo iamsaquib8/tessera`.
 
 ## Reporting a vulnerability
 

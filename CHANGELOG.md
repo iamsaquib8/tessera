@@ -2,11 +2,13 @@
 
 All notable changes to Tessera are documented here.
 
-## 1.2.0 - 2026-10-26
+## 1.2.0 - 2026-11-03
 
 Team and CI: run only the tests a change reaches, share the index between
 CI runs, report in every review tool's format, and adopt Tessera on a
-codebase with known problems without turning the merge gate off.
+codebase with known problems without turning the merge gate off. This is
+also the first release of everything under 1.1.0 below, which was not
+released on its own.
 
 ### Added
 
@@ -57,13 +59,47 @@ codebase with known problems without turning the merge gate off.
   change reaches. `fail-on: new` is accepted (the same as `blocking`), and
   an unknown `fail-on` value stops the job instead of never failing it.
 
+- **`tessera cycles`** and the MCP tool `import_cycles`: circular
+  imports between modules, with each cycle's chain (#53).
+- **Framework packs**: actix-web routes in Rust (#24) and Sinatra routes
+  in Ruby (#26).
+- **TypeScript interfaces, type aliases and enums** are indexed and can be
+  queried (#45).
+- **`[index]` in `.tessera/config.toml`**, and arrays that span several
+  lines.
+
 ### Changed
 
 - `.tessera/.gitignore` now lets `config.toml`, `baseline.json` and
   `accepted.toml` be committed; an older Tessera-written `.gitignore` is
   upgraded in place.
+- `tessera affected` walks 12 steps by default.
 
-## 1.1.0 - 2026-10-25
+### Fixed
+
+- Rust trait methods and Go interface methods are indexed (#48).
+- C and C++ function declarations in headers and class method
+  declarations are indexed (#46).
+- `blast --diff` keeps folder names in paths, handles deleted files and
+  counts removed lines (#38).
+- `search` and `export` apply their filters before the result limit, so a
+  filter no longer returns an empty page (#36).
+- Reading a symbol's body works when the repository moved or the index is
+  shared (#37).
+- Test files in a top-level `test/` or `tests/` folder, and Windows paths,
+  count as tests (#35).
+- Signatures are cut on a character boundary, so a long multi-byte
+  signature no longer stops indexing (#30).
+- `verify` sees a file renamed with `git mv` as deleted at its old path,
+  so its importers are flagged (#183).
+
+### Performance
+
+- `search --unused` runs one query instead of one per symbol (#34).
+
+## 1.1.0 - not released on its own
+
+These changes first ship in 1.2.0.
 
 The contract map, completed: more frameworks, two new contract kinds, and
 paths that cross repositories.

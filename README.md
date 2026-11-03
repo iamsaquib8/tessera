@@ -306,8 +306,8 @@ pins them ([docs/stability.md](docs/stability.md)).
 | Version | Focus |
 | --- | --- |
 | v1.0 | Change-impact UI, GitHub Action, stable contracts (released) |
-| v1.1 | Contract map completed: mounted routers, GraphQL, config keys, `path` across repositories, Go/Python/Ruby frameworks |
-| v1.2 | Team and CI: explainable test selection, a shared index cache, code scanning and other review formats, a baseline, a merge gate |
+| v1.1 | Contract map completed: mounted routers, GraphQL, config keys, `path` across repositories, Go/Python/Ruby frameworks (released in 1.2.0) |
+| v1.2 | Team and CI: explainable test selection, a shared index cache, code scanning and other review formats, a baseline, a merge gate (released) |
 | v1.3 | Field-level contract breaks joined to the consumers they break, spec drift, payload compatibility |
 | v1.4 | Inside the agent loop: graph context in the agent's own tools, `tessera lsp`, `tessera plan`, the refactor eval published |
 | v1.5 | Deep tier for Python and Go; precise mode with SCIP import and export |
