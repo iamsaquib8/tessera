@@ -845,3 +845,87 @@ fn a_shallow_clone_says_it_cannot_read_every_trailer() {
     let value = affected_json(temp.path(), &["HEAD~1"]);
     assert!(!value["notes"].to_string().contains("shallow"), "{value:#}");
 }
+
+/// One change to `helper`, reached only from inside the symbol a test uses:
+/// a callback in a function, a constructor, a component's `render`, and a
+/// method the test calls by a bracket expression.
+#[test]
+fn code_inside_a_function_or_class_reaches_the_tests_of_its_container() {
+    let temp = temp();
+    let root = temp.path();
+    write(
+        root,
+        "src/util.ts",
+        "export function helper(s: string): string {\n  return s.trim();\n}\n",
+    );
+    write(root, "src/factory.ts", "import { helper } from \"./util\";\n\nexport function build(paths: string[]): string[] {\n  return paths.map((p) => helper(p));\n}\n");
+    write(root, "src/ctor.ts", "import { helper } from \"./util\";\n\nexport class Greeter {\n  readonly name: string;\n  constructor(name: string) {\n    this.name = helper(name);\n  }\n}\n");
+    write(root, "src/App.tsx", "import React from \"react\";\nimport { helper } from \"./util\";\n\nexport class App extends React.Component {\n  render() {\n    return <div>{helper(\" a \")}</div>;\n  }\n}\n");
+    write(root, "src/socket.ts", "import { helper } from \"./util\";\n\nexport class Socket {\n  private handleData(d: string): string {\n    return helper(d);\n  }\n}\n");
+    write(root, "test/callback.spec.ts", "import { build } from \"../src/factory\";\n\nit(\"trims each path\", () => {\n  expect(build([\" a \"])).toEqual([\"a\"]);\n});\n");
+    write(root, "test/ctor.spec.ts", "import { Greeter } from \"../src/ctor\";\n\nit(\"trims the name\", () => {\n  expect(new Greeter(\" a \").name).toBe(\"a\");\n});\n");
+    write(root, "test/app.test.tsx", "import React from \"react\";\nimport { render } from \"@testing-library/react\";\nimport { App } from \"../src/App\";\n\nit(\"renders trimmed\", () => {\n  expect(render(<App />).container.textContent).toBe(\"a\");\n});\n");
+    write(root, "test/socket.spec.ts", "import { Socket } from \"../src/socket\";\n\nit(\"handles data\", () => {\n  expect(new Socket()[\"handleData\"](\" a \")).toBe(\"a\");\n});\n");
+    git(root, &["init", "-q"]);
+    git(root, &["add", "."]);
+    git(root, &["commit", "-q", "-m", "base"]);
+    edit(root, "src/util.ts", "s.trim()", "s.trimStart()");
+    let value = affected_json(root, &[]);
+    assert_eq!(
+        selected(&value),
+        vec![
+            "test/app.test.tsx reached",
+            "test/callback.spec.ts reached",
+            "test/ctor.spec.ts reached",
+            "test/socket.spec.ts reached",
+        ],
+        "{value:#}"
+    );
+    let explained = affected_json(root, &["--explain", "test/app.test.tsx"]);
+    let line = explained["explain"].to_string();
+    assert!(
+        line.contains("App.render") && line.contains("helper"),
+        "{line}"
+    );
+}
+
+/// Go calls with more same-named definitions than the resolver links stay
+/// unresolved; they still reach the code they may call.
+#[test]
+fn unresolved_go_calls_reach_same_package_functions_and_every_implementation() {
+    let temp = temp();
+    let root = temp.path();
+    write(root, "go.mod", "module example.com/r\n\ngo 1.22\n");
+    for pkg in ["a", "b", "c", "d", "e", "f"] {
+        write(
+            root,
+            &format!("{pkg}/{pkg}.go"),
+            &format!("package {pkg}\n\nfunc Convert(s string) string {{\n\treturn s + \"{pkg}\"\n}}\n\ntype Sampler{pkg} struct{{}}\n\nfunc (Sampler{pkg}) ShouldSample(n int) bool {{\n\treturn n > 0\n}}\n"),
+        );
+    }
+    write(root, "a/a_test.go", "package a\n\nimport \"testing\"\n\nfunc TestConvert(t *testing.T) {\n\tif Convert(\"x\") != \"xa\" {\n\t\tt.Fatal()\n\t}\n}\n");
+    write(root, "sampler/sampler.go", "package sampler\n\ntype Sampler interface {\n\tShouldSample(n int) bool\n}\n\nfunc Run(s Sampler) bool {\n\treturn s.ShouldSample(1)\n}\n");
+    write(root, "sampler/sampler_test.go", "package sampler\n\nimport (\n\t\"testing\"\n\n\t\"example.com/r/c\"\n)\n\nfunc TestRun(t *testing.T) {\n\tif !Run(c.Samplerc{}) {\n\t\tt.Fatal()\n\t}\n}\n");
+    git(root, &["init", "-q"]);
+    git(root, &["add", "."]);
+    git(root, &["commit", "-q", "-m", "base"]);
+
+    edit(root, "a/a.go", "return s + \"a\"", "return s + \"aa\"");
+    let value = affected_json(root, &[]);
+    assert!(
+        selected(&value).contains(&"a/a_test.go reached".to_string()),
+        "a same-package call among six Converts: {value:#}"
+    );
+    assert!(
+        !selected(&value).iter().any(|t| t.starts_with("sampler/")),
+        "a bare call in another package is not one of them: {value:#}"
+    );
+
+    git(root, &["checkout", "-q", "--", "."]);
+    edit(root, "c/c.go", "return n > 0", "return n > 1");
+    let value = affected_json(root, &[]);
+    assert!(
+        selected(&value).contains(&"sampler/sampler_test.go reached".to_string()),
+        "an interface call reaches every implementation: {value:#}"
+    );
+}

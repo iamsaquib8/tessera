@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use anyhow::Result;
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 
 use super::common::is_test_path;
@@ -107,6 +107,9 @@ pub enum Link {
     /// This contract, declared in a changed definition file, is the one the
     /// previous step serves or calls.
     Definition,
+    /// The previous step is defined inside this one: a callback in its
+    /// function, a method in its class. Whoever uses this one runs it.
+    Inside,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -473,7 +476,7 @@ fn render(chain: &[Step]) -> String {
             .unwrap_or_default();
         let text = match step.link {
             _ if i == 0 => step.symbol.clone(),
-            Link::Test | Link::Calls => format!(" → {}", step.symbol),
+            Link::Test | Link::Calls | Link::Inside => format!(" → {}", step.symbol),
             Link::Contract => format!(" → {}{via}", step.symbol),
             Link::Client => format!(" ← {}{via}", step.symbol),
             Link::Removed => format!(" → {} (removed from {})", step.symbol, step.path),
@@ -1120,6 +1123,9 @@ fn definitions(
     Ok(())
 }
 
+/// A reference to a reached symbol: who makes it, in which file, at which line.
+type Row = (Option<i64>, Option<String>, Option<i64>);
+
 /// Where a test file reaches the change: one of its symbols, or code outside
 /// any symbol that uses `below`.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1147,6 +1153,20 @@ struct Walk<'a> {
     conftests: Vec<i64>,
     capped: bool,
 }
+
+/// What the walk needs to know about a reached symbol beyond its name.
+struct Node {
+    name: String,
+    kind: String,
+    path: String,
+    language: String,
+    /// The symbol it is defined inside, if any.
+    container: Option<i64>,
+}
+
+/// Languages whose resolver links calls through imports and declared
+/// types; an unresolved call there is to code outside the index.
+const DEEP_TIER: &[&str] = &["typescript", "javascript", "java"];
 
 impl<'a> Walk<'a> {
     fn new(conn: &'a Connection, root: &Path) -> Result<Self> {
@@ -1212,6 +1232,88 @@ impl<'a> Walk<'a> {
         Ok(())
     }
 
+    fn node(&self, id: i64) -> Result<Option<Node>> {
+        let mut node = self.conn.prepare_cached(
+            "SELECT s.name, s.kind, f.path, f.language, s.file_id, s.container,
+                    s.start_line, s.end_line
+             FROM symbols s JOIN files f ON f.id = s.file_id WHERE s.id = ?1",
+        )?;
+        let found = node
+            .query_row(params![id], |row| {
+                Ok((
+                    Node {
+                        name: row.get(0)?,
+                        kind: row.get(1)?,
+                        path: row.get(2)?,
+                        language: row.get(3)?,
+                        container: None,
+                    },
+                    row.get::<_, i64>(4)?,
+                    row.get::<_, Option<String>>(5)?,
+                    row.get::<_, i64>(6)?,
+                    row.get::<_, i64>(7)?,
+                ))
+            })
+            .optional()?;
+        let Some((mut found, file, container, start, end)) = found else {
+            return Ok(None);
+        };
+        if let Some(container) = container {
+            // The innermost symbol of that name around this one.
+            let mut outer = self.conn.prepare_cached(
+                "SELECT id FROM symbols WHERE file_id = ?1 AND qualified_name = ?2
+                 AND start_line <= ?3 AND end_line >= ?4 AND id != ?5
+                 ORDER BY end_line - start_line, id LIMIT 1",
+            )?;
+            found.container = outer
+                .query_row(params![file, container, start, end, id], |row| row.get(0))
+                .optional()?;
+        }
+        Ok(Some(found))
+    }
+
+    /// Calls the resolver left unresolved because the name has more
+    /// definitions than it links, which may call `node`: bare calls from
+    /// the same directory (a Go package, a Python module's neighbours),
+    /// method calls when `node` is a method, and calls qualified by its
+    /// package's name. Only in languages without a deep-tier resolver.
+    fn unresolved_callers(&self, node: &Node) -> Result<Vec<Row>> {
+        if DEEP_TIER.contains(&node.language.as_str()) {
+            return Ok(Vec::new());
+        }
+        let mut callers = self.conn.prepare_cached(
+            "SELECT e.from_symbol_id, f.path, r.line, r.receiver, r.receiver_name
+             FROM edges e JOIN refs r ON r.id = e.ref_id JOIN files f ON f.id = r.file_id
+             WHERE e.to_symbol_id IS NULL AND e.to_symbol_name = ?1 AND f.language = ?2
+             ORDER BY 1, 2, 3",
+        )?;
+        let dir = parent(&node.path);
+        let package = dir.rsplit('/').next().unwrap_or_default().to_string();
+        let method = node.kind == "method";
+        let rows = callers
+            .query_map(params![node.name, node.language], |row| {
+                Ok((
+                    row.get::<_, Option<i64>>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, i64>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, Option<String>>(4)?,
+                ))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows
+            .into_iter()
+            .filter(|(_, path, _, receiver, receiver_name)| {
+                if receiver == "none" {
+                    parent(path) == dir
+                } else {
+                    method || receiver_name.as_deref() == Some(package.as_str())
+                }
+            })
+            .map(|(from, path, line, _, _)| (from, Some(path), Some(line)))
+            .collect())
+    }
+
     fn run(&mut self, seeds: &[Seed], max_depth: usize) -> Result<()> {
         let conn = self.conn;
         let mut callers = conn.prepare_cached(
@@ -1238,12 +1340,32 @@ impl<'a> Walk<'a> {
             if level >= max_depth {
                 continue;
             }
-            let rows: Vec<(Option<i64>, Option<String>, Option<i64>)> = callers
+            let mut rows: Vec<Row> = callers
                 .query_map(params![node], |row| {
                     Ok((row.get(0)?, row.get(1)?, row.get(2)?))
                 })?
                 .collect::<rusqlite::Result<_>>()?;
+            let facts = self.node(node)?;
+            if let Some(facts) = &facts {
+                rows.extend(self.unresolved_callers(facts)?);
+            }
             let mut next: Vec<(i64, Link, Option<String>)> = Vec::new();
+            // Whoever uses the container runs what is inside it; the step
+            // costs no depth, so deep nesting never hides a test. A test is
+            // already a hit: its class or `describe` adds nothing.
+            let test = self.symbol(node)?.as_ref().is_some_and(is_test_symbol);
+            if let Some(container) = facts.and_then(|f| f.container).filter(|_| !test) {
+                if !self.depth.contains_key(&container) {
+                    if self.depth.len() >= MAX_VISITED {
+                        self.capped = true;
+                        return Ok(());
+                    }
+                    self.depth.insert(container, level);
+                    self.parent.insert(container, (node, Link::Inside, None));
+                    self.visit(container)?;
+                    queue.push_front(container);
+                }
+            }
             for (from, path, line) in rows {
                 match (from, path) {
                     (Some(id), _) => next.push((id, Link::Calls, None)),
