@@ -1375,14 +1375,15 @@ fn glob_score(pattern: &str, name: &str) -> f32 {
 const TEST_DIRS: &[&str] = &["test", "tests", "__tests__", "spec", "specs", "e2e"];
 
 pub fn is_test_path(path: &str) -> bool {
-    let lower = path.to_lowercase();
+    let normalized = path.replace('\\', "/");
+    let lower = normalized.to_lowercase();
     let mut segments: Vec<&str> = lower.split('/').collect();
     let file = segments.pop().unwrap_or_default();
     if segments.iter().any(|segment| TEST_DIRS.contains(segment)) {
         return true;
     }
     let stem = file.split('.').next().unwrap_or_default();
-    let java_stem = path
+    let java_stem = normalized
         .rsplit('/')
         .next()
         .and_then(|name| name.strip_suffix(".java"))
@@ -1430,6 +1431,14 @@ mod tests {
     fn test_path_rules() {
         for path in [
             "tests/a.rs",
+            "tests/e2e.rs",
+            "tests/snapshot.rs",
+            "test/helpers.py",
+            "tests\\e2e.rs",
+            "tests\\snapshot.rs",
+            "test\\helpers.py",
+            "src\\__tests__\\a.ts",
+            "src\\test\\java\\FooTest.java",
             "src/__tests__/a.ts",
             "a.test.ts",
             "a.spec.js",
