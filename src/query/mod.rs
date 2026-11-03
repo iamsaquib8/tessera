@@ -18,8 +18,8 @@ pub use context::{ContextArgs, ContextResult};
 pub use cycles::{CyclesArgs, CyclesResult, ImportCycle, ImportCycleLink};
 pub use find::{FindArgs, FindMatch, FindResult};
 pub use legacy::{
-    container_members, diff_impact_conn, export_conn_with_options, search_conn, signature_conn,
-    ExportGroupBy, ExportOptions,
+    container_members, diff_impact_conn, export_conn_with_options, find_definition_conn,
+    search_conn, signature_conn, validate_conn, ExportGroupBy, ExportOptions,
 };
 pub use map::{MapArgs, MapResult};
 pub use path::PathArgs;
