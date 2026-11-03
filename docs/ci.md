@@ -242,9 +242,20 @@ message and `file:line`; advisory and actively waived findings appear in
 `<system-out>`. An expired waiver blocks again. `failures` counts failed
 cases, not findings. Partial evaluations with parse errors are marked
 `<skipped>` unless a blocking finding already fails the case. Missing or
-unparseable historical source is explained, never assumed to pass. V5
-conservatively marks client evaluations incomplete when the current
-contract index contains parse errors. Exit status remains 1 for blocking
+unparseable historical source is explained, never assumed to pass. For
+partially parsed historical providers, V5 attributes incompleteness to
+clients matching recovered provider facts, including surviving providers.
+Those facts do not create passing cases; a separate, complete evaluation
+of the same client creates a skipped aggregate. Other clients can retain
+their passes. Facts hidden entirely by a partial parse cannot be attributed.
+If no provider facts can be recovered, or existing historical source
+cannot be retrieved or parsed at all, affected clients are unknown: V5
+conservatively marks every otherwise completed client evaluation incomplete.
+A successful Git tree lookup distinguishes genuinely new files, which do
+not impair historical coverage. Failed tree lookups leave existence unknown.
+The current contract index containing parse errors also makes completed
+client evaluations incomplete. None of these gaps creates a testcase on
+its own. Exit status remains 1 for blocking
 findings and 0 otherwise; a skipped check does not change that policy.
 
 Paths, messages and attributes are XML 1.0 safe. Tabs, CR and LF in

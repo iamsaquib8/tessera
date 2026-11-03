@@ -10,6 +10,7 @@ pub(super) struct ExecutionReport {
     incomplete: BTreeMap<(String, String), BTreeSet<String>>,
     notes: BTreeSet<String>,
     parse_errors: BTreeSet<String>,
+    contract_gaps: BTreeSet<String>,
 }
 
 impl ExecutionReport {
@@ -42,12 +43,29 @@ impl ExecutionReport {
 
     pub fn checked_contract(&mut self, path: &str) {
         self.checked("V5", path);
+        for reason in self.contract_gaps.clone() {
+            self.incomplete("V5", path, &reason);
+        }
         if !self.parse_errors.is_empty() {
             self.incomplete(
                 "V5",
                 path,
                 "contract index contains source with parse errors",
             );
+        }
+    }
+
+    pub fn incomplete_contracts(&mut self, reason: &str) {
+        self.contract_gaps.insert(reason.to_string());
+        self.note(reason);
+        let paths: Vec<_> = self
+            .checked
+            .iter()
+            .filter(|(id, _)| id == "V5")
+            .map(|(_, path)| path.clone())
+            .collect();
+        for path in paths {
+            self.incomplete("V5", &path, reason);
         }
     }
 
@@ -297,6 +315,20 @@ mod tests {
         let xml = report.render(&VerifyResult::new(vec![blocking], Vec::new()));
         assert!(xml.contains("failures=\"1\" errors=\"0\" skipped=\"0\""));
         assert!(!xml.contains("<skipped"));
+    }
+
+    #[test]
+    fn unattributed_contract_gaps_are_order_independent_without_creating_cases() {
+        let result = VerifyResult::new(Vec::new(), Vec::new());
+        let mut before = ExecutionReport::default();
+        before.incomplete_contracts("history unavailable");
+        assert!(before.render(&result).contains("tests=\"0\""));
+        before.checked_contract("client.ts");
+        let mut after = ExecutionReport::default();
+        after.checked_contract("client.ts");
+        after.incomplete_contracts("history unavailable");
+        assert_eq!(before.render(&result), after.render(&result));
+        assert!(before.render(&result).contains("skipped=\"1\""));
     }
 
     #[test]

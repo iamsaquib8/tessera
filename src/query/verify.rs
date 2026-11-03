@@ -564,25 +564,48 @@ fn contract_breaks(
         .filter(|path| Language::from_path(Path::new(path.as_str())).is_some())
         .collect();
     let before = files_at(root, rev, &candidates);
+    let historical = if report.is_some() && before.len() < candidates.len() {
+        historical_paths(root, rev, &candidates)
+    } else {
+        None
+    };
     let mut removed: Vec<(crate::facts::IndexedFact, String, bool)> = Vec::new();
     for path in candidates {
         let (Some(language), Some(before)) =
             (Language::from_path(Path::new(path)), before.get(path))
         else {
             if let Some(report) = report.as_deref_mut() {
-                report.incomplete("V5", path, "historical source unavailable");
+                if historical
+                    .as_ref()
+                    .is_some_and(|paths| !paths.contains(path))
+                {
+                    report.note(&format!("V5 {path}: new file has no historical providers"));
+                } else {
+                    report.incomplete("V5", path, "historical source unavailable");
+                    report.incomplete_contracts(&format!(
+                        "historical provider coverage unavailable for {path}; affected clients are unknown"
+                    ));
+                }
             }
             continue;
         };
         let Ok(parsed) = crate::extract::parse_file_at(language, path, before) else {
             if let Some(report) = report.as_deref_mut() {
                 report.incomplete("V5", path, "historical source could not be parsed");
+                report.incomplete_contracts(&format!(
+                    "historical provider coverage unavailable for {path}; affected clients are unknown"
+                ));
             }
             continue;
         };
         if parsed.has_errors {
             if let Some(report) = report.as_deref_mut() {
                 report.incomplete("V5", path, "historical source has parse errors");
+                if !parsed.facts.iter().any(|f| PROVIDERS.contains(&f.kind)) {
+                    report.incomplete_contracts(&format!(
+                        "historical provider coverage unavailable for {path}; affected clients are unknown"
+                    ));
+                }
             }
         }
         for fact in parsed
@@ -591,9 +614,15 @@ fn contract_breaks(
             .filter(|f| PROVIDERS.contains(&f.kind))
         {
             if still_offered(conn, &fact)? {
-                if !parsed.has_errors {
-                    if let Some(report) = report.as_deref_mut() {
-                        for consumer in consumers_of(conn, &fact)? {
+                if let Some(report) = report.as_deref_mut() {
+                    for consumer in consumers_of(conn, &fact)? {
+                        if parsed.has_errors {
+                            report.incomplete(
+                                "V5",
+                                &consumer.path,
+                                "historical provider has parse errors",
+                            );
+                        } else {
                             report.checked_contract(&consumer.path);
                         }
                     }
@@ -806,7 +835,29 @@ fn consumers_of(conn: &Connection, fact: &crate::facts::IndexedFact) -> Result<V
     }
 }
 
-/// `path` as it was at `rev`; `None` when it did not exist.
+/// A successful tree lookup distinguishes new files from failed blob reads.
+fn historical_paths(root: &Path, rev: &str, paths: &[&String]) -> Option<HashSet<String>> {
+    let output = Command::new("git")
+        .arg("--literal-pathspecs")
+        .arg("-C")
+        .arg(root)
+        .args(["ls-tree", "-rz", "--name-only", rev, "--"])
+        .args(paths)
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    Some(
+        std::str::from_utf8(&output.stdout)
+            .ok()?
+            .split('\0')
+            .filter(|path| !path.is_empty())
+            .map(str::to_string)
+            .collect(),
+    )
+}
+
 /// Each path's content at `rev`, read by one `git cat-file --batch`;
 /// paths that did not exist then are left out.
 pub(crate) fn files_at(root: &Path, rev: &str, paths: &[&String]) -> HashMap<String, String> {

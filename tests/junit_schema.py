@@ -4,10 +4,12 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 from lxml import etree
 
@@ -279,7 +281,124 @@ class JunitTests(unittest.TestCase):
         self.write("new-server.ts", "import express from 'express';\nconst app = express();\napp.get('/users', (req, res) => res.json([]));\n")
         _, doc, _ = self.report()
         self.assertFalse(any(k[0] == "V5" for k in self.pairs(doc)))
-        self.assertIn("V5 new-server.ts: historical source unavailable", doc.findtext("system-out"))
+        self.assertIn("V5 new-server.ts: new file has no historical providers", doc.findtext("system-out"))
+
+    def coverage_providers(self, separate=False, blocking=False, advisory=False, incomplete=True):
+        prefix = "import express from 'express';\nconst app = express();\n"
+        a = prefix + "app.get('/a', (req, res) => res.json([]));\n"
+        b = prefix + "app.get('/b', (req, res) => res.json([]));\n"
+        self.write("a.ts", a + ("export function broken( {\n" if incomplete else ""))
+        self.write("b.ts", b)
+        if separate:
+            self.write("client-a.ts", "fetch('/a');\n")
+            self.write("client-b.ts", "fetch('/b');\n")
+        else:
+            self.write("client.ts", "fetch('/a');\nfetch('/b');\n" + ("fetch('/users/me');\n" if advisory else ""))
+        if advisory:
+            self.write("c.ts", prefix + "app.get('/users/:id', (req, res) => res.json([]));\n")
+        self.commit()
+        self.write("a.ts", a if incomplete else a.replace("json([])", "json([2])"))
+        self.write("b.ts", "export const removed = true;\n" if blocking else b.replace("json([])", "json([1])"))
+        if advisory:
+            self.write("c.ts", "export const removed = true;\n")
+
+    def test_v5_mixed_incomplete_provider_skips_shared_consumer(self):
+        self.coverage_providers()
+        proc, doc, _ = self.report()
+        case = self.pairs(doc)["V5", "client.ts"]
+        self.assertEqual(proc.returncode, 0)
+        self.assertIsNotNone(case.find("skipped"))
+        self.assertIn("historical provider has parse errors", case.find("skipped").get("message"))
+
+    def test_v5_unaffected_consumer_keeps_pass(self):
+        self.coverage_providers(separate=True)
+        _, doc, _ = self.report()
+        pairs = self.pairs(doc)
+        self.assertNotIn(("V5", "client-a.ts"), pairs)
+        self.assertIsNone(pairs["V5", "client-b.ts"].find("skipped"))
+        self.assertIsNone(pairs["V5", "client-b.ts"].find("failure"))
+
+    def test_v5_blocking_then_waived_keeps_incomplete_and_advisory(self):
+        self.coverage_providers(blocking=True, advisory=True)
+        proc, doc, result = self.report()
+        case = self.pairs(doc)["V5", "client.ts"]
+        self.assertEqual(proc.returncode, 1)
+        self.assertIsNotNone(case.find("failure"))
+        self.assertIsNone(case.find("skipped"))
+        self.assertIn("/users/{}", case.findtext("system-out"))
+        for finding in result["findings"]:
+            if finding["blocking"]:
+                self.assertEqual(self.call("accept", finding["fingerprint"], "--reason", "reviewed synthetic break").returncode, 0)
+        proc, doc, _ = self.report()
+        case = self.pairs(doc)["V5", "client.ts"]
+        self.assertEqual(proc.returncode, 0)
+        self.assertIsNone(case.find("failure"))
+        self.assertIsNotNone(case.find("skipped"))
+        self.assertIn("/users/{}", case.findtext("system-out"))
+        self.assertIn("accepted: reviewed synthetic break", case.findtext("system-out"))
+
+    def test_v5_new_provider_does_not_impair_existing_consumer(self):
+        self.contracts()
+        server = (self.root / "server.ts").read_text()
+        self.write("server.ts", server.replace("json([])", "json([1])"))
+        self.write("new-server.ts", server.replace("/users", "/new"))
+        _, doc, _ = self.report()
+        case = self.pairs(doc)["V5", "client.ts"]
+        self.assertIsNone(case.find("skipped"))
+        self.assertIsNone(case.find("failure"))
+        self.assertIn("new-server.ts: new file", doc.findtext("system-out"))
+
+    def test_v5_opaque_historical_parse_does_not_hide_behind_clean_provider(self):
+        self.coverage_providers(incomplete=False)
+        self.write("a.ts", "export function broken( {\n")
+        self.commit()
+        self.write("a.ts", "export const fixed = true;\n")
+        b = (self.root / "b.ts").read_text()
+        self.write("b.ts", b.replace("json([1])", "json([3])"))
+        _, doc, _ = self.report()
+        case = self.pairs(doc)["V5", "client.ts"]
+        self.assertIsNotNone(case.find("skipped"))
+        self.assertIn("affected clients are unknown", case.find("skipped").get("message"))
+
+    def unavailable_history(self, tree_failure=False):
+        if os.name == "nt":
+            self.skipTest("synthetic Git executable uses a POSIX shebang")
+        real_git = shutil.which("git")
+        bindir = self.root / ".git" / "test-bin"
+        bindir.mkdir()
+        wrapper = bindir / "git"
+        wrapper.write_text(f"""#!{sys.executable}
+import os, subprocess, sys
+real_git = {real_git!r}
+if 'cat-file' in sys.argv and '--batch' in sys.argv:
+    for request in sys.stdin.buffer:
+        if request.rstrip(b'\\n').endswith(b':a.ts'):
+            sys.stdout.buffer.write(request.rstrip(b'\\n') + b' missing\\n')
+        else:
+            result = subprocess.run([real_git, *sys.argv[1:]], input=request, capture_output=True, check=True)
+            sys.stdout.buffer.write(result.stdout)
+elif {tree_failure!r} and 'ls-tree' in sys.argv:
+    sys.exit(1)
+else:
+    os.execv(real_git, [real_git, *sys.argv[1:]])
+""", encoding="utf-8")
+        wrapper.chmod(0o755)
+        return mock.patch.dict(os.environ, {"PATH": str(bindir) + os.pathsep + os.environ["PATH"]})
+
+    def test_v5_existing_history_retrieval_failure_is_incomplete(self):
+        self.coverage_providers(incomplete=False)
+        with self.unavailable_history():
+            _, doc, _ = self.report()
+        case = self.pairs(doc)["V5", "client.ts"]
+        self.assertIsNotNone(case.find("skipped"))
+        self.assertIn("coverage unavailable for a.ts", case.find("skipped").get("message"))
+        self.assertNotIn("a.ts: new file", doc.findtext("system-out"))
+
+    def test_v5_unknown_history_existence_is_incomplete(self):
+        self.coverage_providers(incomplete=False)
+        with self.unavailable_history(tree_failure=True):
+            _, doc, _ = self.report()
+        self.assertIsNotNone(self.pairs(doc)["V5", "client.ts"].find("skipped"))
 
     def test_historical_parse_errors_are_incomplete(self):
         self.simple()
@@ -403,6 +522,8 @@ class JunitTests(unittest.TestCase):
         self.assertNotIn("\ufffe", proc.stdout.decode())
 
     def test_xml_metacharacters_and_attribute_whitespace(self):
+        if os.name == "nt":
+            self.skipTest("Windows prohibits these characters in filenames")
         self.simple()
         path = 'odd & <>"\' \t\r\n name.ts'
         self.write(path, "import { send } from './api';\nsend('ok');\n")
