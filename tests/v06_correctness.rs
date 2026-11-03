@@ -1045,3 +1045,266 @@ export function serviceHelper() { return 42; }
         "exported_only should not cause empty export due to non-exported edges"
     );
 }
+
+#[test]
+fn typescript_interface_type_alias_and_enum_indexed_and_queried() {
+    let temp = TempDir::new().unwrap();
+    let src = temp.path().join("src");
+    fs::create_dir_all(&src).unwrap();
+    fs::write(
+        src.join("types.ts"),
+        r#"
+export interface User {
+    id: string;
+    name: string;
+    greet(): string;
+}
+
+interface InternalConfig {
+    secret: string;
+}
+
+export type UserId = string;
+
+type InternalId = number;
+
+export enum Status {
+    Active,
+    Inactive = "INACTIVE",
+}
+
+enum LogLevel {
+    Debug,
+    Info,
+}
+"#,
+    )
+    .unwrap();
+
+    let db = temp.path().join(".tessera/tessera.db");
+    Command::cargo_bin("tessera")
+        .unwrap()
+        .args([
+            "index",
+            temp.path().to_str().unwrap(),
+            "--db",
+            db.to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+
+    let conn = Connection::open(&db).unwrap();
+
+    // 1. Verify symbols table in SQLite
+    let symbols: Vec<(String, String, String, Option<String>, bool)> = conn
+        .prepare(
+            "
+            SELECT s.name, s.qualified_name, s.kind, s.container, s.exported != 0
+            FROM symbols s
+            ORDER BY s.qualified_name, s.kind
+            ",
+        )
+        .unwrap()
+        .query_map([], |row| {
+            Ok((
+                row.get(0)?,
+                row.get(1)?,
+                row.get(2)?,
+                row.get(3)?,
+                row.get(4)?,
+            ))
+        })
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap();
+
+    assert_eq!(
+        symbols,
+        vec![
+            (
+                "InternalConfig".to_string(),
+                "InternalConfig".to_string(),
+                "interface".to_string(),
+                None,
+                false,
+            ),
+            (
+                "InternalId".to_string(),
+                "InternalId".to_string(),
+                "type".to_string(),
+                None,
+                false,
+            ),
+            (
+                "LogLevel".to_string(),
+                "LogLevel".to_string(),
+                "enum".to_string(),
+                None,
+                false,
+            ),
+            (
+                "Status".to_string(),
+                "Status".to_string(),
+                "enum".to_string(),
+                None,
+                true,
+            ),
+            (
+                "User".to_string(),
+                "User".to_string(),
+                "interface".to_string(),
+                None,
+                true,
+            ),
+            (
+                "greet".to_string(),
+                "User.greet".to_string(),
+                "method".to_string(),
+                Some("User".to_string()),
+                true,
+            ),
+            (
+                "UserId".to_string(),
+                "UserId".to_string(),
+                "type".to_string(),
+                None,
+                true,
+            ),
+        ]
+    );
+
+    // 2. Verify find_definition_conn
+    let def_user = tessera_codegraph::query::find_definition_conn(&conn, "User").unwrap();
+    assert_eq!(def_user.matches.len(), 1);
+    assert_eq!(def_user.matches[0].kind, "interface");
+
+    let def_userid = tessera_codegraph::query::find_definition_conn(&conn, "UserId").unwrap();
+    assert_eq!(def_userid.matches.len(), 1);
+    assert_eq!(def_userid.matches[0].kind, "type");
+
+    let def_status = tessera_codegraph::query::find_definition_conn(&conn, "Status").unwrap();
+    assert_eq!(def_status.matches.len(), 1);
+    assert_eq!(def_status.matches[0].kind, "enum");
+
+    // 3. Verify validate_conn
+    assert!(
+        tessera_codegraph::query::validate_conn(&conn, "User")
+            .unwrap()
+            .exists
+    );
+    assert!(
+        tessera_codegraph::query::validate_conn(&conn, "UserId")
+            .unwrap()
+            .exists
+    );
+    assert!(
+        tessera_codegraph::query::validate_conn(&conn, "Status")
+            .unwrap()
+            .exists
+    );
+    assert!(
+        !tessera_codegraph::query::validate_conn(&conn, "NonExistent")
+            .unwrap()
+            .exists
+    );
+
+    // 4. Verify CLI find with --body
+    let output_user = Command::cargo_bin("tessera")
+        .unwrap()
+        .current_dir(temp.path())
+        .args([
+            "--root",
+            temp.path().to_str().unwrap(),
+            "find",
+            "User",
+            "--body",
+            "--json",
+        ])
+        .output()
+        .unwrap();
+    assert!(output_user.status.success());
+    let parsed: serde_json::Value = serde_json::from_slice(&output_user.stdout).unwrap();
+    let body = parsed["matches"][0]["body"].as_str().unwrap_or_default();
+    assert!(body.contains("export interface User"));
+
+    // 5. Verify CLI search by kind
+    let output_interfaces = Command::cargo_bin("tessera")
+        .unwrap()
+        .current_dir(temp.path())
+        .args([
+            "--root",
+            temp.path().to_str().unwrap(),
+            "search",
+            "*",
+            "--kind",
+            "interface",
+            "--json",
+        ])
+        .output()
+        .unwrap();
+    assert!(output_interfaces.status.success());
+    let parsed_interfaces: serde_json::Value =
+        serde_json::from_slice(&output_interfaces.stdout).unwrap();
+    assert_eq!(parsed_interfaces["hits"].as_array().unwrap().len(), 2);
+
+    let output_types = Command::cargo_bin("tessera")
+        .unwrap()
+        .current_dir(temp.path())
+        .args([
+            "--root",
+            temp.path().to_str().unwrap(),
+            "search",
+            "*",
+            "--kind",
+            "type",
+            "--json",
+        ])
+        .output()
+        .unwrap();
+    assert!(output_types.status.success());
+    let parsed_types: serde_json::Value = serde_json::from_slice(&output_types.stdout).unwrap();
+    assert_eq!(parsed_types["hits"].as_array().unwrap().len(), 2);
+
+    let output_enums = Command::cargo_bin("tessera")
+        .unwrap()
+        .current_dir(temp.path())
+        .args([
+            "--root",
+            temp.path().to_str().unwrap(),
+            "search",
+            "*",
+            "--kind",
+            "enum",
+            "--json",
+        ])
+        .output()
+        .unwrap();
+    let parsed_enums: serde_json::Value = serde_json::from_slice(&output_enums.stdout).unwrap();
+    assert_eq!(parsed_enums["hits"].as_array().unwrap().len(), 2);
+
+    // 6. Verify CLI search exported only
+    let output_exported_types = Command::cargo_bin("tessera")
+        .unwrap()
+        .current_dir(temp.path())
+        .args([
+            "--root",
+            temp.path().to_str().unwrap(),
+            "search",
+            "*",
+            "--kind",
+            "type",
+            "--exported",
+            "--json",
+        ])
+        .output()
+        .unwrap();
+    let parsed_exp_types: serde_json::Value =
+        serde_json::from_slice(&output_exported_types.stdout).unwrap();
+    assert_eq!(parsed_exp_types["hits"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        parsed_exp_types["hits"][0]["symbol"]["name"]
+            .as_str()
+            .unwrap(),
+        "UserId"
+    );
+}
