@@ -30,7 +30,13 @@ impl Workspace {
     }
 
     pub fn resolve(root: Option<&Path>, db: Option<&Path>, cwd: &Path) -> Workspace {
-        let explicit_db = db.map(|db| cwd.join(db));
+        let explicit_db = db.map(|db| {
+            if db.is_absolute() {
+                db.to_path_buf()
+            } else {
+                cwd.join(db)
+            }
+        });
         let root = match root {
             Some(root) => {
                 let root = cwd.join(root);
@@ -38,7 +44,8 @@ impl Workspace {
             }
             None => {
                 let discovered = discover_root(cwd);
-                if discovered == cwd {
+                let canonical_cwd = cwd.canonicalize().unwrap_or_else(|_| cwd.to_path_buf());
+                if discovered == canonical_cwd {
                     if let Some(db_p) = explicit_db.as_ref() {
                         if db_p.exists() {
                             if let Some(parent) = db_p.parent() {
