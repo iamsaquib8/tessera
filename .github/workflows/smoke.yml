@@ -111,7 +111,7 @@ jobs:
           [ "$out" = "tessera ${V}" ]
       - name: Answers a real query
         working-directory: tests/fixtures/typescript
-        run: $TESSERA --quiet find findById | grep -q "UserRepo.findById"
+        run: $TESSERA --quiet find findById --root . | grep -q "UserRepo.findById"
 
   # The npm package must run on distributions older than the release runners.
   old-glibc:
@@ -129,7 +129,7 @@ jobs:
           [ "$out" = "tessera ${V}" ]
       - name: Answers a real query
         working-directory: tests/fixtures/typescript
-        run: npx --yes "tessera-codegraph@${VERSION#v}" --quiet find findById | grep -q "UserRepo.findById"
+        run: npx --yes "tessera-codegraph@${VERSION#v}" --quiet find findById --root . | grep -q "UserRepo.findById"
 
   docker:
     runs-on: ubuntu-latest
