@@ -817,7 +817,39 @@ fn rails_routes_link_to_ruby_clients() {
             || c.contains("/reviews/new")),
         "{got:#?}"
     );
-    assert_eq!(got.len(), 20, "{got:#?}");
+    let rails: Vec<_> = got
+        .iter()
+        .filter(|c| c.contains("shop/config/routes.rb"))
+        .collect();
+    assert_eq!(rails.len(), 20, "{rails:#?}");
+}
+
+#[test]
+fn sinatra_routes_link_to_ruby_clients() {
+    let temp = fixture("contracts-ruby");
+    let got = summary(&map(temp.path(), &["route"]));
+    let sinatra = "admin/app.rb";
+    let client = "client/lib/shop_client.rb";
+    for expected in [
+        format!("GET /admin/stats: {sinatra} -> {client}"),
+        format!("POST /admin/users: {sinatra} -> "),
+        format!("PUT /admin/users/{{}}: {sinatra} -> "),
+        format!("PATCH /admin/users/{{}}: {sinatra} -> "),
+        format!("DELETE /admin/users/{{}}: {sinatra} -> {client}"),
+        format!("HEAD /admin/health: {sinatra} -> "),
+        format!("OPTIONS /admin/health: {sinatra} -> "),
+        format!("GET /ping: {sinatra} -> {client}"),
+    ] {
+        assert!(got.contains(&expected), "missing {expected:?} in {got:#?}");
+    }
+    // Verify lookalikes:
+    // `cache.get "/admin/stats"` and plain `get "/admin/stats"` without a block
+    // must not produce extra routes.
+    let admin_stats_routes: Vec<_> = got
+        .iter()
+        .filter(|c| c.starts_with("GET /admin/stats:"))
+        .collect();
+    assert_eq!(admin_stats_routes.len(), 1, "{admin_stats_routes:#?}");
 }
 
 #[test]

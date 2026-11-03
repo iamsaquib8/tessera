@@ -152,6 +152,12 @@ pub const PACKS: &[Pack] = &[
         query: include_str!("../../packs/rails.scm"),
     },
     Pack {
+        id: "sinatra",
+        languages: RUBY,
+        gate: r#"(?m)\b(Sinatra|sinatra)\b|^\s*(get|post|put|patch|delete|head|options)\s*(\(|\s)\s*['"/]"#,
+        query: include_str!("../../packs/sinatra.scm"),
+    },
+    Pack {
         id: "ruby-http-clients",
         languages: RUBY,
         gate: r"Net::HTTP|\b(Faraday|HTTParty|RestClient|HTTPX)\.|\b(conn|connection|faraday|http|client|\w+_client|\w+_conn|\w+_connection)\.(get|post|put|patch|delete|head|options)\b",
@@ -936,6 +942,44 @@ fn regular_func() {}
                 ("route", "http GET /health", Some("health")),
                 ("route", "http POST /api/items", Some("create_item")),
                 ("route", "http DELETE /api/items/{}", Some("delete_item")),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_sinatra_facts() {
+        let mut parser = tree_sitter::Parser::new();
+        let lang = support_for(Language::Ruby).grammar();
+        parser.set_language(&lang).unwrap();
+        let src = r#"
+require "sinatra"
+
+class App < Sinatra::Base
+  get '/users/:id' do
+    "user"
+  end
+  post "/orders" do
+    "order"
+  end
+  delete('/users/:id') { "deleted" }
+  other.get '/not_a_route' do "no" end
+  get 123 do end
+  get '/plain_without_block'
+end
+get '/ping' do
+  "pong"
+end
+"#;
+        let tree = parser.parse(src, None).unwrap();
+        let facts = run(Language::Ruby, src, &tree);
+        let keys: Vec<(&str, &str)> = facts.iter().map(|f| (f.kind, f.key.as_str())).collect();
+        assert_eq!(
+            keys,
+            vec![
+                ("route", "http GET /users/{}"),
+                ("route", "http POST /orders"),
+                ("route", "http DELETE /users/{}"),
+                ("route", "http GET /ping"),
             ]
         );
     }

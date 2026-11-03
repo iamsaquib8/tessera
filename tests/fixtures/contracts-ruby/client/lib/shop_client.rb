@@ -29,4 +29,16 @@ class ShopClient
   def lookalike(cache)
     cache.get("/api/status") || ENV.fetch("/orders/new", nil)
   end
+
+  def admin_stats
+    Faraday.get("http://admin:4567/admin/stats")
+  end
+
+  def delete_admin_user(id)
+    Faraday.delete("http://admin:4567/admin/users/#{id}")
+  end
+
+  def ping
+    Net::HTTP.get(URI("http://admin:4567/ping"))
+  end
 end
