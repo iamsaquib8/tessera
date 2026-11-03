@@ -249,8 +249,10 @@ findings and 0 otherwise; a skipped check does not change that policy.
 
 Paths, messages and attributes are XML 1.0 safe. Tabs, CR and LF in
 attributes use character references, preserving whitespace on XML
-parsing; forbidden characters are displayed as `[U+XXXX]`. No output
-progress text is mixed into the XML.
+parsing. Forbidden characters in messages are displayed as `[U+XXXX]`.
+In testcase names they use `\u{XXXX}` and literal backslashes are doubled,
+so a control character cannot alias a filename containing escape text.
+No output progress text is mixed into the XML.
 
 Finding fingerprints are preserved verbatim in **suite-level**
 `<properties>`, which the pinned Jenkins xUnit `junit-10.xsd` accepts:

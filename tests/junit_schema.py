@@ -398,7 +398,7 @@ class JunitTests(unittest.TestCase):
         self.assertEqual(proc.returncode, 0, proc.stderr.decode())
         doc = etree.fromstring(proc.stdout)
         SCHEMA.assertValid(doc)
-        self.assertIn(("V3", "control-[U+0001]-[U+FFFE].ts"), self.pairs(doc))
+        self.assertIn(("V3", r"control-\u{0001}-\u{FFFE}.ts"), self.pairs(doc))
         self.assertNotIn(b"\x01", proc.stdout)
         self.assertNotIn("\ufffe", proc.stdout.decode())
 

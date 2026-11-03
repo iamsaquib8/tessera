@@ -119,7 +119,7 @@ impl ExecutionReport {
                 xml,
                 "  <testcase classname=\"{}\" name=\"{}\">",
                 escape(id, true),
-                escape(path, true)
+                escape(&case_name(path), true)
             )
             .unwrap();
             if !findings.iter().any(|f| f.blocking) {
@@ -182,6 +182,23 @@ impl ExecutionReport {
         xml.push_str("</testsuite>\n");
         xml
     }
+}
+
+fn case_name(path: &str) -> String {
+    let mut name = String::new();
+    for c in path.chars() {
+        match c {
+            '\\' => name.push_str("\\\\"),
+            '\t'
+            | '\r'
+            | '\n'
+            | '\u{20}'..='\u{D7FF}'
+            | '\u{E000}'..='\u{FFFD}'
+            | '\u{10000}'..='\u{10FFFF}' => name.push(c),
+            _ => write!(name, "\\u{{{:04X}}}", c as u32).unwrap(),
+        }
+    }
+    name
 }
 
 fn property_path(path: &str) -> String {
@@ -280,6 +297,14 @@ mod tests {
         let xml = report.render(&VerifyResult::new(vec![blocking], Vec::new()));
         assert!(xml.contains("failures=\"1\" errors=\"0\" skipped=\"0\""));
         assert!(!xml.contains("<skipped"));
+    }
+
+    #[test]
+    fn forbidden_path_characters_cannot_alias_literal_escape_text() {
+        assert_eq!(case_name("a\0.ts"), "a\\u{0000}.ts");
+        assert_eq!(case_name("a\\u{0000}.ts"), "a\\\\u{0000}.ts");
+        assert_ne!(case_name("a\0.ts"), case_name("a\\u{0000}.ts"));
+        assert_eq!(case_name("src/[id] & a.ts"), "src/[id] & a.ts");
     }
 
     #[test]
