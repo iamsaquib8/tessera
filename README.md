@@ -137,7 +137,7 @@ Prebuilt binaries for every platform are also on the
 | `tessera verify --snippet <file> --language <lang>` | Does everything this code calls exist? |
 | `tessera find <symbol>` / `--path <file>` | Where is it defined? What is in this file? |
 | `tessera refs <symbol \| file>` | Who calls it? Who imports this file? |
-| `tessera cycles` / `imports --cycles` | Which modules import each other circularly? |
+| `tessera cycles` | Which modules import each other in a circle? |
 | `tessera search <pattern>` / `--unused` | Which symbols match? Which functions are never called? |
 | `tessera path <from> <to>` | Does A reach B, and how? Follows routes and gRPC calls across services |
 | `tessera map <route\|rpc\|graphql\|topic\|table\|config\|service> [query]` | Which services call this endpoint, method, field, or topic? Who sets the config key this code reads? |
