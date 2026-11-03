@@ -399,6 +399,24 @@ fn usage(message: &str) -> anyhow::Error {
     UsageError(message.to_string()).into()
 }
 
+/// Require `path` to exist and be a directory. Missing or non-directory paths
+/// are usage errors (exit 2) so a mistyped `--root` never creates a tree.
+fn require_existing_directory(path: &Path, flag: &str) -> Result<()> {
+    if !path.exists() {
+        return Err(usage(&format!(
+            "{flag} {}: no such directory",
+            path.display()
+        )));
+    }
+    if !path.is_dir() {
+        return Err(usage(&format!(
+            "{flag} {}: not a directory",
+            path.display()
+        )));
+    }
+    Ok(())
+}
+
 fn main() -> ExitCode {
     // Deeply nested sources need more stack than Windows' 1 MiB main thread.
     let result = std::thread::Builder::new()
@@ -429,6 +447,9 @@ fn run() -> Result<u8> {
         return Ok(run_hook(agent, event, &cli));
     }
     let cwd = std::env::current_dir()?;
+    if let Some(root) = cli.root.as_deref() {
+        require_existing_directory(&cwd.join(root), "--root")?;
+    }
     let ws = Workspace::resolve(cli.root.as_deref(), cli.db.as_deref(), &cwd);
     let needs_root = !matches!(cli.command, Commands::Completions { .. });
     if needs_root && cli.root.is_none() && ws.is_too_broad() {
@@ -697,7 +718,13 @@ fn run() -> Result<u8> {
             exclude,
             reset_excludes,
         } => {
-            let root = path.map(|p| cwd.join(p)).unwrap_or_else(|| ws.root.clone());
+            let root = if let Some(p) = path {
+                let root = cwd.join(p);
+                require_existing_directory(&root, "index path")?;
+                root
+            } else {
+                ws.root.clone()
+            };
             let report = indexer::index_path_with(
                 &root,
                 &ws.db_path,

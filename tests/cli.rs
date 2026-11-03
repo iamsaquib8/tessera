@@ -351,6 +351,44 @@ fn refuses_to_index_the_home_directory() {
     assert!(!home.path().join(".tessera").exists());
 }
 
+#[test]
+fn missing_or_non_directory_root_is_usage_error() {
+    let temp = TempDir::new().unwrap();
+    let missing = temp.path().join("does/not/exist");
+    tessera(temp.path())
+        .args(["--root", missing.to_str().unwrap(), "status"])
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("no such directory"));
+    assert!(!missing.exists(), "missing --root must not create the tree");
+
+    tessera(temp.path())
+        .args(["--root", missing.to_str().unwrap(), "find", "x"])
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("no such directory"));
+    assert!(!missing.exists());
+
+    let file = temp.path().join("some-file.ts");
+    fs::write(&file, "export const x = 1;\n").unwrap();
+    tessera(temp.path())
+        .args(["--root", file.to_str().unwrap(), "find", "x"])
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("not a directory"));
+
+    let index_missing = temp.path().join("typo-dir/proj");
+    tessera(temp.path())
+        .args(["index", index_missing.to_str().unwrap()])
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("no such directory"));
+    assert!(
+        !index_missing.exists(),
+        "index of a missing path must not create the tree"
+    );
+}
+
 fn git_in(dir: &Path, args: &[&str]) {
     let status = StdCommand::new("git")
         .args(args)
