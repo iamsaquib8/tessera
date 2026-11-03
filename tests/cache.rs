@@ -124,10 +124,19 @@ fn export_then_import_on_another_checkout_reindexes_only_what_differs() {
     assert_eq!(leftovers.len(), 1, "temp files left behind: {leftovers:?}");
 
     // Another machine: a fresh clone at another path, one file edited.
+    // Its checkout keeps the origin's line endings, as two CI checkouts
+    // with the same settings do (Windows runners set core.autocrlf).
     let clone = temp.path().join("clone");
     git(
         temp.path(),
-        &["clone", "-q", origin.to_str().unwrap(), "clone"],
+        &[
+            "clone",
+            "-q",
+            "--config",
+            "core.autocrlf=false",
+            origin.to_str().unwrap(),
+            "clone",
+        ],
     );
     let repo_ts = clone.join("src/users/repo.ts");
     let source = fs::read_to_string(&repo_ts).unwrap();
