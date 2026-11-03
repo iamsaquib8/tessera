@@ -1,0 +1,4 @@
+User-agent: *
+Allow: /
+
+Sitemap: https://iamsaquib8.github.io/tessera/sitemap-index.xml

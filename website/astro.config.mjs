@@ -8,6 +8,35 @@ export default defineConfig({
     starlight({
       title: "Tessera",
       description: "Deterministic edit safety for AI coding agents.",
+      head: [
+        {
+          tag: "meta",
+          attrs: {
+            property: "og:image",
+            content: "https://iamsaquib8.github.io/tessera/og-image.png",
+          },
+        },
+        { tag: "meta", attrs: { property: "og:image:width", content: "1280" } },
+        { tag: "meta", attrs: { property: "og:image:height", content: "640" } },
+        {
+          tag: "meta",
+          attrs: {
+            property: "og:image:alt",
+            content: "Tessera — deterministic edit safety for AI coding agents.",
+          },
+        },
+        {
+          tag: "meta",
+          attrs: {
+            name: "twitter:image",
+            content: "https://iamsaquib8.github.io/tessera/og-image.png",
+          },
+        },
+        {
+          tag: "meta",
+          attrs: { name: "twitter:card", content: "summary_large_image" },
+        },
+      ],
       logo: {
         light: "./src/assets/logo-light.svg",
         dark: "./src/assets/logo-dark.svg",
