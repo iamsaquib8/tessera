@@ -802,13 +802,23 @@ fn full_run(
             ));
         }
     }
-    if capped {
+    if capped && !imports_cover(changed) {
         Some(format!(
             "the change reaches more than {MAX_VISITED} symbols, too many to narrow the selection"
         ))
     } else {
         None
     }
+}
+
+/// Whether the Go import closure selects every test a capped walk could
+/// have reached: the change touches code, and all of it is Go.
+fn imports_cover(changed: &HashSet<String>) -> bool {
+    let code: Vec<&String> = changed
+        .iter()
+        .filter(|p| Language::from_path(Path::new(p.as_str())).is_some_and(|l| !l.is_data()))
+        .collect();
+    !code.is_empty() && code.iter().all(|p| p.ends_with(".go"))
 }
 
 /// Changed files above an index root inside a larger repository that still
@@ -1960,6 +1970,23 @@ impl AgentText for AffectedResult {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_capped_walk_runs_everything_unless_go_imports_cover_the_change() {
+        let set = |paths: &[&str]| paths.iter().map(|p| p.to_string()).collect::<HashSet<_>>();
+        assert!(imports_cover(&set(&[
+            "sdk/metric/sum.go",
+            "sdk/metric/sum_test.go"
+        ])));
+        assert!(imports_cover(&set(&[
+            "a/a.go",
+            "README.md",
+            "CHANGELOG.md"
+        ])));
+        assert!(!imports_cover(&set(&["a/a.go", "web/src/app.ts"])));
+        assert!(!imports_cover(&set(&["api/orders.proto"])));
+        assert!(!imports_cover(&set(&["README.md"])));
+    }
 
     #[test]
     fn full_run_triggers() {
