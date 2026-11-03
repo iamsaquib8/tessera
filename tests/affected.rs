@@ -903,7 +903,7 @@ fn unresolved_go_calls_reach_same_package_functions_and_every_implementation() {
             &format!("package {pkg}\n\nfunc Convert(s string) string {{\n\treturn s + \"{pkg}\"\n}}\n\ntype Sampler{pkg} struct{{}}\n\nfunc (Sampler{pkg}) ShouldSample(n int) bool {{\n\treturn n > 0\n}}\n"),
         );
     }
-    write(root, "a/a_test.go", "package a\n\nimport \"testing\"\n\nfunc TestConvert(t *testing.T) {\n\tif Convert(\"x\") != \"xa\" {\n\t\tt.Fatal()\n\t}\n}\n");
+    write(root, "a/a_test.go", "package a\n\nimport \"testing\"\n\nfunc TestConvert(t *testing.T) {\n\tif Convert(\"x\") != \"xa\" {\n\t\tt.Fatal()\n\t}\n}\n\nfunc TestSample(t *testing.T) {\n\tvar s Samplera\n\tif !s.ShouldSample(1) {\n\t\tt.Fatal()\n\t}\n}\n");
     write(root, "sampler/sampler.go", "package sampler\n\ntype Sampler interface {\n\tShouldSample(n int) bool\n}\n\nfunc Run(s Sampler) bool {\n\treturn s.ShouldSample(1)\n}\n");
     write(root, "sampler/sampler_test.go", "package sampler\n\nimport (\n\t\"testing\"\n\n\t\"example.com/r/c\"\n)\n\nfunc TestRun(t *testing.T) {\n\tif !Run(c.Samplerc{}) {\n\t\tt.Fatal()\n\t}\n}\n");
     git(root, &["init", "-q"]);
@@ -927,6 +927,12 @@ fn unresolved_go_calls_reach_same_package_functions_and_every_implementation() {
     assert!(
         selected(&value).contains(&"sampler/sampler_test.go reached".to_string()),
         "an interface call reaches every implementation: {value:#}"
+    );
+    // A same-named method call in a package that does not import `c`
+    // cannot run the changed code.
+    assert!(
+        !selected(&value).iter().any(|t| t.starts_with("a/")),
+        "package a calls only its own ShouldSample: {value:#}"
     );
 }
 

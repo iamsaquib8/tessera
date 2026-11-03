@@ -231,8 +231,23 @@ pub fn run(conn: &Connection, root: &Path, args: &AffectedArgs) -> Result<Affect
     for test in reached_tests(&seeds, &mut walk, &suite)? {
         choose(&mut chosen, test);
     }
-    for test in go_importers(conn, &changed, &mut packages, &suite)? {
+    let (imported, closure) = go_importers(conn, &changed, &mut packages, &suite)?;
+    for test in imported {
         choose(&mut chosen, test);
+    }
+    // A Go test outside the import closure cannot run changed Go code: a
+    // walk that reached it matched a method by name only. One reached
+    // through a contract talks to the service over the network, and stays.
+    if imports_cover(&changed) {
+        chosen.retain(|path, test| {
+            !path.ends_with("_test.go")
+                || test.kind != Kind::Reached
+                || closure.contains(&parent(path))
+                || test
+                    .chain
+                    .iter()
+                    .any(|step| matches!(step.link, Link::Contract | Link::Client))
+        });
     }
     let full_run = full_run(root, &changed, &changes, &base, walk.capped);
     let shallow = git(root, &["rev-parse", "--is-shallow-repository"]);
@@ -495,7 +510,7 @@ fn render(chain: &[Step]) -> String {
 }
 
 /// Go tests of every package that imports a changed package, directly or
-/// through others. A Go test runs only code its package imports, so this
+/// through others, and the directories of those packages. A Go test runs only code its package imports, so this
 /// holds for calls no call graph sees: function values, interfaces and
 /// closures returned from other packages. Each test's chain is the import
 /// path from its package to the changed one.
@@ -504,7 +519,7 @@ fn go_importers(
     changed: &HashSet<String>,
     packages: &mut Packages,
     suite: &BTreeSet<String>,
-) -> Result<Vec<AffectedTest>> {
+) -> Result<(Vec<AffectedTest>, HashSet<String>)> {
     let mut import_path = |file: &str| -> Option<String> {
         let (module_dir, module) = packages.find(file)?;
         let dir = parent(file);
@@ -530,7 +545,7 @@ fn go_importers(
         }
     }
     if starts.is_empty() {
-        return Ok(Vec::new());
+        return Ok((Vec::new(), HashSet::new()));
     }
     // Import path → the directories of the Go files that import it, and
     // each directory's own import path.
@@ -599,7 +614,7 @@ fn go_importers(
         }
         out.push(reached(test, chain, Vec::new(), true));
     }
-    Ok(out)
+    Ok((out, via.into_keys().collect()))
 }
 
 /// A test file a runner can run; `conftest.py` and `__init__.py` hold
