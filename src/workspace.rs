@@ -38,17 +38,30 @@ impl Workspace {
             }
             None => {
                 let discovered = discover_root(cwd);
-                if let (true, Some(db_p)) = (discovered == cwd, explicit_db.as_ref()) {
-                    if let Some(parent) = db_p.parent() {
-                        if parent.file_name().and_then(|n| n.to_str()) == Some(".tessera") {
-                            parent
-                                .parent()
-                                .map(|p| p.canonicalize().unwrap_or_else(|_| p.to_path_buf()))
-                                .unwrap_or(discovered)
+                if discovered == cwd {
+                    if let Some(db_p) = explicit_db.as_ref() {
+                        if db_p.exists() {
+                            if let Some(parent) = db_p.parent() {
+                                if parent.file_name().and_then(|n| n.to_str()) == Some(".tessera") {
+                                    if let Some(repo_root) = parent.parent() {
+                                        if repo_root.is_dir() {
+                                            repo_root
+                                                .canonicalize()
+                                                .unwrap_or_else(|_| repo_root.to_path_buf())
+                                        } else {
+                                            discovered
+                                        }
+                                    } else {
+                                        discovered
+                                    }
+                                } else {
+                                    discovered
+                                }
+                            } else {
+                                discovered
+                            }
                         } else {
-                            parent
-                                .canonicalize()
-                                .unwrap_or_else(|_| parent.to_path_buf())
+                            discovered
                         }
                     } else {
                         discovered
