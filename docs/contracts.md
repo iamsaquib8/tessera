@@ -140,7 +140,7 @@ Precision holds; recall on clients is low where URLs are assembled away
 from the call: from Flask `app.config`, `str.format`, Locust's
 `self.client`, or a wrapper of the project's own. opentelemetry-demo's
 misses are mostly servers in frameworks not read yet (PHP Slim,
-Sinatra, Phoenix, ASP.NET `MapGet`), and its topic uses Go sarama, C#
+Phoenix, ASP.NET `MapGet`), and its topic uses Go sarama, C#
 Confluent.Kafka and the Kotlin Kafka client, which no pack reads yet.
 
 ## Limits
