@@ -96,6 +96,31 @@ pre-commit hook is never replaced; `init` prints the line to add instead.
 when only part of a file's changes is staged, the unstaged part is checked
 too.
 
+## What the hooks did: `tessera stats`
+
+```text
+$ tessera stats
+Last 30 days: 14 session(s) (claude 212, cursor 31)
+  96 edits checked, 40 pre-edit notes
+  11 reports, 3 post-edit blocks, 5 stop blocks
+  17 problems fixed by the agent, 1 released at the stop limit, 0 still open
+  post-edit hook: p50 64 ms, p95 180 ms over 96 runs
+  ...
+```
+
+Each hook run appends one line to `.tessera/events.jsonl`: the event, the
+kind of answer (none, note, report, block), how many problems the agent had
+open and how many the edit fixed, and how long the hook took. It holds no
+paths, names, messages or code, it is never sent anywhere, and the index
+directory's `.gitignore` keeps it out of commits. `--days N` changes the
+window; `--json` gives the same numbers to scripts. The oldest half of the
+log is dropped past 4 MB.
+
+Use it to judge the hooks on your own code: how often a block led to a fix,
+how often a problem was released at the stop limit (worth a look: a false
+positive or an intended break, which `tessera accept` records), and whether
+the hooks stay fast.
+
 ## Session files and turning it off
 
 Each session's state is in `.tessera/sessions/<id>.json`, next to the index

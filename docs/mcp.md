@@ -63,6 +63,7 @@ machine-readable output. List tools are paginated: `limit` (default 25) and
 | `map` | Contracts between services: routes, gRPC methods, topics, tables, with both sides; or what a service serves and calls. | `kind` (`route`, `rpc`, `topic`, `table`, `service`), `query` |
 | `status` | Index root, freshness, counts, and setup hints. | none |
 | `import_cycles` | Circular dependency cycles between imported modules. | `path`, `limit` |
+| `affected` | The test files a change reaches, each with the call path (across contracts) that selects it; changed and failed tests always run, lockfile, build, config and fixture changes run everything. | `rev` or `staged`, `failed`, `explain`, `package`, `depth` |
 
 Symbols can be written `name`, `Class.method`, or `A::B`. References and
 callers are resolved through scope, imports, and declared types, and each

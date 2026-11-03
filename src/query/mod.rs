@@ -1,8 +1,10 @@
+mod affected;
 mod blast;
 pub mod common;
 mod context;
 pub mod cycles;
 mod find;
+mod formats;
 pub mod graph;
 mod legacy;
 pub mod map;
@@ -12,7 +14,12 @@ pub mod report;
 mod search;
 mod status;
 mod verify;
+pub mod waivers;
 
+pub use affected::{
+    AffectedArgs, AffectedResult, AffectedTest, AffectedUsage, Explanation, Kind as AffectedKind,
+    Link as AffectedLink, Runner, Step as AffectedStep, Totals as AffectedTotals,
+};
 pub use blast::{BlastArgs, BlastCaller, BlastResult};
 pub use context::{ContextArgs, ContextResult};
 pub use cycles::{CyclesArgs, CyclesResult, ImportCycle, ImportCycleLink};
@@ -27,10 +34,12 @@ pub use refs::{RefHit, RefsArgs, RefsResult};
 pub use search::{SearchArgs, SearchResults};
 pub use status::{ShadowBinary, StatusResult};
 pub use verify::{
-    changed_paths, problem_keys, problems, verify_changes, verify_paths, verify_problems,
-    with_tests, with_tests_until, Changes, Finding, Problem, VerifyArgs, VerifyResult,
+    changed_paths, fingerprint, problem_keys, problems, problems_with, verify_changes,
+    verify_changes_with, verify_paths, verify_paths_with, verify_problems, with_tests,
+    with_tests_until, Changes, Finding, Problem, VerifyArgs, VerifyResult,
 };
 
+pub use affected::{require_git, run as affected, DEFAULT_DEPTH as AFFECTED_DEPTH};
 pub use blast::run as blast;
 pub use context::run as context;
 pub use cycles::run as cycles;

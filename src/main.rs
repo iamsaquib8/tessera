@@ -7,6 +7,7 @@ use anyhow::{anyhow, Result};
 use clap::{CommandFactory, Parser, Subcommand, ValueEnum};
 use serde::Serialize;
 
+use tessera_codegraph::cache;
 use tessera_codegraph::db;
 use tessera_codegraph::fresh::{self, Freshness, Refresh};
 use tessera_codegraph::hook::{self, HookOptions};
@@ -138,6 +139,30 @@ enum Commands {
         #[command(flatten)]
         page: PageArgs,
     },
+    /// The tests a change reaches, each with the reason it runs: for CI test selection.
+    Affected {
+        /// Compare the working tree with this git revision (default HEAD).
+        #[arg(value_name = "REV")]
+        rev: Option<String>,
+        /// Select for the staged changes instead.
+        #[arg(long, conflicts_with = "rev")]
+        staged: bool,
+        /// Tests that failed in an earlier run, one path per line; they always run.
+        #[arg(long, value_name = "FILE")]
+        failed: Option<PathBuf>,
+        /// Say why this test is or is not selected.
+        #[arg(long, value_name = "TEST")]
+        explain: Option<String>,
+        /// Only tests in this workspace package (npm, pnpm or yarn workspace, Cargo, Go or Maven module).
+        #[arg(long, value_name = "NAME")]
+        package: Option<String>,
+        /// How many calls or contracts a test may be from the changed code.
+        #[arg(long, default_value_t = tessera_codegraph::query::AFFECTED_DEPTH)]
+        depth: usize,
+        /// Output: list (one test path per line), json, or the command line for a runner.
+        #[arg(long, value_enum, default_value_t = AffectedFormat::List)]
+        format: AffectedFormat,
+    },
     /// Check that symbols or calls in a snippet exist. Exits 1 on problems.
     Verify {
         /// Symbol name to check.
@@ -157,9 +182,38 @@ enum Commands {
         /// Check the working tree against this git revision.
         #[arg(long, value_name = "REV", conflicts_with_all = ["symbol", "snippet"])]
         diff: Option<String>,
-        /// Output: human (default), agent (one line per blocking problem), json, sarif, or markdown (a pull-request comment).
+        /// Output: human (default), agent (one line per blocking problem), json, sarif, markdown (a pull-request comment), gitlab (Code Quality), azure (logging commands), bitbucket (Code Insights), or ndjson (one finding per line).
         #[arg(long, value_enum, default_value_t = VerifyFormat::Human)]
         format: VerifyFormat,
+        /// Count baselined and accepted findings as new.
+        #[arg(long)]
+        no_baseline: bool,
+    },
+    /// What the edit hooks did here: edits checked, blocks, problems fixed, latency. Local only.
+    Stats {
+        /// How many days back to look.
+        #[arg(long, default_value_t = 30)]
+        days: u32,
+    },
+    /// Record today's blocking findings, so only new ones block from now on.
+    Baseline {
+        /// Keep only the entries that still fire; add none.
+        #[arg(long)]
+        prune: bool,
+    },
+    /// Accept an intended break: the finding is reported, with your reason, and does not block.
+    Accept {
+        /// The finding's fingerprint, from `verify --json`.
+        fingerprint: String,
+        /// Why the break is intended (required).
+        #[arg(long)]
+        reason: Option<String>,
+        /// The date the acceptance lapses, like 2026-12-31.
+        #[arg(long, value_name = "DATE")]
+        expires: Option<String>,
+        /// Who accepted it.
+        #[arg(long)]
+        by: Option<String>,
     },
     /// Contracts between services: routes, gRPC methods, topics and tables, with both sides.
     Map {
@@ -277,10 +331,29 @@ enum Commands {
         #[arg(long, value_name = "ADDR")]
         http: Option<String>,
     },
+    /// Save the index to one file, or load it from one, for a CI cache.
+    Cache {
+        #[command(subcommand)]
+        action: CacheAction,
+    },
     /// Print a shell completion script.
     Completions {
         #[arg(value_enum)]
         shell: clap_complete::Shell,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum CacheAction {
+    /// Write the index, brought up to date, to FILE: a compressed snapshot that another checkout can import.
+    Export {
+        /// Cache file to write.
+        file: PathBuf,
+    },
+    /// Install the index from FILE, then re-index the files that differ from the working tree. Exits 3 when the cache is from another Tessera version, configuration or repository.
+    Import {
+        /// Cache file to read.
+        file: PathBuf,
     },
 }
 
@@ -362,6 +435,30 @@ enum VerifyFormat {
     Sarif,
     /// A pull-request comment: findings, callers, contracts, tests to run.
     Markdown,
+    /// GitLab Code Quality report (JSON array).
+    Gitlab,
+    /// Azure DevOps logging commands, one per problem.
+    Azure,
+    /// Bitbucket Code Insights report and annotations (JSON).
+    Bitbucket,
+    /// One finding per line, then a summary line.
+    Ndjson,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+enum AffectedFormat {
+    List,
+    Json,
+    /// `jest --runTestsByPath …`
+    Jest,
+    /// `vitest run …`
+    Vitest,
+    /// `pytest file::Class::test …`
+    Pytest,
+    /// `go test <packages> -run '^(TestA|TestB)$'`
+    GoTest,
+    /// `cargo test -p <package> --test <target>`
+    Cargo,
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
@@ -472,6 +569,40 @@ fn run() -> Result<u8> {
             return run_init(&plan, yes, dry_run, &out);
         }
         Commands::Status => out.print(&query::status(&ws)?)?,
+        Commands::Stats { days } => {
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| d.as_millis() as u64);
+            let index_dir = ws.db_path.parent().unwrap_or(Path::new("."));
+            out.print(&hook::events::stats(index_dir, &ws.root, days, now))?;
+        }
+        Commands::Baseline { prune } => {
+            let Some(index) = open_fresh(&ws, &out)? else {
+                return Ok(0);
+            };
+            out.print(&index.baseline(prune)?)?;
+        }
+        Commands::Accept {
+            fingerprint,
+            reason,
+            expires,
+            by,
+        } => {
+            let Some(reason) = reason else {
+                return Err(usage("an accepted break needs --reason"));
+            };
+            let path = query::waivers::accept(
+                &ws.root,
+                &fingerprint,
+                &reason,
+                expires.as_deref(),
+                by.as_deref(),
+            )
+            .map_err(|e| usage(&e.to_string()))?;
+            if !out.quiet {
+                eprintln!("Accepted {fingerprint} in {}.", path.display());
+            }
+        }
         Commands::Find {
             symbol,
             path,
@@ -555,6 +686,25 @@ fn run() -> Result<u8> {
                 cursor: page.cursor,
             })?)?;
         }
+        Commands::Affected {
+            rev,
+            staged,
+            failed,
+            explain,
+            package,
+            depth,
+            format,
+        } => {
+            let args = query::AffectedArgs {
+                rev,
+                staged,
+                explain,
+                package,
+                depth,
+                ..query::AffectedArgs::default()
+            };
+            return run_affected(&ws, &out, args, failed.as_deref(), format);
+        }
         Commands::Verify {
             symbol,
             snippet,
@@ -563,6 +713,7 @@ fn run() -> Result<u8> {
             staged,
             diff,
             format,
+            no_baseline,
         } => {
             let changes = changed || staged || diff.is_some();
             if symbol.is_none() && snippet.is_none() && !changes {
@@ -605,6 +756,7 @@ fn run() -> Result<u8> {
                 changed,
                 staged,
                 diff_from: diff,
+                no_baseline,
             })?;
             match format {
                 _ if out.json => out.print_json(&result)?,
@@ -614,6 +766,14 @@ fn run() -> Result<u8> {
                 VerifyFormat::Sarif => {
                     println!("{}", serde_json::to_string_pretty(&result.sarif())?)
                 }
+                VerifyFormat::Gitlab => {
+                    println!("{}", serde_json::to_string_pretty(&result.gitlab())?)
+                }
+                VerifyFormat::Azure => print!("{}", result.azure()),
+                VerifyFormat::Bitbucket => {
+                    println!("{}", serde_json::to_string_pretty(&result.bitbucket())?)
+                }
+                VerifyFormat::Ndjson => print!("{}", result.ndjson()),
                 VerifyFormat::Markdown => unreachable!("handled above"),
             }
             if !result.ok {
@@ -740,6 +900,21 @@ fn run() -> Result<u8> {
         Commands::Mcp { http } => match http {
             Some(addr) => mcp::serve_http(ws, &addr)?,
             None => mcp::serve_stdio(ws)?,
+        },
+        Commands::Cache { action } => match action {
+            CacheAction::Export { file } => out.print(&cache::export(&ws, &file)?)?,
+            CacheAction::Import { file } => match cache::import(&ws, &file) {
+                Ok(report) => out.print(&report)?,
+                Err(error) => {
+                    if out.json {
+                        out.print_json(&serde_json::json!({
+                            "imported": false,
+                            "reason": format!("{error:#}"),
+                        }))?;
+                    }
+                    return Err(error);
+                }
+            },
         },
         Commands::Completions { shell } => {
             clap_complete::generate(
@@ -905,6 +1080,66 @@ fn open_fresh(ws: &Workspace, out: &Output) -> Result<Option<Index>> {
         return Ok(None);
     }
     Ok(Some(index))
+}
+
+/// `affected`: the selection on stdout in the format asked for, the counts
+/// and notes on stderr. Selecting is not a failure, so it exits 0.
+fn run_affected(
+    ws: &Workspace,
+    out: &Output,
+    mut args: query::AffectedArgs,
+    failed: Option<&Path>,
+    format: AffectedFormat,
+) -> Result<u8> {
+    if let Some(file) = failed {
+        let list = std::fs::read_to_string(file).map_err(|error| {
+            usage(&format!(
+                "cannot read the failed-tests list {}: {error}",
+                file.display()
+            ))
+        })?;
+        args.failed = list.lines().map(str::to_string).collect();
+    }
+    let usage_error = |error: anyhow::Error| match error.downcast_ref::<query::AffectedUsage>() {
+        Some(problem) => usage(&problem.0),
+        None => error,
+    };
+    query::require_git(&ws.root).map_err(usage_error)?;
+    let Some(index) = open_fresh(ws, out)? else {
+        return Ok(0);
+    };
+    let result = index.affected(&args).map_err(usage_error)?;
+    if out.json || format == AffectedFormat::Json {
+        out.print_json(&result)?;
+        return Ok(0);
+    }
+    if !out.quiet {
+        eprint!("{}", result.summary());
+        for note in &result.notes {
+            eprintln!("note: {note}");
+        }
+    }
+    if let Some(explain) = &result.explain {
+        println!("{}", explain.line());
+        return Ok(0);
+    }
+    let runner = match format {
+        AffectedFormat::List | AffectedFormat::Json => None,
+        AffectedFormat::Jest => Some(query::Runner::Jest),
+        AffectedFormat::Vitest => Some(query::Runner::Vitest),
+        AffectedFormat::Pytest => Some(query::Runner::Pytest),
+        AffectedFormat::GoTest => Some(query::Runner::GoTest),
+        AffectedFormat::Cargo => Some(query::Runner::Cargo),
+    };
+    match runner {
+        Some(runner) => print!("{}", result.command(runner)),
+        None => {
+            for test in &result.tests {
+                println!("{}", test.path);
+            }
+        }
+    }
+    Ok(0)
 }
 
 fn read_snippet(source: &str) -> Result<String> {

@@ -11,6 +11,7 @@ use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
 
 use super::common::{is_test_path, known_global};
+use super::waivers::Waivers;
 use super::{graph, legacy};
 use crate::extract::parse_file;
 use crate::facts::kind;
@@ -40,6 +41,8 @@ pub struct VerifyArgs {
     pub staged: bool,
     /// Check the working tree against this revision.
     pub diff_from: Option<String>,
+    /// Count baselined and accepted findings as if they were new.
+    pub no_baseline: bool,
 }
 
 fn language_by_name<'de, D: serde::Deserializer<'de>>(
@@ -63,6 +66,50 @@ pub struct Finding {
     pub path: Option<String>,
     pub line: Option<usize>,
     pub suggestions: Vec<SymbolSuggestion>,
+    /// Stable across edits that only move the code: what a baseline, an
+    /// accepted break, or a code-scanning alert is keyed by.
+    pub fingerprint: String,
+    /// Present when a baseline or an accepted break covers the finding.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub waived: Option<super::waivers::Waiver>,
+}
+
+/// 16 hex digits of FNV-1a over `text`.
+pub fn fingerprint(text: &str) -> String {
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for byte in text.as_bytes() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x0100_0000_01b3);
+    }
+    format!("{hash:016x}")
+}
+
+impl Finding {
+    /// The fingerprint of a finding with no semantic key: its check, file
+    /// and message, which name the symbols involved but not the line.
+    fn default_fingerprint(&self) -> String {
+        fingerprint(&format!(
+            "{} {} {}",
+            self.id,
+            self.path.as_deref().unwrap_or_default(),
+            self.message
+        ))
+    }
+
+    /// Why a waiver covers this finding, or why it no longer does.
+    pub fn waiver_note(&self) -> Option<String> {
+        let waiver = self.waived.as_ref()?;
+        Some(if waiver.expired {
+            format!(
+                "accepted until {}, now expired",
+                waiver.expires.as_deref().unwrap_or("?")
+            )
+        } else if waiver.by == "baseline" {
+            "in the baseline".to_string()
+        } else {
+            format!("accepted: {}", waiver.reason.as_deref().unwrap_or(""))
+        })
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -84,6 +131,9 @@ impl VerifyResult {
                 .then(a.line.cmp(&b.line))
         });
         findings.dedup_by(|a, b| a.id == b.id && a.path == b.path && a.line == b.line);
+        for finding in findings.iter_mut().filter(|f| f.fingerprint.is_empty()) {
+            finding.fingerprint = finding.default_fingerprint();
+        }
         Self {
             ok: !findings.iter().any(|f| f.blocking),
             findings,
@@ -105,7 +155,12 @@ pub fn run(conn: &Connection, root: &Path, args: &VerifyArgs) -> Result<VerifyRe
         } else {
             Changes::WorkingTree
         };
-        return verify_changes(conn, root, &changes);
+        let waivers = if args.no_baseline {
+            Waivers::none()
+        } else {
+            Waivers::load(root)
+        };
+        return verify_changes_with(conn, root, &changes, &waivers);
     }
     let mut findings = Vec::new();
     if let Some(symbol) = &args.symbol {
@@ -162,6 +217,8 @@ fn unresolved(name: &str, line: Option<usize>, suggestions: Vec<SymbolSuggestion
         path: None,
         line,
         suggestions,
+        fingerprint: fingerprint(&format!("V1 {name}")),
+        waived: None,
     }
 }
 
@@ -176,8 +233,18 @@ pub enum Changes {
 /// V1–V4 and V6 over the files a change touches and the code that depends on
 /// them. The index must already reflect the working tree.
 pub fn verify_changes(conn: &Connection, root: &Path, changes: &Changes) -> Result<VerifyResult> {
+    verify_changes_with(conn, root, changes, &Waivers::load(root))
+}
+
+/// [`verify_changes`] with these waivers.
+pub fn verify_changes_with(
+    conn: &Connection,
+    root: &Path,
+    changes: &Changes,
+    waivers: &Waivers,
+) -> Result<VerifyResult> {
     let changed = changed_paths(root, changes)?;
-    verify_paths(conn, root, &changed, changes)
+    verify_paths_with(conn, root, &changed, changes, waivers)
 }
 
 /// The same checks for an explicit set of changed files (hooks pass the
@@ -188,7 +255,18 @@ pub fn verify_paths(
     changed: &HashSet<String>,
     changes: &Changes,
 ) -> Result<VerifyResult> {
-    let findings = problems(conn, root, changed, changes)?
+    verify_paths_with(conn, root, changed, changes, &Waivers::load(root))
+}
+
+/// [`verify_paths`] with these waivers.
+pub fn verify_paths_with(
+    conn: &Connection,
+    root: &Path,
+    changed: &HashSet<String>,
+    changes: &Changes,
+    waivers: &Waivers,
+) -> Result<VerifyResult> {
+    let findings = problems_with(conn, root, changed, changes, waivers)?
         .into_iter()
         .map(|p| p.finding)
         .collect();
@@ -226,6 +304,8 @@ pub fn with_tests_until(
             path: Some(test.clone()),
             line: None,
             suggestions: Vec::new(),
+            fingerprint: String::new(),
+            waived: None,
         });
     }
     Ok(VerifyResult::new(findings, tests))
@@ -254,12 +334,24 @@ pub struct Problem {
     pub key: String,
 }
 
-/// V1–V5 over `changed`, keyed.
+/// V1–V5 over `changed`, keyed, with the repository's baseline and
+/// accepted breaks applied.
 pub fn problems(
     conn: &Connection,
     root: &Path,
     changed: &HashSet<String>,
     changes: &Changes,
+) -> Result<Vec<Problem>> {
+    problems_with(conn, root, changed, changes, &Waivers::load(root))
+}
+
+/// [`problems`] with these waivers.
+pub fn problems_with(
+    conn: &Connection,
+    root: &Path,
+    changed: &HashSet<String>,
+    changes: &Changes,
+    waivers: &Waivers,
 ) -> Result<Vec<Problem>> {
     let rev = match changes {
         Changes::Since(rev) => rev.as_str(),
@@ -282,6 +374,10 @@ pub fn problems(
         let mut contracts = Vec::new();
         contract_breaks(conn, root, changed, rev, &mut contracts)?;
         out.extend(contracts.into_iter().map(contract_problem));
+    }
+    for problem in &mut out {
+        problem.finding.fingerprint = fingerprint(&problem.key);
+        waivers.apply(&mut problem.finding);
     }
     Ok(out)
 }
@@ -441,6 +537,8 @@ fn contract_breaks(
                 path: Some(consumer.path),
                 line: Some(consumer.line),
                 suggestions: Vec::new(),
+                fingerprint: String::new(),
+                waived: None,
             });
         }
     }
@@ -615,7 +713,7 @@ fn consumers_of(conn: &Connection, fact: &crate::facts::IndexedFact) -> Result<V
 /// `path` as it was at `rev`; `None` when it did not exist.
 /// Each path's content at `rev`, read by one `git cat-file --batch`;
 /// paths that did not exist then are left out.
-fn files_at(root: &Path, rev: &str, paths: &[&String]) -> HashMap<String, String> {
+pub(crate) fn files_at(root: &Path, rev: &str, paths: &[&String]) -> HashMap<String, String> {
     let mut out = HashMap::new();
     if paths.is_empty() {
         return out;
@@ -698,7 +796,7 @@ fn blocks(path: &str) -> bool {
 
 fn finding(id: &str, path: String, line: usize, message: String) -> Finding {
     let blocking = blocks(&path);
-    Finding {
+    let mut finding = Finding {
         id: id.to_string(),
         confidence: if blocking {
             Confidence::High
@@ -710,7 +808,11 @@ fn finding(id: &str, path: String, line: usize, message: String) -> Finding {
         path: Some(path),
         line: Some(line),
         suggestions: Vec::new(),
-    }
+        fingerprint: String::new(),
+        waived: None,
+    };
+    finding.fingerprint = finding.default_fingerprint();
+    finding
 }
 
 struct MissingRow {
@@ -1105,7 +1207,7 @@ fn lexical_target(from: &str, source: &str) -> Option<String> {
 
 /// A test file a runner can run: source code under a test path, not the
 /// fixtures, snapshots or data files the tests read.
-fn runnable_test(path: &str) -> bool {
+pub(crate) fn runnable_test(path: &str) -> bool {
     let data = [
         "fixtures",
         "fixture",
@@ -1165,7 +1267,7 @@ fn tests_to_run(
 }
 
 /// Files git does not track and does not ignore, from one git process.
-fn untracked(root: &Path) -> HashSet<String> {
+pub(crate) fn untracked(root: &Path) -> HashSet<String> {
     Command::new("git")
         .arg("-C")
         .arg(root)
@@ -1210,11 +1312,23 @@ pub fn changed_paths(root: &Path, changes: &Changes) -> Result<HashSet<String>> 
     let mut paths = String::new();
     match changes {
         Changes::WorkingTree => {
-            paths.push_str(&git(&["diff", "--name-only", "--relative", "HEAD"])?);
+            paths.push_str(&git(&[
+                "diff",
+                "--name-only",
+                "--relative",
+                "--no-renames",
+                "HEAD",
+            ])?);
             paths.push_str(&git(&["ls-files", "--others", "--exclude-standard"])?);
         }
         Changes::Staged => {
-            paths.push_str(&git(&["diff", "--name-only", "--relative", "--cached"])?);
+            paths.push_str(&git(&[
+                "diff",
+                "--name-only",
+                "--relative",
+                "--no-renames",
+                "--cached",
+            ])?);
         }
         Changes::Since(rev) => {
             if rev.starts_with('-') {
@@ -1227,7 +1341,13 @@ pub fn changed_paths(root: &Path, changes: &Changes) -> Result<HashSet<String>> 
                 "--end-of-options",
                 &format!("{rev}^{{commit}}"),
             ])?;
-            paths.push_str(&git(&["diff", "--name-only", "--relative", commit.trim()])?);
+            paths.push_str(&git(&[
+                "diff",
+                "--name-only",
+                "--relative",
+                "--no-renames",
+                commit.trim(),
+            ])?);
             paths.push_str(&git(&["ls-files", "--others", "--exclude-standard"])?);
         }
     }
@@ -1265,7 +1385,11 @@ impl AgentText for VerifyResult {
                 (None, Some(line)) => format!(" (line {line})"),
                 _ => String::new(),
             };
-            let advisory = if finding.blocking { "" } else { " (advisory)" };
+            let advisory = match finding.waiver_note() {
+                Some(note) => format!(" ({note})"),
+                None if finding.blocking => String::new(),
+                None => " (advisory)".to_string(),
+            };
             out.push_str(&format!(
                 "  [{}]{at} {}{advisory}\n",
                 finding.id, finding.message
@@ -1315,10 +1439,12 @@ impl VerifyResult {
             ),
             ("V6", "Test that reaches the changed code"),
         ];
+        let ids = super::formats::occurrence_ids(&self.findings);
         let results: Vec<serde_json::Value> = self
             .findings
             .iter()
-            .map(|f| {
+            .zip(ids)
+            .map(|(f, id)| {
                 let level = if f.blocking {
                     "error"
                 } else if f.id == "V6" {
@@ -1330,9 +1456,12 @@ impl VerifyResult {
                     "ruleId": f.id,
                     "level": level,
                     "message": { "text": f.message },
+                    "partialFingerprints": { "tesseraFingerprint/v1": id },
                     "locations": [{
                         "physicalLocation": {
-                            "artifactLocation": { "uri": f.path.clone().unwrap_or_default() },
+                            "artifactLocation": {
+                                "uri": super::formats::uri(f.path.as_deref().unwrap_or_default())
+                            },
                             "region": { "startLine": f.line.unwrap_or(1) }
                         }
                     }]

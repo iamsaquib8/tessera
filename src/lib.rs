@@ -31,6 +31,7 @@
 //! The library binary `tessera` is also built from this crate; see the README.
 
 pub mod agents;
+pub mod cache;
 pub mod config;
 pub mod db;
 pub mod extract;
@@ -182,6 +183,17 @@ impl Index {
 
     pub fn verify(&self, args: &VerifyArgs) -> Result<VerifyResult> {
         query::verify(&self.conn, &self.root, args)
+    }
+
+    /// Records today's blocking findings as the baseline (`prune`: keep only
+    /// those that still fire).
+    pub fn baseline(&self, prune: bool) -> Result<query::waivers::BaselineReport> {
+        query::waivers::baseline(&self.conn, &self.root, prune)
+    }
+
+    /// The tests a change reaches, each with the reason it runs.
+    pub fn affected(&self, args: &query::AffectedArgs) -> Result<query::AffectedResult> {
+        query::affected(&self.conn, &self.root, args)
     }
 
     /// The pull-request report for a change: findings, callers, contracts

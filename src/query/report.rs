@@ -34,7 +34,18 @@ pub struct Report {
     pub verify: VerifyResult,
     pub blast: Option<BlastResult>,
     pub contracts: Vec<TouchedContract>,
+    /// Changed functions and methods that no test reaches.
+    pub gaps: Vec<crate::types::SymbolRecord>,
+    /// The test files to run: what `tessera affected` selects for the same
+    /// change, or verify's list when it cannot select.
+    pub tests_to_run: Vec<String>,
+    /// Why every test should run, when one should.
+    pub full_run: Option<String>,
 }
+
+/// How far from a test a changed function may be and still count as tested.
+const GAP_DEPTH: usize = 4;
+const GAP_SCAN_CAP: usize = 2_000;
 
 pub fn run(conn: &Connection, root: &Path, changes: &Changes) -> Result<Report> {
     let changed = changed_paths(root, changes)?;
@@ -54,10 +65,42 @@ pub fn run(conn: &Connection, root: &Path, changes: &Changes) -> Result<Report> 
     )
     .ok();
     let contracts = touched(conn, root, &changed)?;
+    let mut gaps = Vec::new();
+    for symbol in blast.iter().flat_map(|b| &b.changed) {
+        let callable = matches!(symbol.kind.as_str(), "function" | "method" | "constructor");
+        if !callable || super::common::is_test_path(&symbol.path) {
+            continue;
+        }
+        if super::graph::tests_reaching(conn, symbol.id, GAP_DEPTH, GAP_SCAN_CAP)?.is_empty() {
+            gaps.push(symbol.clone());
+        }
+    }
+    let selection = super::affected::run(
+        conn,
+        root,
+        &super::AffectedArgs {
+            rev: match changes {
+                Changes::Since(rev) => Some(rev.clone()),
+                _ => None,
+            },
+            staged: matches!(changes, Changes::Staged),
+            ..super::AffectedArgs::default()
+        },
+    );
+    let (tests_to_run, full_run) = match selection {
+        Ok(selection) => (
+            selection.tests.into_iter().map(|t| t.path).collect(),
+            selection.full_run,
+        ),
+        Err(_) => (verify.tests.clone(), None),
+    };
     Ok(Report {
         verify,
         blast,
         contracts,
+        gaps,
+        tests_to_run,
+        full_run,
     })
 }
 
@@ -118,6 +161,14 @@ pub fn code(text: &str) -> String {
     format!("{fence}{pad}{}{pad}{fence}", text.replace('|', "\\|"))
 }
 
+/// ` (accepted: …)` after a waived finding's message.
+fn waiver(finding: &super::verify::Finding) -> String {
+    finding
+        .waiver_note()
+        .map(|note| format!(" ({})", cell(&note)))
+        .unwrap_or_default()
+}
+
 impl Report {
     pub fn markdown(&self) -> String {
         let mut out = format!("{MARKER}\n");
@@ -139,17 +190,18 @@ impl Report {
         let callers = self.blast.as_ref().map_or(0, |b| b.page.total);
         out.push_str(&format!(
             "{changed} changed symbol(s), {callers} caller(s), {} test file(s) to run, {} contract(s) touched.\n\n",
-            self.verify.tests.len(),
+            self.tests_to_run.len(),
             self.contracts.len()
         ));
         if !blocking.is_empty() {
             out.push_str("| Check | Where | Problem |\n| --- | --- | --- |\n");
             for finding in blocking.iter().take(MAX_ROWS) {
                 out.push_str(&format!(
-                    "| {} | {} | {} |\n",
+                    "| {} | {} | {}{} |\n",
                     finding.id,
                     code(&location(finding.path.as_deref(), finding.line)),
-                    cell(&finding.message)
+                    cell(&finding.message),
+                    waiver(finding)
                 ));
             }
             if blocking.len() > MAX_ROWS {
@@ -164,10 +216,11 @@ impl Report {
             ));
             for finding in advisory.iter().take(MAX_ROWS) {
                 out.push_str(&format!(
-                    "- {} {} {}\n",
+                    "- {} {} {}{}\n",
                     finding.id,
                     code(&location(finding.path.as_deref(), finding.line)),
-                    cell(&finding.message)
+                    cell(&finding.message),
+                    waiver(finding)
                 ));
             }
             out.push_str("\n</details>\n\n");
@@ -214,13 +267,36 @@ impl Report {
             }
             out.push_str("\n</details>\n\n");
         }
-        if !self.verify.tests.is_empty() {
+        if let Some(reason) = &self.full_run {
+            out.push_str(&format!("Every test should run: {}.\n\n", cell(reason)));
+        } else if !self.tests_to_run.is_empty() {
             out.push_str(&format!(
-                "<details><summary>Tests to run ({})</summary>\n\n",
-                self.verify.tests.len()
+                "<details><summary>Tests to run ({})</summary>\n\n```text\n",
+                self.tests_to_run.len()
             ));
-            for test in self.verify.tests.iter().take(MAX_ROWS) {
-                out.push_str(&format!("- {}\n", code(test)));
+            for test in self.tests_to_run.iter().take(MAX_ROWS) {
+                out.push_str(&format!("{}\n", test.replace('`', "'")));
+            }
+            out.push_str("```\n");
+            if self.tests_to_run.len() > MAX_ROWS {
+                out.push_str(&format!(
+                    "\n…and {} more; `tessera affected` lists them all.\n",
+                    self.tests_to_run.len() - MAX_ROWS
+                ));
+            }
+            out.push_str("\n</details>\n\n");
+        }
+        if !self.gaps.is_empty() {
+            out.push_str(&format!(
+                "<details><summary>Test gaps: changed code no test reaches ({})</summary>\n\n",
+                self.gaps.len()
+            ));
+            for symbol in self.gaps.iter().take(MAX_ROWS) {
+                out.push_str(&format!(
+                    "- {} {}\n",
+                    code(&symbol.qualified_name),
+                    code(&format!("{}:{}", symbol.path, symbol.start_line))
+                ));
             }
             out.push_str("\n</details>\n\n");
         }

@@ -3,6 +3,7 @@
 //! the agent's documented output shape. Hooks fail open: when Tessera cannot
 //! answer (no index yet, a busy writer, an error), it prints nothing.
 
+pub mod events;
 pub mod payload;
 pub mod session;
 
@@ -200,6 +201,13 @@ pub fn run(
             .and_then(|reply| render(agent, kind, event, reply))
             .or_else(|| silent(agent, kind)));
     }
+    let open = |s: &Session| -> u32 { s.problems.values().sum() };
+    let released = |s: &Session| -> u32 {
+        s.baseline_problems
+            .as_ref()
+            .map_or(0, |b| b.values().sum::<u32>())
+    };
+    let (open_before, released_before) = (open(&session), released(&session));
     let reply = match kind {
         Event::SessionStart => {
             session::expire(&ws.db_path);
@@ -226,6 +234,35 @@ pub fn run(
         session.answered.drain(..extra);
     }
     store.save(&session)?;
+    let newly_released = released(&session).saturating_sub(released_before);
+    events::record(
+        ws.db_path.parent().unwrap_or(Path::new(".")),
+        &events::HookEvent {
+            at: started,
+            session: crate::query::fingerprint(&payload.session),
+            agent: format!("{agent:?}").to_lowercase(),
+            event: match kind {
+                Event::SessionStart => "session-start",
+                Event::PreEdit => "pre-edit",
+                Event::PostEdit => "post-edit",
+                Event::Stop => "stop",
+            }
+            .to_string(),
+            reply: match (&reply, kind) {
+                (None, _) => "none",
+                (Some(Reply::Block(_)), _) => "block",
+                (Some(Reply::Context(_)), Event::PreEdit) => "note",
+                (Some(Reply::Context(_)), _) => "report",
+            }
+            .to_string(),
+            open: open(&session),
+            fixed: open_before
+                .saturating_sub(open(&session))
+                .saturating_sub(newly_released),
+            released: newly_released,
+            ms: now_ms().saturating_sub(started),
+        },
+    );
     Ok(reply
         .and_then(|reply| render(agent, kind, event, reply))
         .or_else(|| silent(agent, kind)))

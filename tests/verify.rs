@@ -7,6 +7,8 @@ use std::process::Command as StdCommand;
 use assert_cmd::Command;
 use support::{copy_dir, fixture_dir};
 use tempfile::TempDir;
+use tessera_codegraph::output::Confidence;
+use tessera_codegraph::query::{Finding, VerifyResult};
 
 /// The TypeScript fixture as a committed git repository.
 fn repo() -> TempDir {
@@ -829,7 +831,7 @@ fn markdown_report_for_a_pull_request() {
     assert!(text.contains("Callers of the changed code"), "{text}");
     assert!(text.contains("handler"), "callers are listed: {text}");
     assert!(text.contains("Tests to run"), "{text}");
-    assert!(text.contains("`test/repo.test.ts`"), "{text}");
+    assert!(text.contains("```text\ntest/repo.test.ts\n```"), "{text}");
 }
 
 #[test]
@@ -1014,5 +1016,416 @@ fn changed_fixtures_and_snapshots_are_not_tests_to_run() {
             .iter()
             .all(|t| !t.contains("fixtures/") && !t.contains("snapshots")),
         "{tests:?}"
+    );
+}
+
+#[test]
+fn a_finding_keeps_its_fingerprint_when_lines_move() {
+    let temp = repo();
+    edit(
+        temp.path(),
+        "src/users/repo.ts",
+        "findById(id: string): string {",
+        "findOne(id: string): string {",
+    );
+    let (_, _, first) = verify_changed(temp.path());
+    let print = |value: &serde_json::Value| -> Vec<String> {
+        value["findings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|f| f["id"] != "V6")
+            .map(|f| f["fingerprint"].as_str().unwrap().to_string())
+            .collect()
+    };
+    let before = print(&first);
+    assert!(
+        !before.is_empty() && before.iter().all(|f| f.len() == 16),
+        "{first}"
+    );
+    edit(
+        temp.path(),
+        "src/users/repo.ts",
+        "export class UserRepo {",
+        "\n\nexport class UserRepo {",
+    );
+    let (_, _, second) = verify_changed(temp.path());
+    assert_eq!(print(&second), before, "{second}");
+}
+
+#[test]
+fn the_report_lists_changed_functions_no_test_reaches() {
+    let temp = repo();
+    edit(
+        temp.path(),
+        "src/util/i18n.ts",
+        "return \"héllo\";",
+        "return \"hello\";",
+    );
+    edit(
+        temp.path(),
+        "src/users/repo.ts",
+        "return this.cache.get(id) ?? id;",
+        "return this.cache.get(id) ?? id.trim();",
+    );
+    let (_, text) = markdown(temp.path(), &["--changed"]);
+    let gaps = text
+        .split("Test gaps")
+        .nth(1)
+        .unwrap_or_else(|| panic!("no test gaps section: {text}"));
+    let gaps = gaps.split("</details>").next().unwrap();
+    assert!(gaps.contains("greet"), "{gaps}");
+    assert!(
+        !gaps.contains("lookup"),
+        "UserRepo.lookup is reached by test/repo.test.ts: {gaps}"
+    );
+    assert!(text.contains("```text\ntest/repo.test.ts\n```"), "{text}");
+}
+
+// Review formats. Each target has its own escaping; a message with `]`,
+// `;`, a newline, `%` and quotes, and a path with spaces, must reach each
+// one intact.
+
+const TRICKY_PATH: &str = "src/my dir/a;b]%.ts";
+const TRICKY_MESSAGE: &str = "`./x;y]` is 100% \"broken\"\nsecond line\r";
+
+fn tricky_result() -> VerifyResult {
+    let finding =
+        |id: &str, blocking: bool, path: Option<&str>, line, message: &str, fp: &str| Finding {
+            id: id.to_string(),
+            confidence: Confidence::High,
+            blocking,
+            message: message.to_string(),
+            path: path.map(str::to_string),
+            line,
+            suggestions: Vec::new(),
+            fingerprint: fp.to_string(),
+            waived: None,
+        };
+    VerifyResult::new(
+        vec![
+            finding(
+                "V4",
+                true,
+                Some(TRICKY_PATH),
+                Some(3),
+                TRICKY_MESSAGE,
+                "00000000000000aa",
+            ),
+            // The same problem at another line: one fingerprint, two issues.
+            finding(
+                "V4",
+                true,
+                Some(TRICKY_PATH),
+                Some(9),
+                "again",
+                "00000000000000aa",
+            ),
+            finding(
+                "V2",
+                false,
+                Some("lib/b.py"),
+                Some(7),
+                "advisory",
+                "00000000000000bb",
+            ),
+            finding(
+                "V6",
+                false,
+                Some("test/a test.ts"),
+                None,
+                "run it",
+                "00000000000000cc",
+            ),
+        ],
+        vec!["test/a test.ts".to_string()],
+    )
+}
+
+#[test]
+fn gitlab_code_quality_report() {
+    let value = tricky_result().gitlab();
+    let issues = value.as_array().unwrap();
+    assert_eq!(issues.len(), 3, "V6 is not an issue: {value:#}");
+    assert_eq!(issues[0]["description"], TRICKY_MESSAGE);
+    assert_eq!(issues[0]["check_name"], "V4");
+    assert_eq!(issues[0]["fingerprint"], "00000000000000aa");
+    assert_eq!(issues[0]["severity"], "major");
+    assert_eq!(issues[0]["location"]["path"], TRICKY_PATH);
+    assert_eq!(issues[0]["location"]["lines"]["begin"], 3);
+    assert_eq!(
+        issues[1]["fingerprint"], "00000000000000aa-2",
+        "unique per issue"
+    );
+    assert_eq!(issues[2]["severity"], "minor");
+    let text = serde_json::to_string(&value).unwrap();
+    let back: serde_json::Value = serde_json::from_str(&text).unwrap();
+    assert_eq!(back, value);
+}
+
+/// Azure's unescaping, as the agent applies it.
+fn azure_unescape(value: &str, property: bool) -> String {
+    let mut value = value.replace("%0D", "\r").replace("%0A", "\n");
+    if property {
+        value = value.replace("%3B", ";").replace("%5D", "]");
+    }
+    value.replace("%AZP25", "%")
+}
+
+#[test]
+fn azure_logging_commands() {
+    let text = tricky_result().azure();
+    let lines: Vec<&str> = text.lines().collect();
+    assert_eq!(
+        lines.len(),
+        3,
+        "one command per problem, V6 left out: {text}"
+    );
+    assert!(!text.contains('\r'), "{text:?}");
+    let parse = |line: &str| {
+        let rest = line.strip_prefix("##vso[task.logissue ").unwrap();
+        let (properties, message) = rest.split_once(']').unwrap();
+        let properties: Vec<(String, String)> = properties
+            .split(';')
+            .map(|pair| {
+                let (key, value) = pair.split_once('=').unwrap();
+                (key.to_string(), azure_unescape(value, true))
+            })
+            .collect();
+        (properties, azure_unescape(message, false))
+    };
+    let (properties, message) = parse(lines[0]);
+    assert_eq!(
+        properties,
+        [
+            ("type".to_string(), "error".to_string()),
+            ("sourcepath".to_string(), TRICKY_PATH.to_string()),
+            ("linenumber".to_string(), "3".to_string()),
+            ("code".to_string(), "V4".to_string()),
+        ]
+    );
+    assert_eq!(message, TRICKY_MESSAGE);
+    let (properties, _) = parse(lines[2]);
+    assert_eq!(properties[0].1, "warning");
+}
+
+#[test]
+fn bitbucket_code_insights_report() {
+    let value = tricky_result().bitbucket();
+    let report = &value["report"];
+    assert_eq!(report["title"], "Tessera");
+    assert_eq!(report["report_type"], "BUG");
+    assert_eq!(report["result"], "FAILED");
+    assert!(report["details"].as_str().unwrap().contains("2 blocking"));
+    assert!(report["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|d| d["title"].is_string() && d["type"].is_string()));
+    let annotations = value["annotations"].as_array().unwrap();
+    assert_eq!(annotations.len(), 3, "{value:#}");
+    let ids: Vec<&str> = annotations
+        .iter()
+        .map(|a| a["external_id"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        ids,
+        ["00000000000000aa", "00000000000000aa-2", "00000000000000bb"]
+    );
+    assert_eq!(annotations[0]["annotation_type"], "BUG");
+    assert_eq!(annotations[0]["summary"], TRICKY_MESSAGE);
+    assert_eq!(annotations[0]["severity"], "HIGH");
+    assert_eq!(annotations[0]["path"], TRICKY_PATH);
+    assert_eq!(annotations[0]["line"], 3);
+    assert_eq!(annotations[2]["severity"], "LOW");
+    let passing = VerifyResult::new(Vec::new(), Vec::new()).bitbucket();
+    assert_eq!(passing["report"]["result"], "PASSED");
+}
+
+#[test]
+fn bitbucket_summaries_fit_its_limit() {
+    let mut result = tricky_result();
+    result.findings[0].message = "é".repeat(600);
+    let value = result.bitbucket();
+    let summary = value["annotations"][0]["summary"].as_str().unwrap();
+    assert!(summary.chars().count() <= 450, "{}", summary.len());
+}
+
+#[test]
+fn ndjson_is_one_finding_per_line_then_a_summary() {
+    let result = tricky_result();
+    let text = result.ndjson();
+    let lines: Vec<serde_json::Value> = text
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    assert_eq!(lines.len(), result.findings.len() + 1, "{text}");
+    for (line, finding) in lines.iter().zip(&result.findings) {
+        assert_eq!(line, &serde_json::to_value(finding).unwrap());
+    }
+    let summary = &lines.last().unwrap()["summary"];
+    assert_eq!(summary["ok"], false);
+    assert_eq!(summary["findings"], 4);
+    assert_eq!(summary["blocking"], 2);
+    assert_eq!(summary["tests"], serde_json::json!(["test/a test.ts"]));
+}
+
+#[test]
+fn sarif_results_carry_fingerprints_and_escaped_uris() {
+    let value = tricky_result().sarif();
+    let results = value["runs"][0]["results"].as_array().unwrap();
+    let fingerprints: Vec<&str> = results
+        .iter()
+        .map(|r| {
+            r["partialFingerprints"]["tesseraFingerprint/v1"]
+                .as_str()
+                .unwrap()
+        })
+        .collect();
+    assert_eq!(
+        fingerprints,
+        [
+            "00000000000000aa",
+            "00000000000000aa-2",
+            "00000000000000bb",
+            "00000000000000cc"
+        ]
+    );
+    let location = &results[0]["locations"][0]["physicalLocation"];
+    assert_eq!(
+        location["artifactLocation"]["uri"],
+        "src/my%20dir/a%3Bb%5D%25.ts"
+    );
+    assert_eq!(results[0]["message"]["text"], TRICKY_MESSAGE);
+}
+
+/// A blocking V4 whose import specifier holds `;`, `%`, `]` and a quote,
+/// in a file whose path has spaces.
+fn tricky_repo() -> TempDir {
+    let temp = repo();
+    let dir = temp.path().join("src/my dir");
+    fs::create_dir_all(&dir).unwrap();
+    fs::write(
+        dir.join("a b.ts"),
+        "import { gone } from './missing;100%]\"q';\n\nexport function useIt() {\n  return gone();\n}\n",
+    )
+    .unwrap();
+    temp
+}
+
+fn verify_format(root: &Path, format: &str) -> (i32, String) {
+    let output = Command::cargo_bin("tessera")
+        .unwrap()
+        .current_dir(root)
+        .args(["--quiet", "verify", "--changed", "--format", format])
+        .output()
+        .unwrap();
+    (
+        output.status.code().unwrap(),
+        String::from_utf8(output.stdout).unwrap(),
+    )
+}
+
+#[test]
+fn every_review_format_from_the_cli() {
+    let temp = tricky_repo();
+    let (_, _, json) = verify_changed(temp.path());
+    let blocking = json["findings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|f| f["blocking"] == true)
+        .unwrap_or_else(|| panic!("a blocking V4: {json:#}"))
+        .clone();
+    assert_eq!(blocking["path"], "src/my dir/a b.ts", "{json:#}");
+    let message = blocking["message"].as_str().unwrap();
+    assert!(message.contains("./missing;100%]\"q"), "{message}");
+
+    let (code, text) = verify_format(temp.path(), "gitlab");
+    assert_eq!(code, 1, "{text}");
+    let gitlab: serde_json::Value = serde_json::from_str(&text).unwrap();
+    assert!(gitlab.as_array().unwrap().iter().any(|issue| {
+        issue["fingerprint"] == blocking["fingerprint"]
+            && issue["description"] == message
+            && issue["location"]["path"] == "src/my dir/a b.ts"
+    }));
+
+    let (code, text) = verify_format(temp.path(), "azure");
+    assert_eq!(code, 1, "{text}");
+    assert!(
+        text.lines()
+            .any(|line| line.starts_with(
+                "##vso[task.logissue type=error;sourcepath=src/my dir/a b.ts;linenumber=1;code=V4]"
+            ) && line.ends_with("./missing;100%AZP25]\"q` does not resolve to a file")),
+        "{text}"
+    );
+
+    let (code, text) = verify_format(temp.path(), "bitbucket");
+    assert_eq!(code, 1, "{text}");
+    let bitbucket: serde_json::Value = serde_json::from_str(&text).unwrap();
+    assert_eq!(bitbucket["report"]["result"], "FAILED");
+
+    let (code, text) = verify_format(temp.path(), "ndjson");
+    assert_eq!(code, 1, "{text}");
+    let first: serde_json::Value = serde_json::from_str(text.lines().next().unwrap()).unwrap();
+    assert_eq!(first, json["findings"][0]);
+    let last: serde_json::Value = serde_json::from_str(text.lines().last().unwrap()).unwrap();
+    assert_eq!(last["summary"]["ok"], false);
+
+    let (code, text) = verify_format(temp.path(), "sarif");
+    assert_eq!(code, 1, "{text}");
+    let sarif: serde_json::Value = serde_json::from_str(&text).unwrap();
+    let result = &sarif["runs"][0]["results"][0];
+    assert_eq!(
+        result["locations"][0]["physicalLocation"]["artifactLocation"]["uri"],
+        "src/my%20dir/a%20b.ts"
+    );
+    assert_eq!(
+        result["partialFingerprints"]["tesseraFingerprint/v1"],
+        blocking["fingerprint"]
+    );
+}
+
+#[test]
+fn the_report_runs_what_affected_selects_and_says_when_everything_should_run() {
+    let temp = TempDir::new().unwrap();
+    let root = temp.path();
+    let write = |path: &str, text: &str| {
+        let file = root.join(path);
+        fs::create_dir_all(file.parent().unwrap()).unwrap();
+        fs::write(file, text).unwrap();
+    };
+    write(
+        "src/a.ts",
+        "export function f(): number {\n  return 1;\n}\n",
+    );
+    for i in 0..55 {
+        write(
+            &format!("test/t{i:02}.test.ts"),
+            "import { f } from \"../src/a\";\n\ntest(\"f\", () => {\n  expect(f()).toBe(1);\n});\n",
+        );
+    }
+    assert!(StdCommand::new("git")
+        .args(["init", "-q"])
+        .current_dir(root)
+        .status()
+        .unwrap()
+        .success());
+    commit_all(root);
+    edit(root, "src/a.ts", "return 1;", "return 2;");
+    let (_, text) = markdown(root, &["--changed"]);
+    assert!(text.contains("Tests to run (55)"), "{text}");
+    assert!(text.contains("test/t49.test.ts\n"), "{text}");
+    assert!(!text.contains("test/t50.test.ts\n"), "{text}");
+    assert!(
+        text.contains("…and 5 more"),
+        "the block says what it cut: {text}"
+    );
+
+    write("package-lock.json", "{}\n");
+    let (_, text) = markdown(root, &["--changed"]);
+    assert!(
+        text.contains("Every test should run: package-lock.json changed (a lockfile)"),
+        "{text}"
     );
 }

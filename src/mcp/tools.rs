@@ -5,8 +5,8 @@ use super::protocol::{RpcError, INVALID_PARAMS};
 use super::ServerState;
 use crate::output::AgentText;
 use crate::query::{
-    BlastArgs, ContextArgs, CyclesArgs, FindArgs, MapArgs, PathArgs, RefsArgs, SearchArgs,
-    VerifyArgs,
+    AffectedArgs, BlastArgs, ContextArgs, CyclesArgs, FindArgs, MapArgs, PathArgs, RefsArgs,
+    SearchArgs, VerifyArgs,
 };
 use crate::Index;
 
@@ -34,7 +34,7 @@ pub fn registry() -> &'static [ToolSpec] {
     &REGISTRY
 }
 
-static REGISTRY: [ToolSpec; 10] = [
+static REGISTRY: [ToolSpec; 11] = [
     ToolSpec {
         name: "find",
         title: "Find definition",
@@ -104,6 +104,13 @@ static REGISTRY: [ToolSpec; 10] = [
         description: "Detect circular import dependency cycles across modules in the codebase. Filter by `path` prefix. Returns ordered circular import chains of length >= 2.",
         input_schema: import_cycles_schema,
         run: |index, args| run_query(args, false, |a: CyclesArgs| index.cycles(&a)),
+    },
+    ToolSpec {
+        name: "affected",
+        title: "Tests to run",
+        description: "The test files a change reaches, each with why: the call path from the changed symbol, across service contracts (a changed route selects its clients' tests). New, changed and `failed` tests always run; a lockfile, build file, test config or fixture change, or a `Tessera-No-Skip` commit trailer, selects every test. Compares the working tree with `rev` (default HEAD), or the `staged` changes. `explain` says why one test is or is not selected; `package` keeps one workspace package. Paginated.",
+        input_schema: affected_schema,
+        run: |index, args| run_query(args, true, |a: AffectedArgs| index.affected(&a)),
     },
 ];
 
@@ -322,7 +329,8 @@ fn verify_schema() -> Value {
             "language": { "type": "string", "enum": ["typescript", "tsx", "javascript", "python", "go", "rust", "java", "c", "cpp", "csharp", "ruby", "php"] },
             "changed": { "type": "boolean", "description": "Check every change in the working tree against HEAD: calls to names that do not exist, wrong argument counts, references the change broke, broken imports, and tests to run." },
             "staged": { "type": "boolean", "description": "Check the staged changes instead." },
-            "diff_from": { "type": "string", "description": "Check the working tree against this git revision instead." }
+            "diff_from": { "type": "string", "description": "Check the working tree against this git revision instead." },
+            "no_baseline": { "type": "boolean", "description": "Count findings in the repository's baseline or accepted breaks as new (they are advisory by default)." }
         }),
         &[],
     )
@@ -372,6 +380,23 @@ fn import_cycles_schema() -> Value {
             "path": { "type": "string", "description": "Filter cycles involving modules under this path prefix." },
             "limit": { "type": "integer", "minimum": 1, "maximum": 1000, "description": "Maximum number of cycles to return (default 100)." }
         }),
+        &[],
+    )
+}
+
+fn affected_schema() -> Value {
+    schema(
+        merge(
+            json!({
+                "rev": { "type": "string", "description": "Git revision to compare the working tree with (default HEAD)." },
+                "staged": { "type": "boolean", "description": "Select for the staged changes instead." },
+                "failed": { "type": "array", "items": { "type": "string" }, "description": "Test paths that failed in an earlier run; they always run." },
+                "explain": { "type": "string", "description": "A test path: say why it is or is not selected." },
+                "package": { "type": "string", "description": "Only tests in this workspace package." },
+                "depth": { "type": "integer", "minimum": 1, "maximum": 12, "description": "Calls or contracts a test may be from the change (default 12)." }
+            }),
+            paging(),
+        ),
         &[],
     )
 }

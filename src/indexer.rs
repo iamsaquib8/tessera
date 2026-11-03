@@ -570,14 +570,19 @@ fn index_discovered(
 }
 
 /// Ignores the index but keeps the shareable project config committable.
-pub const INDEX_DIR_GITIGNORE: &str = "*\n!.gitignore\n!config.toml\n";
+pub const INDEX_DIR_GITIGNORE: &str =
+    "*\n!.gitignore\n!config.toml\n!baseline.json\n!accepted.toml\n";
+/// What earlier versions wrote, replaced when found.
+const OLD_INDEX_DIR_GITIGNORES: &[&str] = &["*\n", "*\n!.gitignore\n!config.toml\n"];
 
 pub fn ignore_index_dir(db_path: &Path) -> Result<()> {
     let Some(dir) = db_path.parent() else {
         return Ok(());
     };
     let ignore_file = dir.join(".gitignore");
-    let outdated = fs::read_to_string(&ignore_file).map_or(true, |content| content == "*\n");
+    let outdated = fs::read_to_string(&ignore_file).map_or(true, |content| {
+        OLD_INDEX_DIR_GITIGNORES.contains(&content.as_str())
+    });
     if dir.file_name().is_some_and(|name| name == ".tessera") && outdated {
         fs::write(ignore_file, INDEX_DIR_GITIGNORE)?;
     }

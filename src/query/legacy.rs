@@ -258,7 +258,14 @@ pub fn diff_impact_conn(
     command
         .arg("-C")
         .arg(root)
-        .args(["-c", "core.quotePath=false", "diff", "-U0", "--relative"])
+        .args([
+            "-c",
+            "core.quotePath=false",
+            "diff",
+            "-U0",
+            "--relative",
+            "--no-renames",
+        ])
         .args(["--no-color", "--no-ext-diff"])
         .arg(&from);
     if let Some(to) = to_ref {

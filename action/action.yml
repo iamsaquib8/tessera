@@ -8,7 +8,7 @@ branding:
 inputs:
   version:
     description: Tessera release to install, e.g. v1.0.0, or `latest`. Defaults to the release this action ships with. Ignored when `binary` is set.
-    default: v1.1.0
+    default: v1.2.0
   binary:
     description: Path to a tessera binary to use instead of installing one.
     default: ""
@@ -16,7 +16,7 @@ inputs:
     description: Revision to compare against. Defaults to the pull request's base commit.
     default: ""
   fail-on:
-    description: "`blocking` fails the job when the report has blocking problems; `never` only comments."
+    description: "`blocking` fails the job when the report has blocking problems; `never` only comments. `new` is the same as `blocking`: findings in the baseline or accepted with a reason never block."
     default: never
   comment:
     description: Post (or update) one comment on the pull request. Falls back to the job summary when the token cannot write.
@@ -24,15 +24,42 @@ inputs:
   token:
     description: Token used to comment.
     default: ${{ github.token }}
+  upload-sarif:
+    description: "`true` also uploads the findings to GitHub code scanning (category `tessera`). The job needs `security-events: write`; a fork's read-only token skips the upload."
+    default: "false"
 
 outputs:
   blocking:
     description: "`true` when the report has blocking problems."
     value: ${{ steps.report.outputs.blocking }}
+  tests:
+    description: The test files the change reaches, one path per line (`tessera affected`).
+    value: ${{ steps.affected.outputs.tests }}
+  tests-file:
+    description: A file holding the same list, for `xargs` or a runner's own file option.
+    value: ${{ steps.affected.outputs.tests-file }}
+  full-run:
+    description: Why every test should run, when one should (a lockfile, build file or CI configuration changed, a `Tessera-No-Skip` trailer, no test files in the index, or Tessera could not select); empty otherwise.
+    value: ${{ steps.affected.outputs.full-run }}
 
 runs:
   using: composite
   steps:
+    - name: Check inputs
+      id: inputs
+      shell: bash
+      env:
+        FAIL_ON: ${{ inputs.fail-on }}
+      run: |
+        # A misspelt value would otherwise never fail the job.
+        case "$FAIL_ON" in
+          never | blocking | new) ;;
+          *)
+            echo "fail-on is \`$FAIL_ON\`; use never, blocking or new." >&2
+            exit 1
+            ;;
+        esac
+
     - name: Install Tessera
       if: inputs.binary == ''
       shell: bash
@@ -44,15 +71,8 @@ runs:
         sh "$GITHUB_ACTION_PATH/../install.sh"
         echo "${TESSERA_INSTALL_DIR}" >> "$GITHUB_PATH"
 
-    - name: Restore the index
-      uses: actions/cache@v4
-      with:
-        path: .tessera/tessera.db
-        key: tessera-${{ runner.os }}-${{ github.sha }}
-        restore-keys: tessera-${{ runner.os }}-
-
-    - name: Report
-      id: report
+    - name: Index cache key
+      id: key
       shell: bash
       env:
         BASE: ${{ inputs.base || github.event.pull_request.base.sha }}
@@ -63,6 +83,39 @@ runs:
           exit 1
         fi
         git cat-file -e "$BASE^{commit}" 2>/dev/null || git fetch --no-tags --depth=1 origin "$BASE"
+        # The change starts from its merge base; a shallow clone without the
+        # history to find it starts from the base itself.
+        merge_base=$(git merge-base HEAD "$BASE" 2>/dev/null || echo "$BASE")
+        echo "tree=$(git rev-parse "$merge_base^{tree}")" >> "$GITHUB_OUTPUT"
+        echo "version=$("$TESSERA" --version | awk '{print $2}')" >> "$GITHUB_OUTPUT"
+
+    # Tessera makes no network calls: actions/cache moves the cache file.
+    - name: Restore the index
+      id: restore
+      uses: actions/cache/restore@v4
+      with:
+        path: ${{ runner.temp }}/tessera-index.cache
+        key: tessera-${{ runner.os }}-${{ steps.key.outputs.version }}-${{ steps.key.outputs.tree }}
+        restore-keys: tessera-${{ runner.os }}-${{ steps.key.outputs.version }}-
+
+    - name: Import the index
+      shell: bash
+      env:
+        TESSERA: ${{ inputs.binary || 'tessera' }}
+        CACHE: ${{ runner.temp }}/tessera-index.cache
+      run: |
+        # A cache Tessera refuses (another configuration) only means a full index.
+        if [ -f "$CACHE" ]; then
+          "$TESSERA" --quiet cache import "$CACHE" || echo "Indexing from scratch." >&2
+        fi
+
+    - name: Report
+      id: report
+      shell: bash
+      env:
+        BASE: ${{ inputs.base || github.event.pull_request.base.sha }}
+        TESSERA: ${{ inputs.binary || 'tessera' }}
+      run: |
         set +e
         "$TESSERA" --quiet verify --diff "$BASE" --format markdown > "$RUNNER_TEMP/tessera-report.md"
         code=$?
@@ -72,6 +125,79 @@ runs:
           exit "$code"
         fi
         if [ "$code" -eq 1 ]; then echo "blocking=true" >> "$GITHUB_OUTPUT"; else echo "blocking=false" >> "$GITHUB_OUTPUT"; fi
+
+    - name: Tests to run
+      id: affected
+      shell: bash
+      env:
+        BASE: ${{ inputs.base || github.event.pull_request.base.sha }}
+        TESSERA: ${{ inputs.binary || 'tessera' }}
+      run: |
+        tests="$RUNNER_TEMP/tessera-tests.txt"
+        log="$RUNNER_TEMP/tessera-affected.log"
+        set +e
+        "$TESSERA" affected "$BASE" > "$tests" 2> "$log"
+        code=$?
+        set -e
+        cat "$log" >&2
+        # A selection Tessera cannot vouch for never skips a test.
+        if [ "$code" -ne 0 ]; then
+          : > "$tests"
+          full="Tessera could not select tests (exit $code); run them all"
+        else
+          full=$(sed -n 's/^full run: //p' "$log" | head -n1)
+          if [ -z "$full" ] && grep -q '^0 of 0 test files selected' "$log"; then
+            full="no test files in the index; run them all"
+          fi
+        fi
+        delimiter="tessera_$(od -An -N8 -tx1 /dev/urandom | tr -d ' \n')"
+        {
+          echo "tests-file=$tests"
+          echo "full-run=$full"
+          echo "tests<<$delimiter"
+          cat "$tests"
+          echo "$delimiter"
+        } >> "$GITHUB_OUTPUT"
+
+    - name: Export the index
+      id: export
+      if: steps.restore.outputs.cache-hit != 'true'
+      shell: bash
+      env:
+        TESSERA: ${{ inputs.binary || 'tessera' }}
+        CACHE: ${{ runner.temp }}/tessera-index.cache
+      run: |
+        "$TESSERA" --quiet cache export "$CACHE" || echo "Could not export the index; it is not cached." >&2
+
+    - name: Save the index
+      if: steps.restore.outputs.cache-hit != 'true'
+      uses: actions/cache/save@v4
+      with:
+        path: ${{ runner.temp }}/tessera-index.cache
+        key: ${{ steps.restore.outputs.cache-primary-key }}
+
+    - name: Code scanning results
+      if: inputs.upload-sarif == 'true'
+      shell: bash
+      env:
+        BASE: ${{ inputs.base || github.event.pull_request.base.sha }}
+        TESSERA: ${{ inputs.binary || 'tessera' }}
+      run: |
+        set +e
+        "$TESSERA" --quiet verify --diff "$BASE" --format sarif > "$RUNNER_TEMP/tessera.sarif"
+        code=$?
+        set -e
+        if [ "$code" -gt 1 ]; then exit "$code"; fi
+
+    - name: Upload to code scanning
+      id: sarif
+      if: inputs.upload-sarif == 'true'
+      # A fork's token cannot write security events; the comment still works.
+      continue-on-error: true
+      uses: github/codeql-action/upload-sarif@v3
+      with:
+        sarif_file: ${{ runner.temp }}/tessera.sarif
+        category: tessera
 
     - name: Comment
       if: inputs.comment == 'true' && github.event.pull_request.number
@@ -101,7 +227,8 @@ runs:
       run: cat "$RUNNER_TEMP/tessera-report.md" >> "$GITHUB_STEP_SUMMARY"
 
     - name: Fail on blocking problems
-      if: inputs.fail-on == 'blocking' && steps.report.outputs.blocking == 'true'
+      id: gate
+      if: inputs.fail-on != 'never' && steps.report.outputs.blocking == 'true'
       shell: bash
       run: |
         echo "Tessera found blocking problems; see the comment or the job summary." >&2

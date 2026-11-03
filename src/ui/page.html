@@ -271,6 +271,7 @@ async function impact() {
     where(c.symbol.path, c.symbol.start_line) + '<span class="sub">' + (c.depth === 1 ? "calls the changed code" : esc(c.depth) + " calls away") + "</span></li>",
     "Nothing calls the changed code.");
   html += "<h2>Tests to run</h2>" + rows(r.verify.tests, (t) => "<li><span class=\"mono\">" + esc(t) + "</span></li>", "No test reaches the changed code.");
+  if ((r.gaps || []).length) html += "<h2>Test gaps</h2>" + rows(r.gaps, (s) => "<li><span>" + symbolLink(s.qualified_name) + '</span>' + where(s.path, s.start_line) + '<span class="sub">no test reaches this changed code</span></li>', "");
   main.innerHTML = html;
 }
 

@@ -160,6 +160,15 @@ impl Sources {
         })
     }
 
+    /// This repository alone, even inside a workspace: paths stay
+    /// unprefixed and no other repository is opened or indexed.
+    pub fn single(conn: &Connection, root: &Path) -> Result<Self> {
+        Ok(Self {
+            repos: vec![(String::new(), reopen(conn)?)],
+            root: root.to_path_buf(),
+        })
+    }
+
     /// Each repository's path prefix (empty outside a workspace) and index.
     pub fn repos(&self) -> &[(String, Connection)] {
         &self.repos

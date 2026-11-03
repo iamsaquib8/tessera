@@ -1,4 +1,48 @@
 {
+  "accept": [
+    "--by",
+    "--db",
+    "--expires",
+    "--help",
+    "--json",
+    "--quiet",
+    "--reason",
+    "--root",
+    "-h",
+    "-q"
+  ],
+  "affected": [
+    "--db",
+    "--depth",
+    "--explain",
+    "--failed",
+    "--format",
+    "--format=cargo",
+    "--format=go-test",
+    "--format=jest",
+    "--format=json",
+    "--format=list",
+    "--format=pytest",
+    "--format=vitest",
+    "--help",
+    "--json",
+    "--package",
+    "--quiet",
+    "--root",
+    "--staged",
+    "-h",
+    "-q"
+  ],
+  "baseline": [
+    "--db",
+    "--help",
+    "--json",
+    "--prune",
+    "--quiet",
+    "--root",
+    "-h",
+    "-q"
+  ],
   "blast": [
     "--cursor",
     "--db",
@@ -10,6 +54,33 @@
     "--quiet",
     "--root",
     "--to",
+    "-h",
+    "-q"
+  ],
+  "cache": [
+    "--db",
+    "--help",
+    "--json",
+    "--quiet",
+    "--root",
+    "-h",
+    "-q"
+  ],
+  "cache export": [
+    "--db",
+    "--help",
+    "--json",
+    "--quiet",
+    "--root",
+    "-h",
+    "-q"
+  ],
+  "cache import": [
+    "--db",
+    "--help",
+    "--json",
+    "--quiet",
+    "--root",
     "-h",
     "-q"
   ],
@@ -179,6 +250,16 @@
     "-h",
     "-q"
   ],
+  "stats": [
+    "--days",
+    "--db",
+    "--help",
+    "--json",
+    "--quiet",
+    "--root",
+    "-h",
+    "-q"
+  ],
   "status": [
     "--db",
     "--help",
@@ -206,9 +287,13 @@
     "--diff",
     "--format",
     "--format=agent",
+    "--format=azure",
+    "--format=bitbucket",
+    "--format=gitlab",
     "--format=human",
     "--format=json",
     "--format=markdown",
+    "--format=ndjson",
     "--format=sarif",
     "--help",
     "--json",
@@ -225,6 +310,7 @@
     "--language=rust",
     "--language=tsx",
     "--language=typescript",
+    "--no-baseline",
     "--quiet",
     "--root",
     "--snippet",

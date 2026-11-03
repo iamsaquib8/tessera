@@ -1,0 +1,979 @@
+//! `tessera affected`: the tests a change reaches, each with a reason, and
+//! the safety rails that widen the selection.
+
+mod support;
+
+use std::fs;
+use std::path::Path;
+use std::process::Command as StdCommand;
+
+use assert_cmd::Command;
+use serde_json::{json, Value};
+use support::{copy_dir, fixture_dir};
+use tempfile::TempDir;
+use tessera_codegraph::query::AffectedArgs;
+use tessera_codegraph::{Index, IndexOptions};
+
+const I18N_TEST: &str =
+    "import { greet } from \"../src/util/i18n\";\n\ntest(\"greets\", () => {\n  expect(greet()).toBe(\"héllo\");\n});\n";
+
+fn temp() -> TempDir {
+    tempfile::Builder::new()
+        .prefix("tessera-affected-")
+        .tempdir()
+        .unwrap()
+}
+
+fn git(root: &Path, args: &[&str]) {
+    let status = StdCommand::new("git")
+        .args(["-c", "user.name=t", "-c", "user.email=t@example.com"])
+        .args(args)
+        .current_dir(root)
+        .status()
+        .unwrap();
+    assert!(status.success(), "git {args:?}");
+}
+
+fn write(root: &Path, path: &str, content: &str) {
+    let file = root.join(path);
+    fs::create_dir_all(file.parent().unwrap()).unwrap();
+    fs::write(file, content).unwrap();
+}
+
+fn edit(root: &Path, path: &str, from: &str, to: &str) {
+    let file = root.join(path);
+    let content = fs::read_to_string(&file).unwrap();
+    assert!(content.contains(from), "{path} lacks {from:?}");
+    fs::write(&file, content.replacen(from, to, 1)).unwrap();
+}
+
+/// A fixture plus `extra` files, committed.
+fn repo(fixture: &str, extra: &[(&str, &str)]) -> TempDir {
+    let temp = temp();
+    copy_dir(&fixture_dir(fixture), temp.path());
+    for (path, content) in extra {
+        write(temp.path(), path, content);
+    }
+    git(temp.path(), &["init", "-q"]);
+    git(temp.path(), &["add", "."]);
+    git(temp.path(), &["commit", "-q", "-m", "base"]);
+    temp
+}
+
+/// The TypeScript fixture with a second test that reaches only `greet`.
+fn ts_repo() -> TempDir {
+    repo("typescript", &[("test/i18n.test.ts", I18N_TEST)])
+}
+
+/// One package per ecosystem, each with a test that reaches one function.
+fn polyglot() -> TempDir {
+    let temp = temp();
+    let files: &[(&str, &str)] = &[
+        ("web/package.json", "{ \"name\": \"@acme/web\", \"private\": true }\n"),
+        ("web/src/math.ts", "export function add(a: number, b: number): number {\n  return a + b;\n}\n"),
+        ("web/test/math.test.ts", "import { add } from \"../src/math\";\n\ntest(\"adds\", () => {\n  expect(add(1, 2)).toBe(3);\n});\n"),
+        ("web/test/other.test.ts", "test(\"other\", () => {\n  expect(1).toBe(1);\n});\n"),
+        ("py/pyproject.toml", "[project]\nname = \"acme-py\"\nversion = \"0.1.0\"\n"),
+        ("py/app/__init__.py", ""),
+        ("py/app/calc.py", "def double(x):\n    return x * 2\n"),
+        ("py/tests/test_calc.py", "from app.calc import double\n\n\nclass TestCalc:\n    def test_double(self):\n        assert double(2) == 4\n\n\ndef test_other():\n    assert True\n"),
+        ("go/go.mod", "module example.com/acme\n\ngo 1.22\n"),
+        ("go/calc/calc.go", "package calc\n\nfunc Triple(x int) int {\n\treturn x * 3\n}\n"),
+        ("go/calc/calc_test.go", "package calc\n\nimport \"testing\"\n\nfunc TestTriple(t *testing.T) {\n\tif Triple(1) != 3 {\n\t\tt.Fatal(\"triple\")\n\t}\n}\n\nfunc TestNothing(t *testing.T) {}\n"),
+        ("rs/Cargo.toml", "[package]\nname = \"acme-rs\"\nversion = \"0.1.0\"\nedition = \"2021\"\n"),
+        ("rs/src/lib.rs", "pub fn quad(x: i32) -> i32 {\n    x * 4\n}\n\nfn half(x: i32) -> i32 {\n    x / 2\n}\n\n#[cfg(test)]\nmod tests {\n    use super::*;\n\n    #[test]\n    fn halves() {\n        let got = half(4);\n        assert_eq!(got, 2);\n    }\n}\n"),
+        ("rs/tests/quad.rs", "use acme_rs::quad;\n\n#[test]\nfn quads() {\n    let got = quad(1);\n    assert_eq!(got, 4);\n}\n"),
+        ("java/pom.xml", "<project>\n  <parent>\n    <artifactId>acme-parent</artifactId>\n  </parent>\n  <artifactId>acme-java</artifactId>\n</project>\n"),
+        ("java/src/main/java/acme/Calc.java", "package acme;\n\npublic class Calc {\n  public static int neg(int x) {\n    return -x;\n  }\n}\n"),
+        ("java/src/test/java/acme/CalcTest.java", "package acme;\n\nclass CalcTest {\n  void negates() {\n    Calc.neg(1);\n  }\n}\n"),
+    ];
+    for (path, content) in files {
+        write(temp.path(), path, content);
+    }
+    git(temp.path(), &["init", "-q"]);
+    git(temp.path(), &["add", "."]);
+    git(temp.path(), &["commit", "-q", "-m", "base"]);
+    temp
+}
+
+/// Edits the function each polyglot test reaches.
+fn edit_polyglot(root: &Path) {
+    edit(root, "web/src/math.ts", "a + b", "b + a");
+    edit(root, "py/app/calc.py", "x * 2", "2 * x");
+    edit(root, "go/calc/calc.go", "x * 3", "3 * x");
+    edit(root, "rs/src/lib.rs", "x * 4", "4 * x");
+    edit(
+        root,
+        "java/src/main/java/acme/Calc.java",
+        "return -x;",
+        "return 0 - x;",
+    );
+}
+
+fn tessera(root: &Path) -> Command {
+    let mut cmd = Command::cargo_bin("tessera").unwrap();
+    cmd.current_dir(root).env_remove("TESSERA_DB");
+    cmd
+}
+
+/// `(exit code, stdout, stderr)` of `tessera --quiet affected <args>`.
+fn affected(root: &Path, args: &[&str]) -> (i32, String, String) {
+    let output = tessera(root)
+        .arg("--quiet")
+        .arg("affected")
+        .args(args)
+        .output()
+        .unwrap();
+    (
+        output.status.code().unwrap(),
+        String::from_utf8(output.stdout).unwrap(),
+        String::from_utf8(output.stderr).unwrap(),
+    )
+}
+
+fn affected_json(root: &Path, args: &[&str]) -> Value {
+    let (code, stdout, stderr) = affected(root, &[args, &["--format", "json"]].concat());
+    assert_eq!(code, 0, "{stderr}");
+    serde_json::from_str(&stdout).unwrap_or_else(|e| panic!("{e}: {stdout}\n{stderr}"))
+}
+
+/// `path kind` for each selected test.
+fn selected(value: &Value) -> Vec<String> {
+    value["tests"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| {
+            format!(
+                "{} {}",
+                t["path"].as_str().unwrap(),
+                t["kind"].as_str().unwrap()
+            )
+        })
+        .collect()
+}
+
+fn test<'a>(value: &'a Value, path: &str) -> &'a Value {
+    value["tests"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|t| t["path"] == path)
+        .unwrap_or_else(|| panic!("{path} not selected: {value:#}"))
+}
+
+fn chain(test: &Value) -> Vec<String> {
+    test["chain"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|step| step["symbol"].as_str().unwrap().to_string())
+        .collect()
+}
+
+#[test]
+fn a_changed_function_selects_the_tests_that_reach_it_with_the_path() {
+    let temp = ts_repo();
+    let root = temp.path();
+    edit(
+        root,
+        "src/util/format.ts",
+        "name.trim()",
+        "name.trim().toLowerCase()",
+    );
+    let value = affected_json(root, &[]);
+    assert_eq!(selected(&value), vec!["test/repo.test.ts reached"]);
+    let repo = test(&value, "test/repo.test.ts");
+    assert_eq!(
+        chain(repo),
+        vec![
+            "describe(\"loadUser\").it(\"returns the user\")",
+            "loadUser",
+            "UserRepo.findById",
+            "formatName"
+        ]
+    );
+    assert_eq!(repo["changed"], "formatName");
+    let reason = repo["reason"].as_str().unwrap();
+    assert!(
+        reason.contains("loadUser → UserRepo.findById → formatName"),
+        "{reason}"
+    );
+    assert_eq!(
+        value["totals"],
+        json!({ "selected": 1, "total": 2, "skipped": 1 })
+    );
+    assert!(value["full_run"].is_null());
+
+    let (code, stdout, _) = affected(root, &[]);
+    assert_eq!((code, stdout.as_str()), (0, "test/repo.test.ts\n"));
+}
+
+#[test]
+fn new_and_changed_tests_always_run() {
+    let temp = ts_repo();
+    let root = temp.path();
+    edit(root, "test/i18n.test.ts", "\"greets\"", "\"says hello\"");
+    write(
+        root,
+        "test/new.test.ts",
+        "test(\"new\", () => {\n  expect(2).toBe(2);\n});\n",
+    );
+    let value = affected_json(root, &[]);
+    assert_eq!(
+        selected(&value),
+        vec!["test/i18n.test.ts changed", "test/new.test.ts changed"]
+    );
+    let new = test(&value, "test/new.test.ts")["reason"].as_str().unwrap();
+    assert!(new.contains("new"), "{new}");
+    assert_eq!(value["totals"]["total"], 3);
+}
+
+#[test]
+fn a_renamed_function_selects_the_tests_of_its_broken_callers() {
+    let temp = ts_repo();
+    let root = temp.path();
+    edit(
+        root,
+        "src/util/format.ts",
+        "export function formatName(",
+        "export function formatDisplayName(",
+    );
+    let value = affected_json(root, &[]);
+    assert_eq!(selected(&value), vec!["test/repo.test.ts reached"]);
+    let repo = test(&value, "test/repo.test.ts");
+    assert_eq!(chain(repo).last().unwrap(), "formatName");
+    let reason = repo["reason"].as_str().unwrap();
+    assert!(
+        reason.contains("UserRepo.findById → formatName"),
+        "{reason}"
+    );
+}
+
+#[test]
+fn a_deleted_file_selects_the_tests_of_its_importers() {
+    let temp = ts_repo();
+    let root = temp.path();
+    fs::remove_file(root.join("src/util/format.ts")).unwrap();
+    let value = affected_json(root, &[]);
+    assert_eq!(selected(&value), vec!["test/repo.test.ts reached"]);
+}
+
+#[test]
+fn a_changed_route_handler_selects_the_client_tests_in_another_service() {
+    let client_test = "import { loadUser } from \"../src/client\";\n\ntest(\"loads\", async () => {\n  await loadUser(\"1\");\n});\n";
+    let temp = repo(
+        "contracts-http",
+        &[("web/test/client.test.ts", client_test)],
+    );
+    let root = temp.path();
+    edit(
+        root,
+        "api/src/app.js",
+        "res.json({ id: req.params.id });",
+        "res.json({ id: req.params.id, ok: true });",
+    );
+    let value = affected_json(root, &[]);
+    assert_eq!(selected(&value), vec!["web/test/client.test.ts reached"]);
+    let client = test(&value, "web/test/client.test.ts");
+    assert_eq!(
+        chain(client),
+        vec!["test(\"loads\")", "loadUser", "getUser"]
+    );
+    assert_eq!(client["chain"][2]["via"], "route GET /api/users/{}");
+    let reason = client["reason"].as_str().unwrap();
+    assert!(
+        reason.contains("loadUser → getUser via route GET /api/users/{}"),
+        "{reason}"
+    );
+    assert_eq!(client["package"], "web");
+}
+
+#[test]
+fn a_changed_client_selects_the_tests_of_the_service_it_calls() {
+    let temp = repo("contracts-http", &[]);
+    let root = temp.path();
+    edit(
+        root,
+        "billing/src/main/java/billing/Invoices.java",
+        "\"http://owners-service/owners/\" + id",
+        "\"http://owners-service/owners/\" + (id + 0)",
+    );
+    let value = affected_json(root, &[]);
+    assert_eq!(
+        selected(&value),
+        vec!["owners/src/test/java/petclinic/OwnerControllerTests.java reached"]
+    );
+    let owners = test(
+        &value,
+        "owners/src/test/java/petclinic/OwnerControllerTests.java",
+    );
+    assert_eq!(
+        chain(owners),
+        vec![
+            "OwnerControllerTests.showsOwner",
+            "OwnerController.showOwner",
+            "Invoices.owner"
+        ]
+    );
+    let reason = owners["reason"].as_str().unwrap();
+    assert!(reason.contains("via route GET /owners/{}"), "{reason}");
+}
+
+#[test]
+fn a_renamed_file_counts_as_deleted_at_its_old_path() {
+    // Committed, staged, and in the working tree: git reports a rename
+    // under the new name only, but the importers of the old one break.
+    for mode in ["committed", "staged", "working tree"] {
+        let temp = repo(
+            "typescript",
+            &[("test/i18n.test.ts", I18N_TEST), ("yarn.lock", "# lock\n")],
+        );
+        let root = temp.path();
+        git(root, &["mv", "src/util/format.ts", "src/util/fmt.ts"]);
+        let args: &[&str] = match mode {
+            "committed" => {
+                git(root, &["commit", "-q", "-m", "rename"]);
+                &["HEAD~1"]
+            }
+            "staged" => &["--staged"],
+            _ => &[],
+        };
+        let value = affected_json(root, args);
+        assert_eq!(
+            selected(&value),
+            vec!["test/repo.test.ts reached"],
+            "{mode}: {value:#}"
+        );
+
+        git(root, &["mv", "yarn.lock", "yarn.lock.bak"]);
+        if mode == "committed" {
+            git(root, &["commit", "-q", "-m", "rename the lockfile"]);
+        }
+        let value = affected_json(root, args);
+        let reason = value["full_run"].as_str().unwrap_or_default();
+        assert!(reason.contains("yarn.lock"), "{mode}: {value:#}");
+    }
+}
+
+#[test]
+fn lockfiles_build_files_config_and_fixtures_run_the_full_suite() {
+    let temp = ts_repo();
+    let root = temp.path();
+    for path in [
+        "package-lock.json",
+        "pnpm-lock.yaml",
+        "yarn.lock",
+        "Cargo.lock",
+        "go.sum",
+        "poetry.lock",
+        "uv.lock",
+        "Gemfile.lock",
+        "pom.xml",
+        "build.gradle.kts",
+        "package.json",
+        "Cargo.toml",
+        "go.mod",
+        "pyproject.toml",
+        "requirements-dev.txt",
+        "tsconfig.build.json",
+        "jest.config.js",
+        "vitest.config.ts",
+        "pytest.ini",
+        ".tessera/config.toml",
+        ".github/workflows/ci.yml",
+        "test/fixtures/user.json",
+        "test/__snapshots__/repo.test.ts.snap",
+        "pkg/testdata/input.txt",
+    ] {
+        write(root, path, "# changed\n");
+        let value = affected_json(root, &[]);
+        let reason = value["full_run"]
+            .as_str()
+            .unwrap_or_else(|| panic!("{path}: {value:#}"));
+        assert!(reason.contains(path), "{path}: {reason}");
+        assert_eq!(
+            value["totals"],
+            json!({ "selected": 2, "total": 2, "skipped": 0 }),
+            "{path}"
+        );
+        assert!(
+            selected(&value).iter().all(|t| t.ends_with(" full-run")),
+            "{path}: {value:#}"
+        );
+        fs::remove_file(root.join(path)).unwrap();
+    }
+    write(root, "README.md", "# changed\n");
+    write(root, "docs/notes.md", "notes\n");
+    let value = affected_json(root, &[]);
+    assert!(value["full_run"].is_null(), "{value:#}");
+    assert_eq!(value["totals"]["selected"], 0);
+}
+
+#[test]
+fn a_no_skip_trailer_in_the_range_selects_everything() {
+    let temp = ts_repo();
+    let root = temp.path();
+    edit(
+        root,
+        "src/util/i18n.ts",
+        "return \"héllo\";",
+        "return \"hello\";",
+    );
+    git(
+        root,
+        &[
+            "commit",
+            "-q",
+            "-am",
+            "docs: mention Tessera-No-Skip: in the subject only",
+        ],
+    );
+    let value = affected_json(root, &["HEAD~1"]);
+    assert!(value["full_run"].is_null(), "{value:#}");
+    assert_eq!(selected(&value), vec!["test/i18n.test.ts reached"]);
+
+    edit(
+        root,
+        "src/util/i18n.ts",
+        "return \"hello\";",
+        "return \"hi\";",
+    );
+    git(
+        root,
+        &["commit", "-q", "-am", "fix: tweak the greeting\n\nIt is used everywhere.\n\nTessera-No-Skip: shared copy\nRefs: #12"],
+    );
+    let value = affected_json(root, &["HEAD~2"]);
+    let reason = value["full_run"].as_str().unwrap();
+    assert!(reason.contains("Tessera-No-Skip"), "{reason}");
+    assert_eq!(
+        value["totals"],
+        json!({ "selected": 2, "total": 2, "skipped": 0 })
+    );
+}
+
+#[test]
+fn previously_failed_tests_always_run() {
+    let temp = ts_repo();
+    let root = temp.path();
+    let lists = temp_dir_outside();
+    let failed = lists.path().join("failed.txt");
+    fs::write(
+        &failed,
+        "test/i18n.test.ts\n\n# from the last run\n./test/repo.test.ts\ntest/gone.test.ts\n",
+    )
+    .unwrap();
+    let value = affected_json(root, &["--failed", failed.to_str().unwrap()]);
+    assert_eq!(
+        selected(&value),
+        vec!["test/i18n.test.ts always", "test/repo.test.ts always"]
+    );
+    let notes = value["notes"].to_string();
+    assert!(notes.contains("test/gone.test.ts"), "{notes}");
+
+    let missing = lists.path().join("missing.txt");
+    let (code, _, stderr) = affected(root, &["--failed", missing.to_str().unwrap()]);
+    assert_eq!(code, 2, "{stderr}");
+}
+
+fn temp_dir_outside() -> TempDir {
+    tempfile::Builder::new()
+        .prefix("tessera-affected-lists-")
+        .tempdir()
+        .unwrap()
+}
+
+#[test]
+fn explain_says_why_a_test_is_or_is_not_selected() {
+    let temp = ts_repo();
+    let root = temp.path();
+    edit(
+        root,
+        "src/util/format.ts",
+        "name.trim()",
+        "name.trim().toLowerCase()",
+    );
+    let (code, stdout, stderr) = affected(root, &["--explain", "test/repo.test.ts"]);
+    assert_eq!(code, 0, "{stderr}");
+    assert!(
+        stdout.starts_with("test/repo.test.ts is selected"),
+        "{stdout}"
+    );
+    assert!(
+        stdout.contains("loadUser → UserRepo.findById → formatName"),
+        "{stdout}"
+    );
+
+    let (_, stdout, _) = affected(root, &["--explain", "./test/i18n.test.ts"]);
+    assert_eq!(
+        stdout,
+        "test/i18n.test.ts is not selected: no path from the changed symbols within depth 12\n"
+    );
+    let (_, stdout, _) = affected(root, &["--explain", "test/i18n.test.ts", "--depth", "2"]);
+    assert!(stdout.contains("within depth 2"), "{stdout}");
+    let (_, stdout, _) = affected(root, &["--explain", "src/util/format.ts"]);
+    assert!(stdout.contains("is not a test file"), "{stdout}");
+
+    let value = affected_json(root, &["--explain", "test/repo.test.ts"]);
+    assert_eq!(value["explain"]["selected"], true);
+    assert_eq!(value["explain"]["test"], "test/repo.test.ts");
+}
+
+#[test]
+fn runner_formats_name_the_tests_each_runner_takes() {
+    let temp = polyglot();
+    let root = temp.path();
+    edit_polyglot(root);
+    let (code, stdout, stderr) = affected(root, &[]);
+    assert_eq!(code, 0, "{stderr}");
+    assert_eq!(
+        stdout,
+        "go/calc/calc_test.go\njava/src/test/java/acme/CalcTest.java\npy/tests/test_calc.py\nrs/tests/quad.rs\nweb/test/math.test.ts\n"
+    );
+    for (format, expected) in [
+        ("jest", "jest --runTestsByPath web/test/math.test.ts\n"),
+        ("vitest", "vitest run web/test/math.test.ts\n"),
+        (
+            "pytest",
+            "pytest py/tests/test_calc.py::TestCalc::test_double\n",
+        ),
+        ("go-test", "go -C go test ./calc -run '^(TestTriple)$'\n"),
+        ("cargo", "cargo test -p acme-rs --test quad\n"),
+    ] {
+        let (code, stdout, stderr) = affected(root, &["--format", format]);
+        assert_eq!(code, 0, "{format}: {stderr}");
+        assert_eq!(stdout, expected, "{format}");
+    }
+    let value = affected_json(root, &[]);
+    for (path, package) in [
+        ("web/test/math.test.ts", "@acme/web"),
+        ("py/tests/test_calc.py", "acme-py"),
+        ("go/calc/calc_test.go", "example.com/acme"),
+        ("rs/tests/quad.rs", "acme-rs"),
+        ("java/src/test/java/acme/CalcTest.java", "acme-java"),
+    ] {
+        assert_eq!(test(&value, path)["package"], package, "{path}");
+    }
+
+    // A unit test inside the crate's sources runs the whole package.
+    edit(root, "rs/src/lib.rs", "x / 2", "x >> 1");
+    let (_, stdout, _) = affected(root, &["--format", "cargo"]);
+    assert_eq!(stdout, "cargo test -p acme-rs\n");
+    let value = affected_json(root, &[]);
+    assert_eq!(test(&value, "rs/src/lib.rs")["kind"], "reached");
+
+    // A full run lists whole files and packages.
+    write(root, "web/package-lock.json", "{}\n");
+    for (format, expected) in [
+        (
+            "jest",
+            "jest --runTestsByPath web/test/math.test.ts web/test/other.test.ts\n",
+        ),
+        ("pytest", "pytest py/tests/test_calc.py\n"),
+        ("go-test", "go -C go test ./calc\n"),
+        ("cargo", "cargo test -p acme-rs\n"),
+    ] {
+        let (_, stdout, _) = affected(root, &["--format", format]);
+        assert_eq!(stdout, expected, "full run {format}");
+    }
+}
+
+#[test]
+fn package_restricts_the_selection_to_one_workspace_package() {
+    let temp = polyglot();
+    let root = temp.path();
+    edit_polyglot(root);
+    let (code, stdout, stderr) = affected(root, &["--package", "@acme/web"]);
+    assert_eq!(code, 0, "{stderr}");
+    assert_eq!(stdout, "web/test/math.test.ts\n");
+    let value = affected_json(root, &["--package", "@acme/web"]);
+    assert_eq!(
+        value["totals"],
+        json!({ "selected": 1, "total": 2, "skipped": 1 })
+    );
+
+    let (_, stdout, _) = affected(root, &["--package", "acme-java"]);
+    assert_eq!(stdout, "java/src/test/java/acme/CalcTest.java\n");
+
+    let (code, _, stderr) = affected(root, &["--package", "no-such-package"]);
+    assert_eq!(code, 2);
+    assert!(stderr.contains("no-such-package"), "{stderr}");
+}
+
+#[test]
+fn staged_selects_for_the_staged_changes_only() {
+    let temp = ts_repo();
+    let root = temp.path();
+    edit(
+        root,
+        "src/util/format.ts",
+        "name.trim()",
+        "name.trim().toLowerCase()",
+    );
+    git(root, &["add", "src/util/format.ts"]);
+    edit(
+        root,
+        "src/util/i18n.ts",
+        "return \"héllo\";",
+        "return \"hello\";",
+    );
+    let (code, stdout, stderr) = affected(root, &["--staged"]);
+    assert_eq!(code, 0, "{stderr}");
+    assert_eq!(stdout, "test/repo.test.ts\n");
+}
+
+#[test]
+fn no_tests_no_git_and_a_detached_head() {
+    let temp = temp();
+    let root = temp.path();
+    write(root, "src/a.ts", "export const a = 1;\n");
+    git(root, &["init", "-q"]);
+    git(root, &["add", "."]);
+    git(root, &["commit", "-q", "-m", "base"]);
+    edit(root, "src/a.ts", "= 1", "= 2");
+    let output = tessera(root).arg("affected").output().unwrap();
+    assert_eq!(output.status.code(), Some(0));
+    assert!(output.stdout.is_empty());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("no test files"), "{stderr}");
+    let value = affected_json(root, &[]);
+    assert!(
+        value["notes"].to_string().contains("no test files"),
+        "{value:#}"
+    );
+    assert_eq!(value["totals"]["total"], 0);
+
+    let plain = temp_dir_outside();
+    copy_dir(&fixture_dir("typescript"), plain.path());
+    let (code, _, stderr) = affected(plain.path(), &[]);
+    assert_eq!(code, 2, "{stderr}");
+    assert!(stderr.contains("git repository"), "{stderr}");
+
+    let temp = ts_repo();
+    let root = temp.path();
+    edit(
+        root,
+        "src/util/i18n.ts",
+        "return \"héllo\";",
+        "return \"hello\";",
+    );
+    git(root, &["commit", "-q", "-am", "second"]);
+    git(root, &["checkout", "-q", "--detach", "HEAD~1"]);
+    edit(
+        root,
+        "src/util/format.ts",
+        "name.trim()",
+        "name.trim().toLowerCase()",
+    );
+    for args in [&[][..], &["HEAD"]] {
+        let (code, stdout, stderr) = affected(root, args);
+        assert_eq!(
+            (code, stdout.as_str()),
+            (0, "test/repo.test.ts\n"),
+            "{stderr}"
+        );
+    }
+    let (code, _, stderr) = affected(root, &["no-such-rev"]);
+    assert_eq!(code, 2, "{stderr}");
+}
+
+#[test]
+fn output_is_byte_identical_across_runs() {
+    let temp = polyglot();
+    let root = temp.path();
+    edit_polyglot(root);
+    write(
+        root,
+        "py/tests/test_more.py",
+        "def test_more():\n    assert True\n",
+    );
+    for args in [&["--format", "json"][..], &[], &["--format", "go-test"]] {
+        let first = affected(root, args);
+        let second = affected(root, args);
+        assert_eq!(first, second, "{args:?}");
+    }
+}
+
+#[test]
+fn the_library_pages_the_selection() {
+    let temp = ts_repo();
+    let root = temp.path();
+    let dir = temp_dir_outside();
+    let db = dir.path().join("tessera.db");
+    Index::build(root, &db, IndexOptions::default()).unwrap();
+    let index = Index::open(&db).unwrap();
+    let args = AffectedArgs {
+        failed: vec!["test/i18n.test.ts".into(), "test/repo.test.ts".into()],
+        limit: 1,
+        ..AffectedArgs::default()
+    };
+    let result = index.affected(&args).unwrap();
+    assert_eq!(result.tests.len(), 1);
+    assert_eq!(result.page.total, 2);
+    assert_eq!(result.totals.selected, 2);
+    assert!(result.page.next_cursor.is_some());
+}
+
+#[test]
+fn the_mcp_tool_selects_and_explains() {
+    let temp = ts_repo();
+    let root = temp.path();
+    edit(
+        root,
+        "src/util/format.ts",
+        "name.trim()",
+        "name.trim().toLowerCase()",
+    );
+    let dir = temp_dir_outside();
+    let db = dir.path().join("tessera.db");
+    Index::build(root, &db, IndexOptions::default()).unwrap();
+    let index = Index::open(&db).unwrap();
+    let tool = tessera_codegraph::mcp::registry()
+        .iter()
+        .find(|tool| tool.name == "affected")
+        .expect("an `affected` MCP tool");
+    let output = (tool.run)(
+        &index,
+        json!({ "failed": ["test/i18n.test.ts"], "explain": "test/repo.test.ts" }),
+    )
+    .unwrap_or_else(|_| panic!("the affected tool failed"));
+    assert!(
+        output
+            .text
+            .starts_with("test/repo.test.ts is selected (reached)"),
+        "{}",
+        output.text
+    );
+    assert!(
+        output.text.contains("2 of 2 test files selected"),
+        "{}",
+        output.text
+    );
+    assert_eq!(output.json["totals"]["selected"], 2);
+
+    let tools = tessera_codegraph::mcp::registry();
+    let schema = (tools
+        .iter()
+        .find(|t| t.name == "affected")
+        .unwrap()
+        .input_schema)();
+    assert_eq!(schema["required"], json!([]));
+}
+
+#[test]
+fn a_change_reached_through_test_main_runs_the_whole_go_package() {
+    let temp = polyglot();
+    let root = temp.path();
+    write(
+        root,
+        "go/calc/main_test.go",
+        "package calc\n\nimport (\n\t\"os\"\n\t\"testing\"\n)\n\nfunc TestMain(m *testing.M) {\n\tsetup()\n\tos.Exit(m.Run())\n}\n",
+    );
+    write(
+        root,
+        "go/calc/setup.go",
+        "package calc\n\nvar ready bool\n\nfunc setup() {\n\tready = true\n}\n",
+    );
+    git(root, &["add", "."]);
+    git(root, &["commit", "-q", "-m", "setup"]);
+    edit(root, "go/calc/setup.go", "ready = true", "ready = !ready");
+    let (code, stdout, stderr) = affected(root, &["--format", "go-test"]);
+    assert_eq!(code, 0, "{stderr}");
+    // `-run '^(TestMain)$'` would run no test at all.
+    assert_eq!(stdout, "go -C go test ./calc\n");
+}
+
+#[test]
+fn lockfiles_and_ci_files_above_the_index_root_run_the_full_suite() {
+    // A monorepo whose service has its own index: the root lockfile and CI
+    // configuration change what its tests run against; a sibling's do not.
+    let temp = temp();
+    let top = temp.path();
+    let api = top.join("services/api");
+    copy_dir(&fixture_dir("typescript"), &api);
+    fs::create_dir_all(api.join(".tessera")).unwrap();
+    write(top, "pnpm-lock.yaml", "lockfileVersion: 9\n");
+    write(top, ".github/workflows/ci.yml", "on: push\n");
+    write(top, "services/web/package.json", "{}\n");
+    git(top, &["init", "-q"]);
+    git(top, &["add", "."]);
+    git(top, &["commit", "-q", "-m", "base"]);
+
+    write(top, "services/web/package.json", "{ \"name\": \"web\" }\n");
+    let value = affected_json(&api, &[]);
+    assert!(
+        value["full_run"].is_null(),
+        "a sibling's build file: {value:#}"
+    );
+
+    for (path, shown) in [
+        ("pnpm-lock.yaml", "../../pnpm-lock.yaml"),
+        (".github/workflows/ci.yml", "../../.github/workflows/ci.yml"),
+    ] {
+        let before = fs::read_to_string(top.join(path)).unwrap();
+        write(top, path, &format!("{before}# changed\n"));
+        let value = affected_json(&api, &[]);
+        let reason = value["full_run"].as_str().unwrap_or_default();
+        assert!(reason.contains(shown), "{path}: {value:#}");
+        git(top, &["commit", "-q", "-am", "change"]);
+        let value = affected_json(&api, &["HEAD~1"]);
+        let reason = value["full_run"].as_str().unwrap_or_default();
+        assert!(reason.contains(shown), "{path} committed: {value:#}");
+    }
+}
+
+#[test]
+fn a_shallow_clone_says_it_cannot_read_every_trailer() {
+    let temp = ts_repo();
+    edit(
+        temp.path(),
+        "src/util/i18n.ts",
+        "return \"héllo\";",
+        "return \"hello\";",
+    );
+    git(temp.path(), &["commit", "-q", "-am", "second"]);
+    let clones = temp_dir_outside();
+    let clone = clones.path().join("clone");
+    let url = format!("file://{}", temp.path().display());
+    git(
+        clones.path(),
+        &["clone", "-q", "--depth", "1", &url, clone.to_str().unwrap()],
+    );
+    let value = affected_json(&clone, &["HEAD"]);
+    assert!(value["notes"].to_string().contains("shallow"), "{value:#}");
+    // A full clone has nothing to say.
+    let value = affected_json(temp.path(), &["HEAD~1"]);
+    assert!(!value["notes"].to_string().contains("shallow"), "{value:#}");
+}
+
+/// One change to `helper`, reached only from inside the symbol a test uses:
+/// a callback in a function, a constructor, a component's `render`, and a
+/// method the test calls by a bracket expression.
+#[test]
+fn code_inside_a_function_or_class_reaches_the_tests_of_its_container() {
+    let temp = temp();
+    let root = temp.path();
+    write(
+        root,
+        "src/util.ts",
+        "export function helper(s: string): string {\n  return s.trim();\n}\n",
+    );
+    write(root, "src/factory.ts", "import { helper } from \"./util\";\n\nexport function build(paths: string[]): string[] {\n  return paths.map((p) => helper(p));\n}\n");
+    write(root, "src/ctor.ts", "import { helper } from \"./util\";\n\nexport class Greeter {\n  readonly name: string;\n  constructor(name: string) {\n    this.name = helper(name);\n  }\n}\n");
+    write(root, "src/App.tsx", "import React from \"react\";\nimport { helper } from \"./util\";\n\nexport class App extends React.Component {\n  render() {\n    return <div>{helper(\" a \")}</div>;\n  }\n}\n");
+    write(root, "src/socket.ts", "import { helper } from \"./util\";\n\nexport class Socket {\n  private handleData(d: string): string {\n    return helper(d);\n  }\n}\n");
+    write(root, "test/callback.spec.ts", "import { build } from \"../src/factory\";\n\nit(\"trims each path\", () => {\n  expect(build([\" a \"])).toEqual([\"a\"]);\n});\n");
+    write(root, "test/ctor.spec.ts", "import { Greeter } from \"../src/ctor\";\n\nit(\"trims the name\", () => {\n  expect(new Greeter(\" a \").name).toBe(\"a\");\n});\n");
+    write(root, "test/app.test.tsx", "import React from \"react\";\nimport { render } from \"@testing-library/react\";\nimport { App } from \"../src/App\";\n\nit(\"renders trimmed\", () => {\n  expect(render(<App />).container.textContent).toBe(\"a\");\n});\n");
+    write(root, "test/socket.spec.ts", "import { Socket } from \"../src/socket\";\n\nit(\"handles data\", () => {\n  expect(new Socket()[\"handleData\"](\" a \")).toBe(\"a\");\n});\n");
+    git(root, &["init", "-q"]);
+    git(root, &["add", "."]);
+    git(root, &["commit", "-q", "-m", "base"]);
+    edit(root, "src/util.ts", "s.trim()", "s.trimStart()");
+    let value = affected_json(root, &[]);
+    assert_eq!(
+        selected(&value),
+        vec![
+            "test/app.test.tsx reached",
+            "test/callback.spec.ts reached",
+            "test/ctor.spec.ts reached",
+            "test/socket.spec.ts reached",
+        ],
+        "{value:#}"
+    );
+    let explained = affected_json(root, &["--explain", "test/app.test.tsx"]);
+    let line = explained["explain"].to_string();
+    assert!(
+        line.contains("App.render") && line.contains("helper"),
+        "{line}"
+    );
+}
+
+/// Go calls with more same-named definitions than the resolver links stay
+/// unresolved; they still reach the code they may call.
+#[test]
+fn unresolved_go_calls_reach_same_package_functions_and_every_implementation() {
+    let temp = temp();
+    let root = temp.path();
+    write(root, "go.mod", "module example.com/r\n\ngo 1.22\n");
+    for pkg in ["a", "b", "c", "d", "e", "f"] {
+        write(
+            root,
+            &format!("{pkg}/{pkg}.go"),
+            &format!("package {pkg}\n\nfunc Convert(s string) string {{\n\treturn s + \"{pkg}\"\n}}\n\ntype Sampler{pkg} struct{{}}\n\nfunc (Sampler{pkg}) ShouldSample(n int) bool {{\n\treturn n > 0\n}}\n"),
+        );
+    }
+    write(root, "a/a_test.go", "package a\n\nimport \"testing\"\n\nfunc TestConvert(t *testing.T) {\n\tif Convert(\"x\") != \"xa\" {\n\t\tt.Fatal()\n\t}\n}\n\nfunc TestSample(t *testing.T) {\n\tvar s Samplera\n\tif !s.ShouldSample(1) {\n\t\tt.Fatal()\n\t}\n}\n");
+    write(root, "sampler/sampler.go", "package sampler\n\ntype Sampler interface {\n\tShouldSample(n int) bool\n}\n\nfunc Run(s Sampler) bool {\n\treturn s.ShouldSample(1)\n}\n");
+    write(root, "sampler/sampler_test.go", "package sampler\n\nimport (\n\t\"testing\"\n\n\t\"example.com/r/c\"\n)\n\nfunc TestRun(t *testing.T) {\n\tif !Run(c.Samplerc{}) {\n\t\tt.Fatal()\n\t}\n}\n");
+    git(root, &["init", "-q"]);
+    git(root, &["add", "."]);
+    git(root, &["commit", "-q", "-m", "base"]);
+
+    edit(root, "a/a.go", "return s + \"a\"", "return s + \"aa\"");
+    let value = affected_json(root, &[]);
+    assert!(
+        selected(&value).contains(&"a/a_test.go reached".to_string()),
+        "a same-package call among six Converts: {value:#}"
+    );
+    assert!(
+        !selected(&value).iter().any(|t| t.starts_with("sampler/")),
+        "a bare call in another package is not one of them: {value:#}"
+    );
+
+    git(root, &["checkout", "-q", "--", "."]);
+    edit(root, "c/c.go", "return n > 0", "return n > 1");
+    let value = affected_json(root, &[]);
+    assert!(
+        selected(&value).contains(&"sampler/sampler_test.go reached".to_string()),
+        "an interface call reaches every implementation: {value:#}"
+    );
+    // A same-named method call in a package that does not import `c`
+    // cannot run the changed code.
+    assert!(
+        !selected(&value).iter().any(|t| t.starts_with("a/")),
+        "package a calls only its own ShouldSample: {value:#}"
+    );
+}
+
+/// A Go test runs only code its package imports, directly or not, so the
+/// tests of every package that imports the changed one are selected, even
+/// when the call reaches it through a function value no call graph sees.
+#[test]
+fn go_tests_of_packages_that_import_the_changed_one_are_selected() {
+    let temp = temp();
+    let root = temp.path();
+    write(root, "go.mod", "module example.com/r\n\ngo 1.22\n");
+    write(
+        root,
+        "core/core.go",
+        "package core\n\nfunc Double(n int) int {\n\treturn n * 2\n}\n",
+    );
+    write(root, "mid/mid.go", "package mid\n\nimport \"example.com/r/core\"\n\nvar op = core.Double\n\nfunc Apply(n int) int {\n\treturn op(n)\n}\n");
+    write(root, "top/top.go", "package top\n\nimport \"example.com/r/mid\"\n\nfunc Run() int {\n\treturn mid.Apply(2)\n}\n");
+    write(root, "top/top_test.go", "package top\n\nimport \"testing\"\n\nfunc TestRun(t *testing.T) {\n\tif Run() != 4 {\n\t\tt.Fatal()\n\t}\n}\n");
+    write(
+        root,
+        "other/other.go",
+        "package other\n\nfunc Name() string {\n\treturn \"other\"\n}\n",
+    );
+    write(root, "other/other_test.go", "package other\n\nimport \"testing\"\n\nfunc TestName(t *testing.T) {\n\tif Name() != \"other\" {\n\t\tt.Fatal()\n\t}\n}\n");
+    git(root, &["init", "-q"]);
+    git(root, &["add", "."]);
+    git(root, &["commit", "-q", "-m", "base"]);
+    edit(root, "core/core.go", "n * 2", "n * 3");
+    let value = affected_json(root, &[]);
+    assert_eq!(
+        selected(&value),
+        vec!["top/top_test.go reached"],
+        "{value:#}"
+    );
+    let reason = test(&value, "top/top_test.go")["reason"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert!(
+        reason.contains("example.com/r/mid") && reason.contains("example.com/r/core"),
+        "the reason names the import chain: {reason}"
+    );
+}
