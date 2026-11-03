@@ -8,7 +8,9 @@ written down here so they can be applied once and checked later.
 - **Description:** Your agent says done. Tessera checks. Deterministic blast
   radius before every edit and verification after it, for any AI coding
   agent.
-- **Website:** the docs site URL once GitHub Pages is enabled.
+- **Website:** the docs site URL once GitHub Pages is enabled. Pages is enabled:
+  the docs site is live at `https://iamsaquib8.github.io/tessera/` (set the
+  repo's Website field here; `Cargo.toml` `homepage` already points at it).
 - **Topics:**
   - `mcp`, `mcp-server`, `ai-agents`, `coding-agents`
   - `claude-code`, `cursor`, `codex`
