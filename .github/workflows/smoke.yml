@@ -93,8 +93,13 @@ jobs:
       - if: matrix.channel == 'brew'
         name: Install via Homebrew
         run: |
+          # Linux runners ship Homebrew without putting it on PATH.
+          if ! command -v brew >/dev/null 2>&1 && [ -x /home/linuxbrew/.linuxbrew/bin/brew ]; then
+            eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"
+          fi
           brew install iamsaquib8/tessera/tessera
-          echo "TESSERA=tessera" >> "$GITHUB_ENV"
+          # Later steps do not keep this step's PATH.
+          echo "TESSERA=$(brew --prefix)/bin/tessera" >> "$GITHUB_ENV"
 
       - if: matrix.channel == 'binstall'
         uses: cargo-bins/cargo-binstall@main
@@ -111,7 +116,7 @@ jobs:
           [ "$out" = "tessera ${V}" ]
       - name: Answers a real query
         working-directory: tests/fixtures/typescript
-        run: $TESSERA --quiet find findById | grep -q "UserRepo.findById"
+        run: $TESSERA --quiet find findById --root . | grep -q "UserRepo.findById"
 
   # The npm package must run on distributions older than the release runners.
   old-glibc:
@@ -129,7 +134,7 @@ jobs:
           [ "$out" = "tessera ${V}" ]
       - name: Answers a real query
         working-directory: tests/fixtures/typescript
-        run: npx --yes "tessera-codegraph@${VERSION#v}" --quiet find findById | grep -q "UserRepo.findById"
+        run: npx --yes "tessera-codegraph@${VERSION#v}" --quiet find findById --root . | grep -q "UserRepo.findById"
 
   docker:
     runs-on: ubuntu-latest
