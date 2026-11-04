@@ -200,6 +200,7 @@ tessera:
 | `azure` | Azure DevOps pipelines | `##vso[task.logissue]` logging commands |
 | `bitbucket` | Bitbucket Code Insights | report and annotations JSON |
 | `ndjson` | agent loops reading a stream | one finding per line, then a summary |
+| `junit` | Jenkins, CircleCI, Buildkite test reports | JUnit XML with completed checks, including passes |
 
 Every format exits as `verify` does: 1 when a problem blocks, 0
 otherwise, 3 when the index cannot be read. Each finding carries a
@@ -213,6 +214,129 @@ fingerprint, so each stays its own issue.
 V6 (a test that reaches the change) is a test to run, not a problem: the
 GitLab, Azure and Bitbucket formats leave it out; SARIF lists it as a
 note, NDJSON as a finding.
+
+### JUnit XML
+
+```sh
+tessera verify --diff origin/main --format junit > tessera-junit.xml
+```
+
+JUnit requires `--changed`, `--staged` or `--diff`; symbol and snippet-only
+requests exit 2 before reading the snippet or building an index. As with
+other formats, global `--json` takes precedence. Fetch the comparison
+revision before running the command; the examples below assume Tessera is
+installed and `origin/main` exists locally.
+
+One `<testsuite name="tessera">` contains one `<testcase>` for each check
+ID and file actually evaluated (`classname="V2"`, `name="src/client.ts"`).
+Files can include unchanged callers affected by the change. Successful
+cases come from completed, eligible name, arity, import or contract
+comparisons. Unknown, external, ignored and unindexed code does not
+manufacture passing cases. V5 is omitted without clients, or without
+historical providers and matching repository clients to evaluate. V6 is
+left out. A change with no eligible evaluations, including an empty index,
+has zero tests and an explanation in suite `<system-out>`.
+
+A testcase has one `<failure>` containing every blocking finding's
+message and `file:line`; advisory and actively waived findings appear in
+`<system-out>`. An expired waiver blocks again. `failures` counts failed
+cases, not findings. Partial evaluations with parse errors are marked
+`<skipped>` unless a blocking finding already fails the case. Missing or
+unparseable historical source is explained, never assumed to pass. For
+partially parsed historical providers, V5 attributes incompleteness to
+clients matching recovered provider facts, including surviving providers.
+Those facts do not create passing cases; a separate, complete evaluation
+of the same client creates a skipped aggregate. Other clients can retain
+their passes. Facts hidden entirely by a partial parse cannot be attributed.
+If no provider facts can be recovered, or existing historical source
+cannot be retrieved or parsed at all, affected clients are unknown: V5
+conservatively marks every otherwise completed client evaluation incomplete.
+A successful Git tree lookup distinguishes genuinely new files, which do
+not impair historical coverage. Failed tree lookups leave existence unknown.
+The current contract index containing parse errors also makes completed
+client evaluations incomplete. None of these gaps creates a testcase on
+its own. Exit status remains 1 for blocking
+findings and 0 otherwise; a skipped check does not change that policy.
+
+Paths, messages and attributes are XML 1.0 safe. Tabs, CR and LF in
+attributes use character references, preserving whitespace on XML
+parsing. Forbidden characters in messages are displayed as `[U+XXXX]`.
+In testcase names they use `\u{XXXX}` and literal backslashes are doubled,
+so a control character cannot alias a filename containing escape text.
+No output progress text is mixed into the XML.
+
+Finding fingerprints are preserved verbatim in **suite-level**
+`<properties>`, which the pinned Jenkins xUnit `junit-10.xsd` accepts:
+
+```xml
+<property name="tessera.finding|V1|7372632F612E7473|1|fingerprint" value="0123456789abcdef"/>
+<property name="tessera.finding|V1|7372632F612E7473|1|line" value="12"/>
+```
+
+The key is `tessera.finding|CHECK|PATH_HEX|OCCURRENCE|FIELD`.
+`PATH_HEX` is uppercase hexadecimal of the original path's UTF-8 bytes
+(`7372632F612E7473` means `src/a.ts`); `OCCURRENCE` starts at 1 within that
+check/file in finding order. `FIELD` is `fingerprint` or `line`. This binds
+each property to its testcase and finding even when fingerprints repeat.
+Cases sort by check and original path. See [schema provenance](../tests/schemas/README.md).
+Schema validation does not prove acceptance by every CI version; importers
+may discard custom properties or identify tests by classname/name instead
+of the fingerprint. These recipes describe ingestion, not a live CI test.
+
+**Jenkins** ([JUnit step](https://www.jenkins.io/doc/pipeline/steps/junit/)):
+archive results even when verify fails, then restore verify's failure.
+`allowEmptyResults` permits a legitimate zero-execution report.
+
+```groovy
+script {
+  def code = sh(returnStatus: true, script:
+    'tessera verify --diff origin/main --format junit > tessera-junit.xml')
+  try {
+    junit testResults: 'tessera-junit.xml', allowEmptyResults: true,
+      keepProperties: true, skipMarkingBuildUnstable: true
+  } finally {
+    if (code != 0) { sh "exit ${code}" }
+  }
+}
+```
+
+**CircleCI** ([store_test_results](https://circleci.com/docs/reference/configuration-reference/#store_test_results)):
+the storage step runs after a failed command; verify's exit is preserved.
+
+```yaml
+steps:
+  - run:
+      name: Verify edit safety
+      command: |
+        mkdir -p test-results
+        tessera verify --diff origin/main --format junit > test-results/tessera.xml
+  - store_test_results:
+      path: test-results
+```
+
+**Buildkite** ([JUnit import](https://buildkite.com/docs/pipelines/configure/tests/test-collection/importing-junit-xml)):
+configure a Test Engine suite token as `BUILDKITE_ANALYTICS_TOKEN` using
+your existing secret-management process. Artifact storage alone does not
+import test results. In a command step, upload to the test ingestion API
+before returning verify's original failure. If verify succeeds, an upload
+failure fails the step instead. The importer limits a file to 5,000 test
+results; larger reports need splitting before upload.
+
+```sh
+code=0
+tessera verify --diff origin/main --format junit > tessera-junit.xml || code=$?
+upload=0
+curl --fail-with-body \
+  -H "Authorization: Token token=\"${BUILDKITE_ANALYTICS_TOKEN:?Set the Test Engine suite token}\"" \
+  -F 'data=@tessera-junit.xml' -F 'format=junit' \
+  -F "run_env[CI]=buildkite" -F "run_env[key]=$BUILDKITE_BUILD_ID" \
+  -F "run_env[url]=$BUILDKITE_BUILD_URL" -F "run_env[branch]=$BUILDKITE_BRANCH" \
+  -F "run_env[commit_sha]=$BUILDKITE_COMMIT" -F "run_env[number]=$BUILDKITE_BUILD_NUMBER" \
+  -F "run_env[job_id]=$BUILDKITE_JOB_ID" \
+  https://analytics-api.buildkite.com/v1/uploads || upload=$?
+if [ "$code" -ne 0 ]; then exit "$code"; fi
+exit "$upload"
+```
 
 **SARIF.** Results carry `partialFingerprints: {"tesseraFingerprint/v1":
 …}`, and artifact URIs are percent-encoded relative paths
