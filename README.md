@@ -84,8 +84,8 @@ every later query refreshes only what changed. Then wire it into your agents:
 tessera init
 ```
 
-Once the npm package is published, the same commands run without installing
-anything: `npx tessera-codegraph blast <symbol>` and `npx tessera-codegraph init`.
+The same commands run without installing anything (Node 18+):
+`npx tessera-codegraph blast <symbol>` and `npx tessera-codegraph init`.
 
 `init` finds the agents you use (Claude Code, Codex, Gemini CLI, Cursor,
 Copilot and 16 more), shows the diff of every config change, and asks before
@@ -105,17 +105,13 @@ and everything else is on the [docs site](https://iamsaquib8.github.io/tessera/)
 <summary>Other ways to install</summary>
 
 ```sh
+npm i -g tessera-codegraph                       # Node 18+, prebuilt binary, no install scripts
 cargo binstall tessera-codegraph                 # prebuilt via cargo-binstall
 cargo install tessera-codegraph                  # from source, Rust 1.90+
 ```
 
-Coming with the next release (the pipeline is built; publishing is pending):
-
-```sh
-npm i -g tessera-codegraph                       # Node 18+, prebuilt binary, no install scripts
-brew install iamsaquib8/tessera/tessera          # macOS and Linux
-docker run --rm -v "$PWD:/work" ghcr.io/iamsaquib8/tessera status
-```
+A Homebrew tap and a public container image (`ghcr.io/iamsaquib8/tessera`)
+are not available yet.
 
 Prebuilt binaries for every platform are also on the
 [releases page](https://github.com/iamsaquib8/tessera/releases).

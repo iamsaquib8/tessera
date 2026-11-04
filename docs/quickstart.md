@@ -9,14 +9,14 @@ code it just wrote calls things that exist.
 Pick one. All of them install the same single binary.
 
 ```sh
+curl -fsSL https://raw.githubusercontent.com/iamsaquib8/tessera/main/install.sh | sh
 npx tessera-codegraph status             # no install; Node 18+
 npm i -g tessera-codegraph               # then use `tessera`
-brew install iamsaquib8/tessera/tessera  # macOS / Linux
-curl -fsSL https://raw.githubusercontent.com/iamsaquib8/tessera/main/install.sh | sh
 cargo binstall tessera-codegraph         # prebuilt, via cargo-binstall
 cargo install tessera-codegraph          # from source (Rust 1.90+)
-docker run --rm -v "$PWD:/work" ghcr.io/iamsaquib8/tessera find <symbol>
 ```
+
+A Homebrew tap and a public container image are not available yet.
 
 The install script verifies the release checksum before installing and puts
 the binary in `~/.local/bin` (no sudo).
