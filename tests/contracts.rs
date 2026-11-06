@@ -918,3 +918,61 @@ fn actix_web_route_handlers_and_lookalikes() {
     );
     assert!(!text.contains("helper"), "helper captured: {text}");
 }
+
+#[test]
+fn slim_routes_link_to_clients() {
+    let temp = fixture("contracts-php");
+    let got = summary(&map(temp.path(), &["route"]));
+    let server = "service/app.php";
+    let client = "client/client.ts";
+    for expected in [
+        format!("GET /users/{{}}: {server} -> {client}"),
+        format!("POST /orders: {server} -> {client}"),
+        format!("PUT /items/{{}}: {server} -> {client}"),
+        format!("PATCH /users/{{}}: {server} -> {client}"),
+        format!("OPTIONS /health: {server} -> {client}"),
+        format!("DELETE /api/orders/{{}}: {server} -> {client}"),
+        format!("GET /api/status: {server} -> {client}"),
+        format!("GET /v2/ping: {server} -> {client}"),
+    ] {
+        assert!(got.contains(&expected), "missing {expected:?} in {got:#?}");
+    }
+    assert_eq!(got.len(), 8, "{got:#?}");
+}
+
+#[test]
+fn slim_route_handlers_and_lookalikes() {
+    let temp = fixture("contracts-php");
+    let result = map(temp.path(), &["route", "/orders"]);
+    let contracts = result["contracts"].as_array().unwrap();
+    let post_contract = contracts
+        .iter()
+        .find(|c| c["name"] == "POST /orders")
+        .expect("missing POST /orders");
+    assert_eq!(
+        post_contract["providers"][0]["symbol"], "OrderController.create",
+        "{result}"
+    );
+
+    let delete_result = map(temp.path(), &["route", "/api/orders/{}"]);
+    let delete_contracts = delete_result["contracts"].as_array().unwrap();
+    let delete_contract = delete_contracts
+        .iter()
+        .find(|c| c["name"] == "DELETE /api/orders/{}")
+        .expect("missing DELETE /api/orders/{}");
+    assert_eq!(
+        delete_contract["providers"][0]["symbol"], "OrderController.delete",
+        "{delete_result}"
+    );
+
+    let result_all = map(temp.path(), &["route"]);
+    let text = result_all.to_string();
+    assert!(!text.contains("/x"), "lookalike /x captured: {text}");
+    let status_contract = result_all["contracts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["name"] == "GET /api/status")
+        .expect("missing GET /api/status");
+    assert_eq!(status_contract["providers"].as_array().unwrap().len(), 1);
+}

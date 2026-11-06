@@ -35,6 +35,7 @@ const GO: &[Language] = &[Language::Go];
 const PYTHON: &[Language] = &[Language::Python];
 const RUBY: &[Language] = &[Language::Ruby];
 const RUST: &[Language] = &[Language::Rust];
+const PHP: &[Language] = &[Language::Php];
 
 pub const PACKS: &[Pack] = &[
     Pack {
@@ -168,6 +169,12 @@ pub const PACKS: &[Pack] = &[
         languages: RUST,
         gate: r"#\[(?:[\w:]+::)?(get|post|put|patch|delete|head)\(|route\(",
         query: include_str!("../../packs/actix-web.scm"),
+    },
+    Pack {
+        id: "slim",
+        languages: PHP,
+        gate: r#"->\s*(get|post|put|patch|delete|options|any|group)\s*\("#,
+        query: include_str!("../../packs/slim.scm"),
     },
 ];
 
@@ -980,6 +987,63 @@ end
                 ("route", "http POST /orders"),
                 ("route", "http DELETE /users/{}"),
                 ("route", "http GET /ping"),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_slim_facts() {
+        let mut parser = tree_sitter::Parser::new();
+        let lang = support_for(Language::Php).grammar();
+        parser.set_language(&lang).unwrap();
+        let src = r#"<?php
+$app->get('/users/{id}', function ($request, $response, array $args) { return $response; });
+$app->post('/orders', [OrderController::class, 'create']);
+$app->put('/items/{id}', ['ItemController', 'update']);
+$app->patch('/items/{id}', 'ItemController:patch');
+$app->options('/cors', 'handleCors');
+$app->any('/all', fn ($req, $res) => $res);
+$this->app->get('/ping', 'pingHandler');
+$app->group('/api', function (RouteCollectorProxy $group) {
+    $group->delete('/orders/{id}', 'OrderController:delete');
+    $group->get('/status', function () {});
+});
+$app->group('/v2', fn ($group) => $group->get('/health', 'healthCheck'));
+$cache->get('/x');
+$store->get('/key', 'default');
+"#;
+        let tree = parser.parse(src, None).unwrap();
+        let facts = run(Language::Php, src, &tree);
+        let keys: Vec<(&str, &str)> = facts.iter().map(|f| (f.kind, f.key.as_str())).collect();
+        assert_eq!(
+            keys,
+            vec![
+                ("route", "http GET /users/{}"),
+                ("route", "http POST /orders"),
+                ("route", "http PUT /items/{}"),
+                ("route", "http PATCH /items/{}"),
+                ("route", "http OPTIONS /cors"),
+                ("route", "http ANY /all"),
+                ("route", "http GET /ping"),
+                ("route", "http DELETE /api/orders/{}"),
+                ("route", "http GET /api/status"),
+                ("route", "http GET /v2/health"),
+            ]
+        );
+        let handlers: Vec<Option<&str>> = facts.iter().map(|f| f.handler.as_deref()).collect();
+        assert_eq!(
+            handlers,
+            vec![
+                None,
+                Some("create"),
+                Some("update"),
+                Some("patch"),
+                Some("handleCors"),
+                None,
+                Some("pingHandler"),
+                Some("delete"),
+                None,
+                Some("healthCheck"),
             ]
         );
     }
