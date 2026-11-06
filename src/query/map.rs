@@ -43,6 +43,116 @@ pub struct MapArgs {
     /// Contracts (or services) per page; 0 for all of them.
     pub limit: usize,
     pub cursor: Option<String>,
+    /// Compare routes served in code with OpenAPI / Swagger documents.
+    pub drift: bool,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct DriftSite {
+    pub method: String,
+    pub path: String,
+    pub file: String,
+    pub line: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub symbol: Option<String>,
+    pub service: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct MethodDiff {
+    pub path: String,
+    pub documented_method: String,
+    pub documented_file: String,
+    pub documented_line: usize,
+    pub served_method: String,
+    pub served_file: String,
+    pub served_line: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub served_symbol: Option<String>,
+    pub service: String,
+}
+
+#[derive(Debug, Clone, Serialize, Default, PartialEq, Eq)]
+pub struct RouteDrift {
+    pub served_not_documented: Vec<DriftSite>,
+    pub documented_not_served: Vec<DriftSite>,
+    pub method_differs: Vec<MethodDiff>,
+}
+
+impl RouteDrift {
+    pub fn is_empty(&self) -> bool {
+        self.served_not_documented.is_empty()
+            && self.documented_not_served.is_empty()
+            && self.method_differs.is_empty()
+    }
+
+    pub fn listing(&self) -> String {
+        if self.is_empty() {
+            return "No route drift found.\n".to_string();
+        }
+        let width = self
+            .served_not_documented
+            .iter()
+            .map(|s| format!("{} {}", s.method, s.path).len())
+            .chain(
+                self.documented_not_served
+                    .iter()
+                    .map(|s| format!("{} {}", s.method, s.path).len()),
+            )
+            .chain(self.method_differs.iter().map(|d| d.path.len()))
+            .max()
+            .unwrap_or(25)
+            .max(25);
+        let mut out = String::new();
+        if !self.served_not_documented.is_empty() {
+            out.push_str("served, not documented\n");
+            for site in &self.served_not_documented {
+                let call = format!("{} {}", site.method, site.path);
+                let symbol = site
+                    .symbol
+                    .as_deref()
+                    .map(|s| format!("  {s}"))
+                    .unwrap_or_default();
+                out.push_str(&format!(
+                    "  {call:<width$}   {}:{}{symbol}\n",
+                    site.file, site.line
+                ));
+            }
+        }
+        if !self.documented_not_served.is_empty() {
+            out.push_str("documented, not served\n");
+            for site in &self.documented_not_served {
+                let call = format!("{} {}", site.method, site.path);
+                let note = site
+                    .note
+                    .as_deref()
+                    .map(|n| format!("  ({n})"))
+                    .unwrap_or_default();
+                out.push_str(&format!(
+                    "  {call:<width$}   {}:{}{note}\n",
+                    site.file, site.line
+                ));
+            }
+        }
+        if !self.method_differs.is_empty() {
+            out.push_str("method differs\n");
+            for diff in &self.method_differs {
+                out.push_str(&format!(
+                    "  {:<width$}   documented {} ({}:{}), served {} ({}:{})\n",
+                    diff.path,
+                    diff.documented_method,
+                    diff.documented_file,
+                    diff.documented_line,
+                    diff.served_method,
+                    diff.served_file,
+                    diff.served_line,
+                ));
+            }
+        }
+        out
+    }
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq, PartialOrd, Ord)]
@@ -81,6 +191,14 @@ pub struct MapResult {
     /// Present when a `limit` was given.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub page: Option<crate::output::Page>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub drift: Option<RouteDrift>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub served_not_documented: Vec<DriftSite>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub documented_not_served: Vec<DriftSite>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub method_differs: Vec<MethodDiff>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -383,6 +501,186 @@ impl Fact {
     }
 }
 
+fn route_parts(key: &str) -> Option<(&str, &str)> {
+    key.strip_prefix("http ")?.split_once(' ')
+}
+
+fn compute_route_drift(
+    sources: &Sources,
+    services: &mut Services,
+    query: Option<&str>,
+) -> Result<RouteDrift> {
+    let facts = sources.load("http ")?;
+    let mut by_service: HashMap<String, (Vec<Fact>, Vec<Fact>)> = HashMap::new();
+    for fact in facts {
+        let service = services.of(&fact.path);
+        if fact.kind == kind::ROUTE_DEF {
+            by_service.entry(service).or_default().0.push(fact);
+        } else if fact.kind == kind::ROUTE {
+            by_service.entry(service).or_default().1.push(fact);
+        }
+    }
+
+    let mut served_not_doc = Vec::new();
+    let mut doc_not_served = Vec::new();
+    let mut diffs = Vec::new();
+
+    let mut service_names: Vec<String> = by_service.keys().cloned().collect();
+    service_names.sort();
+
+    for service in service_names {
+        let (defs, routes) = by_service.remove(&service).unwrap();
+        if defs.is_empty() {
+            continue;
+        }
+
+        let def_items: Vec<(String, String, Fact)> = defs
+            .into_iter()
+            .filter_map(|f| {
+                let (m, p) = route_parts(&f.key)?;
+                Some((m.to_string(), p.to_string(), f))
+            })
+            .collect();
+
+        let route_items: Vec<(String, String, Fact)> = routes
+            .into_iter()
+            .filter_map(|f| {
+                let (m, p) = route_parts(&f.key)?;
+                Some((m.to_string(), p.to_string(), f))
+            })
+            .collect();
+
+        let mut matched_doc = vec![false; def_items.len()];
+        let mut matched_served = vec![false; route_items.len()];
+
+        // 1. Exact match on path and method (or ANY in code)
+        for (d_idx, (d_method, d_path, _)) in def_items.iter().enumerate() {
+            for (s_idx, (s_method, s_path, _)) in route_items.iter().enumerate() {
+                if !matched_served[s_idx]
+                    && d_path == s_path
+                    && (s_method == d_method || s_method == "ANY")
+                {
+                    matched_doc[d_idx] = true;
+                    matched_served[s_idx] = true;
+                    break;
+                }
+            }
+        }
+
+        // 2. Method differs: same path, but different method
+        for (d_idx, (d_method, d_path, d_fact)) in def_items.iter().enumerate() {
+            if matched_doc[d_idx] {
+                continue;
+            }
+            for (s_idx, (s_method, s_path, s_fact)) in route_items.iter().enumerate() {
+                if !matched_served[s_idx] && d_path == s_path {
+                    matched_doc[d_idx] = true;
+                    matched_served[s_idx] = true;
+                    diffs.push(MethodDiff {
+                        path: d_path.clone(),
+                        documented_method: d_method.clone(),
+                        documented_file: d_fact.path.clone(),
+                        documented_line: d_fact.line,
+                        served_method: s_method.clone(),
+                        served_file: s_fact.path.clone(),
+                        served_line: s_fact.line,
+                        served_symbol: s_fact.symbol.clone(),
+                        service: service.clone(),
+                    });
+                    break;
+                }
+            }
+        }
+
+        // 3. Documented, not served
+        for (d_idx, (d_method, d_path, d_fact)) in def_items.iter().enumerate() {
+            if matched_doc[d_idx] {
+                continue;
+            }
+            let d_segments: Vec<&str> = d_path.split('/').filter(|s| !s.is_empty()).collect();
+            let under_prefix = route_items.iter().any(|(s_method, s_path, _)| {
+                let s_segments: Vec<&str> = s_path.split('/').filter(|s| !s.is_empty()).collect();
+                (s_method == d_method || s_method == "ANY" || d_method == "ANY")
+                    && !s_segments.is_empty()
+                    && s_segments.len() < d_segments.len()
+                    && path_match(
+                        &d_segments[d_segments.len() - s_segments.len()..],
+                        &s_segments,
+                    )
+                    .is_some()
+            });
+            let note = if under_prefix {
+                Some("possibly served under a prefix".to_string())
+            } else {
+                None
+            };
+            doc_not_served.push(DriftSite {
+                method: d_method.clone(),
+                path: d_path.clone(),
+                file: d_fact.path.clone(),
+                line: d_fact.line,
+                symbol: None,
+                service: service.clone(),
+                note,
+            });
+        }
+
+        // 4. Served, not documented
+        for (s_idx, (s_method, s_path, s_fact)) in route_items.iter().enumerate() {
+            if matched_served[s_idx] {
+                continue;
+            }
+            served_not_doc.push(DriftSite {
+                method: s_method.clone(),
+                path: s_path.clone(),
+                file: s_fact.path.clone(),
+                line: s_fact.line,
+                symbol: s_fact.symbol.clone(),
+                service: service.clone(),
+                note: None,
+            });
+        }
+    }
+
+    if let Some(query) = query {
+        let q = query.to_lowercase();
+        served_not_doc.retain(|s| {
+            s.path.to_lowercase().contains(&q)
+                || s.file.to_lowercase().contains(&q)
+                || s.symbol
+                    .as_deref()
+                    .is_some_and(|sym| sym.to_lowercase().contains(&q))
+        });
+        doc_not_served
+            .retain(|s| s.path.to_lowercase().contains(&q) || s.file.to_lowercase().contains(&q));
+        diffs.retain(|d| {
+            d.path.to_lowercase().contains(&q)
+                || d.served_file.to_lowercase().contains(&q)
+                || d.documented_file.to_lowercase().contains(&q)
+        });
+    }
+
+    served_not_doc.sort_by(|a, b| {
+        (&a.path, &a.method, &a.file, a.line).cmp(&(&b.path, &b.method, &b.file, b.line))
+    });
+    doc_not_served.sort_by(|a, b| {
+        (&a.path, &a.method, &a.file, a.line).cmp(&(&b.path, &b.method, &b.file, b.line))
+    });
+    diffs.sort_by(|a, b| {
+        (&a.path, &a.documented_method, &a.served_method).cmp(&(
+            &b.path,
+            &b.documented_method,
+            &b.served_method,
+        ))
+    });
+
+    Ok(RouteDrift {
+        served_not_documented: served_not_doc,
+        documented_not_served: doc_not_served,
+        method_differs: diffs,
+    })
+}
+
 pub fn run(conn: &Connection, root: &Path, args: &MapArgs) -> Result<MapResult> {
     if let Some(kind) = &args.kind {
         if !KINDS.contains(&kind.as_str()) {
@@ -392,8 +690,23 @@ pub fn run(conn: &Connection, root: &Path, args: &MapArgs) -> Result<MapResult> 
             );
         }
     }
+    if args.drift && args.kind.as_deref() != Some("route") && args.kind.is_some() {
+        bail!("--drift is supported only for route contracts");
+    }
     let sources = Sources::open(conn, root)?;
     let mut services = Services::new(&sources.root);
+    if args.drift {
+        let drift = compute_route_drift(&sources, &mut services, args.query.as_deref())?;
+        return Ok(MapResult {
+            contracts: Vec::new(),
+            services: Vec::new(),
+            page: None,
+            drift: Some(drift.clone()),
+            served_not_documented: drift.served_not_documented,
+            documented_not_served: drift.documented_not_served,
+            method_differs: drift.method_differs,
+        });
+    }
     if args.kind.as_deref() == Some("service") {
         let contracts = all(&sources, &mut services, None)?;
         let (services, page) = page_of(service_views(&contracts, args.query.as_deref()), args)?;
@@ -401,6 +714,10 @@ pub fn run(conn: &Connection, root: &Path, args: &MapArgs) -> Result<MapResult> 
             contracts: Vec::new(),
             services,
             page,
+            drift: None,
+            served_not_documented: Vec::new(),
+            documented_not_served: Vec::new(),
+            method_differs: Vec::new(),
         });
     }
     let mut contracts = all(&sources, &mut services, args.kind.as_deref())?;
@@ -420,6 +737,10 @@ pub fn run(conn: &Connection, root: &Path, args: &MapArgs) -> Result<MapResult> 
         contracts,
         services: Vec::new(),
         page,
+        drift: None,
+        served_not_documented: Vec::new(),
+        documented_not_served: Vec::new(),
+        method_differs: Vec::new(),
     })
 }
 
@@ -920,6 +1241,9 @@ impl AgentText for MapResult {
 
 impl MapResult {
     fn listing(&self) -> String {
+        if let Some(drift) = &self.drift {
+            return drift.listing();
+        }
         if !self.services.is_empty() {
             let mut out = String::new();
             for view in &self.services {

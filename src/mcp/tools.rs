@@ -362,7 +362,8 @@ fn map_schema() -> Value {
         merge(
             json!({
                 "kind": { "type": "string", "enum": ["route", "rpc", "topic", "table", "graphql", "config", "service"] },
-                "query": { "type": "string" }
+                "query": { "type": "string" },
+                "drift": { "type": "boolean", "description": "Compare routes served in code with OpenAPI / Swagger documents." }
             }),
             paging(),
         ),

@@ -221,6 +221,9 @@ enum Commands {
         kind: Option<String>,
         /// Only contracts whose name or files contain this.
         query: Option<String>,
+        /// Compare routes served in code with OpenAPI / Swagger documents.
+        #[arg(long)]
+        drift: bool,
     },
     /// A local web UI: change impact, contract map, symbols, search.
     Ui {
@@ -819,13 +822,14 @@ fn run() -> Result<u8> {
                 return Ok(EXIT_FINDINGS);
             }
         }
-        Commands::Map { kind, query } => {
+        Commands::Map { kind, query, drift } => {
             let Some(index) = open_fresh(&ws, &out)? else {
                 return Ok(0);
             };
             out.print(&index.map(&query::MapArgs {
                 kind,
                 query,
+                drift,
                 ..query::MapArgs::default()
             })?)?;
         }

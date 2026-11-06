@@ -190,6 +190,7 @@
   ],
   "map": [
     "--db",
+    "--drift",
     "--help",
     "--json",
     "--quiet",

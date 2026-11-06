@@ -669,3 +669,25 @@ fn map_is_paged_like_the_other_list_tools() {
         "{default}"
     );
 }
+
+#[test]
+fn map_supports_drift_detection() {
+    let (_temp, state) = state_for("contracts-drift");
+    let reply = call(
+        &state,
+        "map",
+        json!({ "kind": "route", "drift": true, "format": "json" }),
+    );
+    let result: Value =
+        serde_json::from_str(reply["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
+    assert_eq!(result["served_not_documented"].as_array().unwrap().len(), 1);
+    assert_eq!(result["documented_not_served"].as_array().unwrap().len(), 1);
+    assert_eq!(result["method_differs"].as_array().unwrap().len(), 1);
+
+    // Text output
+    let reply_text = call(&state, "map", json!({ "kind": "route", "drift": true }));
+    let text = reply_text["result"]["content"][0]["text"].as_str().unwrap();
+    assert!(text.contains("served, not documented"), "{text}");
+    assert!(text.contains("documented, not served"), "{text}");
+    assert!(text.contains("method differs"), "{text}");
+}

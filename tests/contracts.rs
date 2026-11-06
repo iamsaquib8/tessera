@@ -1029,3 +1029,188 @@ fn aspnet_route_handlers_and_lookalikes() {
         "lookalike not-a-route captured: {text}"
     );
 }
+
+#[test]
+fn route_drift_detects_all_three_lists_and_servers_base_path() {
+    let temp = fixture("contracts-drift");
+
+    // Human output
+    let output = Command::cargo_bin("tessera")
+        .unwrap()
+        .current_dir(temp.path())
+        .args(["--quiet", "map", "route", "--drift"])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let text = String::from_utf8_lossy(&output.stdout);
+    assert!(text.contains("served, not documented"), "{text}");
+    assert!(text.contains("POST /api/users/{}/avatar"), "{text}");
+    assert!(text.contains("uploadAvatar"), "{text}");
+    assert!(text.contains("documented, not served"), "{text}");
+    assert!(text.contains("DELETE /api/users"), "{text}");
+    assert!(text.contains("method differs"), "{text}");
+    assert!(text.contains("/api/orders/{}"), "{text}");
+    assert!(
+        text.contains("documented PUT (api/openapi.yaml:15), served PATCH (api/src/orders.ts:4)"),
+        "{text}"
+    );
+
+    // JSON output
+    let output = Command::cargo_bin("tessera")
+        .unwrap()
+        .current_dir(temp.path())
+        .args(["--quiet", "--json", "map", "route", "--drift"])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let json: Value = serde_json::from_slice(&output.stdout).unwrap();
+
+    let served_not_doc = json["served_not_documented"]
+        .as_array()
+        .expect("served_not_documented array");
+    assert_eq!(served_not_doc.len(), 1, "{json}");
+    assert_eq!(served_not_doc[0]["method"], "POST");
+    assert_eq!(served_not_doc[0]["path"], "/api/users/{}/avatar");
+    assert_eq!(served_not_doc[0]["symbol"], "uploadAvatar");
+    assert_eq!(served_not_doc[0]["service"], "api");
+
+    let doc_not_served = json["documented_not_served"]
+        .as_array()
+        .expect("documented_not_served array");
+    assert_eq!(doc_not_served.len(), 1, "{json}");
+    assert_eq!(doc_not_served[0]["method"], "DELETE");
+    assert_eq!(doc_not_served[0]["path"], "/api/users");
+    assert_eq!(doc_not_served[0]["service"], "api");
+
+    let method_differs = json["method_differs"]
+        .as_array()
+        .expect("method_differs array");
+    assert_eq!(method_differs.len(), 1, "{json}");
+    assert_eq!(method_differs[0]["path"], "/api/orders/{}");
+    assert_eq!(method_differs[0]["documented_method"], "PUT");
+    assert_eq!(method_differs[0]["served_method"], "PATCH");
+    assert_eq!(method_differs[0]["service"], "api");
+}
+
+#[test]
+fn route_drift_verify_diff_reports_advisory_findings() {
+    let temp = TempDir::new().unwrap();
+    copy_dir(&fixture_dir("contracts-drift"), temp.path());
+
+    // Initialize git repo
+    for args in [
+        &["init", "-q"][..],
+        &["add", "."],
+        &[
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@example.com",
+            "commit",
+            "-q",
+            "-m",
+            "base",
+        ],
+    ] {
+        let status = std::process::Command::new("git")
+            .args(args)
+            .current_dir(temp.path())
+            .status()
+            .unwrap();
+        assert!(status.success());
+    }
+
+    // Add a new route in code without updating openapi.yaml
+    let users_ts = temp.path().join("api/src/users.ts");
+    let content = std::fs::read_to_string(&users_ts).unwrap();
+    std::fs::write(
+        &users_ts,
+        format!("{content}\nrouter.post('/api/users/:id/billing', billing);\nexport function billing(req: any, res: any) {{}}\n"),
+    ).unwrap();
+
+    let output = Command::cargo_bin("tessera")
+        .unwrap()
+        .current_dir(temp.path())
+        .args(["--quiet", "--json", "verify", "--changed"])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "verify failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let json: Value = serde_json::from_slice(&output.stdout).unwrap();
+    let findings = json["findings"].as_array().unwrap();
+    let drift = findings
+        .iter()
+        .find(|f| f["id"] == "drift")
+        .expect("expected advisory drift finding");
+    assert_eq!(drift["blocking"], false, "drift should be advisory");
+    assert!(
+        drift["message"]
+            .as_str()
+            .unwrap()
+            .contains("POST /api/users/{}/billing"),
+        "{drift}"
+    );
+}
+
+#[test]
+fn route_drift_detects_possibly_served_under_a_prefix() {
+    let temp = TempDir::new().unwrap();
+    let files = [
+        ("api/package.json", "{\"name\": \"api\"}"),
+        (
+            "api/openapi.yaml",
+            "openapi: 3.0.0\ninfo:\n  title: Test API\n  version: 1.0.0\npaths:\n  /api/v1/health:\n    get:\n      summary: Health\n",
+        ),
+        (
+            "api/src/routes.ts",
+            "import express from 'express';\n\
+             const router = express.Router();\n\
+             router.get('/health', (req, res) => res.send('ok'));\n",
+        ),
+    ];
+    for (path, content) in files {
+        let file = temp.path().join(path);
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(file, content).unwrap();
+    }
+
+    let output = Command::cargo_bin("tessera")
+        .unwrap()
+        .current_dir(temp.path())
+        .args(["--quiet", "map", "route", "--drift"])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let text = String::from_utf8_lossy(&output.stdout);
+    assert!(text.contains("(possibly served under a prefix)"), "{text}");
+    assert!(text.contains("GET /api/v1/health"), "{text}");
+
+    let output = Command::cargo_bin("tessera")
+        .unwrap()
+        .current_dir(temp.path())
+        .args(["--quiet", "--json", "map", "route", "--drift"])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let json: Value = serde_json::from_slice(&output.stdout).unwrap();
+    let doc_not_served = json["documented_not_served"].as_array().unwrap();
+    assert_eq!(doc_not_served.len(), 1);
+    assert_eq!(doc_not_served[0]["note"], "possibly served under a prefix");
+}

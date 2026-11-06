@@ -445,6 +445,14 @@ fn problems_with_report(
             report.note("V5 omitted: the index has no contract clients");
         }
     }
+    let has_specs: bool = conn.query_row(
+        "SELECT EXISTS (SELECT 1 FROM facts WHERE kind = ?1)",
+        params![kind::ROUTE_DEF],
+        |row| row.get(0),
+    )?;
+    if has_specs {
+        route_drift_problems(conn, root, changed, rev, &mut out)?;
+    }
     for problem in &mut out {
         problem.finding.fingerprint = fingerprint(&problem.key);
         waivers.apply(&mut problem.finding);
@@ -665,6 +673,109 @@ fn contract_breaks(
                 fingerprint: String::new(),
                 waived: None,
             });
+        }
+    }
+    Ok(())
+}
+
+fn route_drift_problems(
+    conn: &Connection,
+    root: &Path,
+    changed: &HashSet<String>,
+    rev: &str,
+    out: &mut Vec<Problem>,
+) -> Result<()> {
+    let candidates: Vec<&String> = changed
+        .iter()
+        .filter(|p| {
+            Language::from_path(Path::new(p)).is_some()
+                && !p.ends_with(".proto")
+                && !p.ends_with(".graphql")
+                && !p.ends_with(".gql")
+        })
+        .collect();
+    if candidates.is_empty() {
+        return Ok(());
+    }
+    let before = files_at(root, rev, &candidates);
+    let mut services = super::map::Services::new(root);
+
+    for &path in &candidates {
+        let service = services.of(path);
+        let doc_facts = facts_where(conn, "f.kind = ?1", &[&kind::ROUTE_DEF])?;
+        let service_doc_facts: Vec<_> = doc_facts
+            .into_iter()
+            .filter(|f| services.of(&f.path) == service)
+            .collect();
+        if service_doc_facts.is_empty() {
+            continue;
+        }
+
+        let current_routes =
+            facts_where(conn, "fl.path = ?1 AND f.kind = ?2", &[&path, &kind::ROUTE])?;
+
+        let before_routes: Vec<crate::facts::IndexedFact> =
+            match (Language::from_path(Path::new(path)), before.get(path)) {
+                (Some(lang), Some(content)) => crate::extract::parse_file_at(lang, path, content)
+                    .map(|p| {
+                        p.facts
+                            .into_iter()
+                            .filter(|f| f.kind == kind::ROUTE)
+                            .collect()
+                    })
+                    .unwrap_or_default(),
+                _ => Vec::new(),
+            };
+
+        for curr in &current_routes {
+            if !before_routes.iter().any(|b| b.key == curr.key) {
+                let documented = service_doc_facts.iter().any(|d| d.key == curr.key);
+                if !documented {
+                    let doc_file = &service_doc_facts[0].path;
+                    let name = curr.key.strip_prefix("http ").unwrap_or(&curr.key);
+                    let message =
+                        format!("`{name}` is served in code but not documented in `{doc_file}`");
+                    out.push(Problem {
+                        finding: Finding {
+                            id: "drift".to_string(),
+                            confidence: Confidence::Medium,
+                            blocking: false,
+                            message,
+                            path: Some(path.clone()),
+                            line: Some(curr.line),
+                            suggestions: Vec::new(),
+                            fingerprint: String::new(),
+                            waived: None,
+                        },
+                        key: format!("drift added {path} {name}"),
+                    });
+                }
+            }
+        }
+
+        for prev in &before_routes {
+            if !current_routes.iter().any(|c| c.key == prev.key) && !still_offered(conn, prev)? {
+                if let Some(doc) = service_doc_facts.iter().find(|d| d.key == prev.key) {
+                    let message = format!(
+                        "`{}` was removed from `{path}` but is still documented in `{}`",
+                        prev.name, doc.path
+                    );
+                    out.push(Problem {
+                        finding: Finding {
+                            id: "drift".to_string(),
+                            confidence: Confidence::Medium,
+                            blocking: false,
+                            message,
+                            path: Some(doc.path.clone()),
+                            line: Some(doc.line),
+                            suggestions: Vec::new(),
+                            fingerprint: String::new(),
+                            waived: None,
+                        },
+                        key: format!("drift removed {} {}", doc.path, prev.name),
+                    });
+                }
+            }
         }
     }
     Ok(())
@@ -1668,6 +1779,10 @@ impl VerifyResult {
                 "Use of a route, gRPC method or topic the change removed",
             ),
             ("V6", "Test that reaches the changed code"),
+            (
+                "drift",
+                "Route served in code but missing from OpenAPI, or the reverse",
+            ),
         ];
         let ids = super::formats::occurrence_ids(&self.findings);
         let results: Vec<serde_json::Value> = self
@@ -1677,7 +1792,7 @@ impl VerifyResult {
             .map(|(f, id)| {
                 let level = if f.blocking {
                     "error"
-                } else if f.id == "V6" {
+                } else if f.id == "V6" || f.id == "drift" {
                     "note"
                 } else {
                     "warning"
