@@ -16,12 +16,24 @@ what other tools do, and what this roadmap takes from them, is in
 | v1.0 | Visible and stable | Change-impact UI, pull-request comment, 1.x contracts frozen | released (1.0.1) |
 | v1.1 | Contract map, completed | Express mounts, GraphQL, config keys, `path` across repositories, Go/Python/Ruby frameworks | released in 1.2.0 |
 | v1.2 | Team and CI | Explainable test selection, a shared index cache, findings in code review tools, a merge gate | released (1.2.0) |
-| v1.3 | Contracts that know their fields | Field-level breaking changes joined to the consumers they break, spec drift, payload compatibility | planned |
-| v1.4 | Inside the agent loop | Graph context in the agent's own tools, an LSP server, edit plans, the refactor eval published | planned |
-| v1.5 | Deep tier for Python and Go, precise mode | Import- and type-aware Python and Go, SCIP import and export | planned |
-| v1.6 | Architecture guardrails | One rules file across languages and contracts, drafted from your code, with a baseline | planned |
-| v1.7 | Data and ownership | Migration checks joined with the code that reads the data, CODEOWNERS impact, catalog export | planned |
-| Later in 1.x | Runtime and extension | OpenTelemetry overlays, column lineage, your own packs, editors, code-anchored notes | ideas |
+| 1.2.x | Every install works | Every channel published and smoke-tested on every release, `@v1` that follows releases ([#264](https://github.com/iamsaquib8/tessera/issues/264)) | now |
+| v1.3 | Never silently wrong | No answer of "fine" without a check, no blocking false positives ([#265](https://github.com/iamsaquib8/tessera/issues/265)) | next |
+| v1.4 | Fast on large repositories | Hooks, CI and queries on a 15,000-file codebase within budget ([#266](https://github.com/iamsaquib8/tessera/issues/266)) | planned |
+| v1.5 | Proof that it helps | The refactor eval and agent studies, published and reproducible ([#267](https://github.com/iamsaquib8/tessera/issues/267)) | planned |
+| v1.6 | Contracts that know their fields | Field-level breaking changes joined to the consumers they break, spec drift, payload compatibility | planned |
+| v1.7 | Inside the agent loop | Graph context in the agent's own tools, an LSP server, edit plans | planned |
+| v1.8 | Deep tier for Python and Go, precise mode | Import- and type-aware Python and Go, SCIP import and export | planned |
+| Later in 1.x | Guardrails, data, runtime and extension | Architecture rules, migration checks and ownership, OpenTelemetry overlays, column lineage, your own packs, editors | revisit after v1.5 |
+
+**Why this order.** Shipping 1.2.0 and measuring it showed where Tessera is
+weakest, and none of it is a missing feature. Installs failed on most
+channels until the release itself was repaired. The core audit found
+thirteen ways Tessera answers "fine" without having checked and nine
+blocking false positives, either of which teaches users to switch the hooks
+off. On a 15,000-file repository an incremental index takes seconds, which
+bounds every hook. And nothing yet measures whether agents miss fewer breaks
+with Tessera. Trust, speed and evidence come before more surface; v1.5's
+results reorder everything after it.
 
 Every item is additive: 1.x keeps what [docs/stability.md](docs/stability.md)
 promises. A 2.0 is only for a change that breaks that contract, and none is
@@ -126,7 +138,62 @@ reach most of its tests). The index cache halves a large repository's CI
 index (vscode: 23.5 s instead of 44.2 s) but does not reach a tenth of it
 until an incremental index stops re-resolving unchanged code (#237).
 
-## v1.3: Contracts that know their fields
+## 1.2.x: Every install works
+
+Patch releases, no new surface: npm and crates.io through trusted
+publishing, the Homebrew tap, a public container image, smoke tests on every
+channel and OS that run on every release, release notes from the CHANGELOG,
+the docs site pinned to the latest release, and the `v1` tag moved by the
+release workflow. Supply-chain basics with it: pinned actions, protected
+tags, Dependabot, notices and an SBOM.
+
+**Gate:** a tag with no human steps after it publishes every channel, passes
+every smoke test on Linux, macOS and Windows, and moves `@v1`.
+
+## v1.3: Never silently wrong
+
+- **No silent no-ops.** A corrupted or half-built index, a missing binary,
+  a watcher that cannot start, a git hook without `tessera` on PATH: each
+  either works or says so, in the hook reply and on stderr.
+- **No blocking false positives** in the deep tier: Lombok and library
+  default methods in Java, anonymous default exports, decorated and
+  parameter properties and `paths` without `baseUrl` in TypeScript, V5 and
+  diff mapping that blame untouched code.
+- **The misses that matter:** values as references, `A::B` names, new
+  copies of a baselined break.
+
+**Gate:** a fault-injection suite in which no case exits 0 silently; on the
+last 300 commits of five public repositories, fewer than 1 blocking finding
+per 100 commits that the compiler does not confirm.
+
+## v1.4: Fast on large repositories
+
+- **Incremental re-resolution** limited to what a change can affect, so a
+  one-file edit re-indexes in milliseconds and a cached CI run skips most of
+  the work.
+- **Index-backed lookups** for symbol names, `context` and fact scans.
+- **Narrower test runs:** `affected` names the tests inside a selected file
+  for jest and vitest, not only the file.
+- **Perf budgets that count work**, not wall time, plus a large-repository
+  benchmark in tessera-bench.
+
+**Gate:** on vscode, post-edit hook p95 under 300 ms, Stop under 2 s, a
+cached CI run under 25% of a cold index.
+
+## v1.5: Proof that it helps
+
+- **The refactor eval, run and published:** agent arms with and without
+  Tessera, 30 tasks, at least two agents, false-positive blocks counted.
+- **Overlap with compilers and vendor checks**, measured, so Tessera claims
+  only what they miss.
+- **Field evidence:** `tessera stats --share`, a month of dogfooding on
+  Tessera's own development, a public demo.
+
+**Gate:** a reproducible report per agent and language: breaks caught at
+"done" with and without Tessera, false blocks per 100 edits, time added per
+edit. The milestones after this one are reordered by what it finds.
+
+## v1.6: Contracts that know their fields
 
 V5 knows when a route, RPC or topic disappears. Most real breaks are
 smaller: a removed field, a renamed enum value, a narrowed type.
@@ -156,7 +223,7 @@ smaller: a removed field, a renamed enum value, a narrowed type.
 **Gate:** field-level truth for two corpora, no wrong link on a held-out
 one, and client recall above 0.6 on bank-of-anthos.
 
-## v1.4: Inside the agent loop
+## v1.7: Inside the agent loop
 
 Agents forget to call tools they have to choose. Put the graph where they
 already look.
@@ -188,11 +255,11 @@ already look.
 - **More hook targets** as their contracts allow: Windsurf/Devin (Cascade
   hooks), Kiro, Junie, OpenCode and Factory.
 
-**Gate:** the refactor eval shows fewer missed call sites with Tessera for
-every agent measured, with under 5% false-positive blocks; hook latency
-stays within today's budget.
+**Gate:** rerun with these features, v1.5's eval shows fewer missed call
+sites for every agent measured, with under 5% false-positive blocks; hook
+latency stays within v1.4's budget.
 
-## v1.5: Deep tier for Python and Go, precise mode
+## v1.8: Deep tier for Python and Go, precise mode
 
 - **Python:** packages and namespace packages, `pyproject.toml` source
   roots, relative imports, type hints, dataclass and Pydantic fields.
@@ -208,7 +275,7 @@ stays within today's budget.
 least 0.85 for Python and Go against scip-python and scip-go ground truth on
 public repositories; the bar is not lowered.
 
-## v1.6: Architecture guardrails
+## Later: Architecture guardrails
 
 - **`.tessera/rules.toml`**, one file across languages: layers
   (`domain/**` may not import `infrastructure/**`), forbidden and deprecated
@@ -225,7 +292,7 @@ public repositories; the bar is not lowered.
 **Gate:** checks add under 50 ms to a single-file verify; every seeded
 violation in the monorepo fixtures is caught.
 
-## v1.7: Data and ownership
+## Later: Data and ownership
 
 - **Migrations joined with usage** (`verify --migrations`): a dropped or
   renamed column or table that code still reads is a blocking finding;
