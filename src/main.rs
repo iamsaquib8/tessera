@@ -256,16 +256,12 @@ enum Commands {
         depth: usize,
     },
     /// Detect circular import dependencies between modules.
-    #[command(alias = "imports")]
     Cycles {
         /// Only cycles involving modules under this path prefix.
         #[arg(long)]
         path: Option<String>,
-        /// List circular dependency cycles (default: true).
-        #[arg(long, default_value_t = true)]
-        cycles: bool,
-        /// Maximum number of cycles to return (default: 100).
-        #[arg(long, default_value_t = 100)]
+        /// Maximum number of cycles to return.
+        #[arg(long)]
         limit: usize,
     },
     /// Export the call graph as Mermaid or Graphviz DOT.
@@ -860,11 +856,7 @@ fn run() -> Result<u8> {
             };
             out.print(&index.path(&PathArgs { from, to, depth })?)?;
         }
-        Commands::Cycles {
-            path,
-            cycles: _,
-            limit,
-        } => {
+        Commands::Cycles { path, limit } => {
             let Some(index) = open_fresh(&ws, &out)? else {
                 return Ok(0);
             };
