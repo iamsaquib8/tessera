@@ -1,0 +1,6 @@
+{
+  "name": "example/service",
+  "require": {
+    "slim/slim": "^4.0"
+  }
+}
