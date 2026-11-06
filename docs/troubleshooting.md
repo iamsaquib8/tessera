@@ -69,8 +69,10 @@ straight away and is indexing in the background. Retry after a few seconds;
   `Mcp-Method`, or `Mcp-Name` headers, or they do not match the body.
 - **400 with `-32022`:** the protocol version is not supported. The error
   lists the versions that are.
-- **403:** the request carried a non-local `Origin`. Only localhost origins
-  are accepted.
+- **403:** a non-local `Origin` was supplied, or a server bound to loopback
+  received a missing or non-local `Host` header. Loopback-bound servers only
+  accept `localhost`, `127.0.0.1`, and `[::1]` as the request host, with an
+  optional port; this also applies to `/health`.
 
 ## Docker
 

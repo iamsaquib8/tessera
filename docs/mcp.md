@@ -36,6 +36,13 @@ the model can read the message and recover. Notifications never get a reply.
 
 HTTP specifics:
 
+- When bound to a loopback address (the default), the `Host` header must be
+  `localhost`, `127.0.0.1`, or `[::1]` (with an optional port). Missing or
+  non-local hosts get 403 on every route, including `/health`, even when
+  `Origin` is absent. This prevents DNS-rebinding access to local metadata.
+- Binding to a non-loopback address deliberately enables remote HTTP access;
+  the local-only `Host` restriction does not apply. Only expose the unauthenticated
+  server to trusted networks or behind suitable access controls.
 - `Origin` must be absent or `localhost` / `127.0.0.1` / `[::1]`; any other
   origin gets 403.
 - Notifications get 202.

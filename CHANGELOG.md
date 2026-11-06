@@ -4,6 +4,10 @@ All notable changes to Tessera are documented here.
 
 ## Unreleased
 
+### Fixed
+
+- Reject non-loopback `Host` headers on loopback-bound MCP HTTP servers, including `/health`, to prevent DNS-rebinding access. Deliberate non-loopback binds remain supported.
+
 ### Added
 
 - `verify --format junit` reports completed V1–V5 checks, including successful

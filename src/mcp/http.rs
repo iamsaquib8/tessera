@@ -20,6 +20,12 @@ const MAX_BODY_BYTES: u64 = 2 * 1024 * 1024;
 
 pub fn serve_http(ws: Workspace, addr: &str) -> Result<()> {
     let server = Arc::new(Server::http(addr).map_err(|e| anyhow!("cannot bind {addr}: {e}"))?);
+    // Loopback is the default. A non-loopback bind is an explicit opt-in to
+    // remote clients and must not inherit the localhost Host allowlist.
+    let loopback_only = server
+        .server_addr()
+        .to_ip()
+        .is_some_and(|address| address.ip().is_loopback());
     let bound = server
         .server_addr()
         .to_ip()
@@ -34,7 +40,7 @@ pub fn serve_http(ws: Workspace, addr: &str) -> Result<()> {
             let state = Arc::clone(&state);
             thread::spawn(move || {
                 for request in server.incoming_requests() {
-                    let _ = respond(&state, request);
+                    let _ = respond(&state, request, loopback_only);
                 }
             })
         })
@@ -45,7 +51,20 @@ pub fn serve_http(ws: Workspace, addr: &str) -> Result<()> {
     Ok(())
 }
 
-fn respond(state: &ServerState, mut request: Request) -> std::io::Result<()> {
+fn respond(state: &ServerState, mut request: Request, loopback_only: bool) -> std::io::Result<()> {
+    // Origin is optional on non-browser clients; Host is not. Validate Host
+    // before routing any endpoint, including GET /health (DNS rebinding).
+    if loopback_only
+        && !header(&request, "Host")
+            .as_deref()
+            .is_some_and(|host| crate::ui::local_host(Some(host)))
+    {
+        let body = error_response(
+            Value::Null,
+            &RpcError::new(INVALID_REQUEST, "Host is not allowed"),
+        );
+        return request.respond(json_response(403, &body));
+    }
     if let Some(origin) = header(&request, "Origin") {
         if !allowed_origin(&origin) {
             let body = error_response(
