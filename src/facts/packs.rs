@@ -36,6 +36,7 @@ const PYTHON: &[Language] = &[Language::Python];
 const RUBY: &[Language] = &[Language::Ruby];
 const RUST: &[Language] = &[Language::Rust];
 const PHP: &[Language] = &[Language::Php];
+const CSHARP: &[Language] = &[Language::CSharp];
 
 pub const PACKS: &[Pack] = &[
     Pack {
@@ -175,6 +176,12 @@ pub const PACKS: &[Pack] = &[
         languages: PHP,
         gate: r#"->\s*(get|post|put|patch|delete|options|any|group)\s*\("#,
         query: include_str!("../../packs/slim.scm"),
+    },
+    Pack {
+        id: "aspnet",
+        languages: CSHARP,
+        gate: r"\.Map(Get|Post|Put|Patch|Delete|Group)\(",
+        query: include_str!("../../packs/aspnet.scm"),
     },
 ];
 
@@ -1044,6 +1051,57 @@ $store->get('/key', 'default');
                 Some("delete"),
                 None,
                 Some("healthCheck"),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_aspnet_facts() {
+        let mut parser = tree_sitter::Parser::new();
+        let lang = support_for(Language::CSharp).grammar();
+        parser.set_language(&lang).unwrap();
+        let src = r#"
+app.MapGet("/users/{id}", (int id, UserStore store) => store.Find(id));
+app.MapPost("/orders", CreateOrder);
+app.MapPut("/items/{id}", ItemHandlers.UpdateItem);
+var api = app.MapGroup("/api");
+api.MapDelete("/orders/{id}", DeleteOrder);
+api.MapGet("/status", () => "ok");
+app.MapGroup("/v2").MapGet("/ping", Ping);
+cache.MapGet("/x", () => "cached");
+mapper.MapPost("/not-a-route", 123);
+
+void Register(WebApplication app) {
+    var v3 = app.MapGroup("/v3");
+    v3.MapPatch("/users/{id}", PatchUser);
+}
+"#;
+        let tree = parser.parse(src, None).unwrap();
+        let facts = run(Language::CSharp, src, &tree);
+        let keys: Vec<(&str, &str)> = facts.iter().map(|f| (f.kind, f.key.as_str())).collect();
+        assert_eq!(
+            keys,
+            vec![
+                ("route", "http GET /users/{}"),
+                ("route", "http POST /orders"),
+                ("route", "http PUT /items/{}"),
+                ("route", "http DELETE /api/orders/{}"),
+                ("route", "http GET /api/status"),
+                ("route", "http GET /v2/ping"),
+                ("route", "http PATCH /v3/users/{}"),
+            ]
+        );
+        let handlers: Vec<Option<&str>> = facts.iter().map(|f| f.handler.as_deref()).collect();
+        assert_eq!(
+            handlers,
+            vec![
+                None,
+                Some("CreateOrder"),
+                Some("UpdateItem"),
+                Some("DeleteOrder"),
+                None,
+                Some("Ping"),
+                Some("PatchUser"),
             ]
         );
     }
