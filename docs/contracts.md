@@ -112,6 +112,31 @@ for any method (`app.all`) is not removed. V5 looks at this repository
 only: a route removed here while a workspace sibling calls it is not
 reported yet.
 
+## Spec drift
+
+Tessera compares routes declared in OpenAPI 3 and Swagger documents with routes served in code:
+
+```sh
+tessera map route --drift
+```
+
+```text
+served, not documented
+  POST /api/users/{}/avatar   api/src/users.ts:41  uploadAvatar
+documented, not served
+  DELETE /api/users/{}        api/openapi.yaml:88
+method differs
+  /api/orders/{}              documented PUT (api/openapi.yaml:120), served PATCH (api/src/orders.ts:17)
+```
+
+The comparison is scoped per service (the directory with a build manifest). OpenAPI `servers[].url` paths and Swagger `basePath` are applied to documented paths before comparison.
+
+- `served, not documented`: routes defined in code that do not appear in the OpenAPI document.
+- `documented, not served`: routes declared in the OpenAPI document with no matching handler in code.
+- `method differs`: routes served on the same path under a different HTTP method than documented.
+
+The same data is available via `--json` and the MCP `map` tool with `drift: true`. `verify --diff` reports drift the change introduced as advisory (never blocking): a route added or removed in code without the document changing.
+
 ## Accuracy
 
 Hand-labelled gRPC links in
@@ -150,7 +175,8 @@ Confluent.Kafka and the Kotlin Kafka client, which no pack reads yet.
   imported from. A router that is itself mounted on another router, or
   passed through a function, keeps its own paths only. V5 compares the
   paths routes are declared with, so a removed route on a mounted router is
-  checked without its prefix.
+  checked without its prefix. In `map route --drift`, documented routes that
+  match an unmounted suffix in code are reported as `(possibly served under a prefix)`.
 - GraphQL links root fields only: nested resolvers (`User.name`) and
   fragments are not contracts. Schemas built in code (`buildSchema`,
   code-first type classes) are read only when they are `gql` documents.

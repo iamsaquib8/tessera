@@ -1,0 +1,16 @@
+openapi: 3.0.0
+info:
+  title: Users & Orders API
+  version: "1.0.0"
+servers:
+  - url: /api
+paths:
+  /users/{id}:
+    get:
+      summary: Get user
+  /users:
+    delete:
+      summary: Delete users
+  /orders/{id}:
+    put:
+      summary: Update order

@@ -161,6 +161,27 @@ pub fn sql_strings(content: &str) -> Vec<IndexedFact> {
 
 const HTTP_METHODS: &[&str] = &["get", "post", "put", "patch", "delete", "head", "options"];
 
+fn extract_base_path(url_or_path: &str) -> String {
+    let text = url_or_path.trim().trim_matches(['"', '\'']);
+    let path = if let Some((_, rest)) = text.split_once("://") {
+        if let Some(slash) = rest.find('/') {
+            &rest[slash..]
+        } else {
+            ""
+        }
+    } else if text.starts_with('/') {
+        text
+    } else {
+        ""
+    };
+    let path = path.trim_end_matches('/');
+    if path.is_empty() || path == "/" {
+        String::new()
+    } else {
+        path.to_string()
+    }
+}
+
 /// OpenAPI 3 and Swagger 2 `paths`, from JSON or YAML: one `route_def` per
 /// operation.
 pub fn openapi(content: &str) -> Vec<IndexedFact> {
@@ -184,17 +205,61 @@ pub fn openapi(content: &str) -> Vec<IndexedFact> {
         let Some(paths) = value["paths"].as_object() else {
             return out;
         };
+        let base_path = value
+            .get("basePath")
+            .and_then(|v| v.as_str())
+            .map(extract_base_path)
+            .or_else(|| {
+                value
+                    .get("servers")
+                    .and_then(|v| v.as_array())
+                    .and_then(|arr| arr.first())
+                    .and_then(|s| s.get("url"))
+                    .and_then(|u| u.as_str())
+                    .map(extract_base_path)
+            })
+            .unwrap_or_default();
         for (path, operations) in paths {
             let line = content
                 .find(&format!("\"{path}\""))
                 .map_or(1, |at| content[..at].matches('\n').count() + 1);
+            let full_path = if base_path.is_empty() {
+                path.to_string()
+            } else {
+                format!("{base_path}{path}")
+            };
             for method in HTTP_METHODS {
                 if operations.get(*method).is_some() {
-                    out.push(fact(method, path, line, path));
+                    out.push(fact(method, &full_path, line, path));
                 }
             }
         }
         return out;
+    }
+    let mut base_path = String::new();
+    let mut in_servers = false;
+    for line in content.lines() {
+        let trimmed = line.trim_end();
+        if trimmed.trim_start().starts_with('#') || trimmed.trim().is_empty() {
+            continue;
+        }
+        let indent = trimmed.len() - trimmed.trim_start().len();
+        if indent == 0 {
+            if let Some(rest) = trimmed.strip_prefix("basePath:") {
+                base_path = extract_base_path(rest);
+                break;
+            }
+            in_servers = trimmed.starts_with("servers:");
+            continue;
+        }
+        if in_servers && indent > 0 {
+            let t = trimmed.trim_start();
+            let url_str = t.strip_prefix("- url:").or_else(|| t.strip_prefix("url:"));
+            if let Some(url) = url_str {
+                base_path = extract_base_path(url);
+                break;
+            }
+        }
     }
     // YAML: keys under `paths:`, then method keys one level deeper.
     let mut in_paths = false;
@@ -224,7 +289,12 @@ pub fn openapi(content: &str) -> Vec<IndexedFact> {
         let key = key.trim_matches(['"', '\'']);
         let path_level = *path_indent.get_or_insert(indent);
         if indent == path_level && key.starts_with('/') {
-            current = Some((key.to_string(), indent));
+            let full = if base_path.is_empty() {
+                key.to_string()
+            } else {
+                format!("{base_path}{key}")
+            };
+            current = Some((full, indent));
         } else if let Some((path, path_at)) = &current {
             if indent > *path_at && HTTP_METHODS.contains(&key) && indent <= path_at + 4 {
                 out.push(fact(key, path, index + 1, trimmed.trim()));
@@ -470,6 +540,15 @@ mod tests {
         let json = r#"{"paths": {"/pets/{petId}": {"get": {}, "parameters": []}}}"#;
         let keys: Vec<String> = openapi(json).into_iter().map(|f| f.key).collect();
         assert_eq!(keys, vec!["http GET /pets/{}"]);
+
+        let yaml_servers = "openapi: 3.0.0\nservers:\n  - url: https://api.example.com/api/v1/\npaths:\n  /users/{id}:\n    get: {}\n";
+        let keys: Vec<String> = openapi(yaml_servers).into_iter().map(|f| f.key).collect();
+        assert_eq!(keys, vec!["http GET /api/v1/users/{}"]);
+
+        let swagger_json =
+            r#"{"swagger": "2.0", "basePath": "/v2", "paths": {"/items": {"post": {}}}}"#;
+        let keys: Vec<String> = openapi(swagger_json).into_iter().map(|f| f.key).collect();
+        assert_eq!(keys, vec!["http POST /v2/items"]);
     }
 
     #[test]

@@ -54,6 +54,7 @@
   ],
   "map": [
     "cursor",
+    "drift",
     "format",
     "kind",
     "limit",
