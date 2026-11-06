@@ -26,8 +26,10 @@ pub fn method(text: &str) -> String {
         Some(at) if at > 0 && text.starts_with(|c: char| c.is_ascii_lowercase()) => &text[..at],
         _ => text,
     };
-    let base = text
-        .trim_end_matches("Mapping")
+    let base = text.trim_end_matches("Mapping");
+    let base = base
+        .strip_prefix("Map")
+        .unwrap_or(base)
         .rsplit('.')
         .next()
         .unwrap_or(text)
@@ -430,6 +432,11 @@ mod tests {
         assert_eq!(method("post_form"), "POST");
         assert_eq!(method(":patch"), "PATCH");
         assert_eq!(method("Get"), "GET");
+        assert_eq!(method("MapGet"), "GET");
+        assert_eq!(method("MapPost"), "POST");
+        assert_eq!(method("MapPut"), "PUT");
+        assert_eq!(method("MapPatch"), "PATCH");
+        assert_eq!(method("MapDelete"), "DELETE");
         assert_eq!(method("HandleFunc"), "ANY");
         assert_eq!(method("api_route"), "ANY");
     }

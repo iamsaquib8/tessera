@@ -976,3 +976,56 @@ fn slim_route_handlers_and_lookalikes() {
         .expect("missing GET /api/status");
     assert_eq!(status_contract["providers"].as_array().unwrap().len(), 1);
 }
+
+#[test]
+fn aspnet_minimal_api_routes_link_to_clients() {
+    let temp = fixture("contracts-csharp");
+    let got = summary(&map(temp.path(), &["route"]));
+    let server = "service/Program.cs";
+    let client = "client/client.ts";
+    for expected in [
+        format!("GET /users/{{}}: {server} -> {client}"),
+        format!("POST /orders: {server} -> {client}"),
+        format!("PUT /items/{{}}: {server} -> {client}"),
+        format!("DELETE /api/orders/{{}}: {server} -> {client}"),
+        format!("GET /api/status: {server} -> {client}"),
+        format!("GET /v2/ping: {server} -> {client}"),
+    ] {
+        assert!(got.contains(&expected), "missing {expected:?} in {got:#?}");
+    }
+    assert_eq!(got.len(), 6, "{got:#?}");
+}
+
+#[test]
+fn aspnet_route_handlers_and_lookalikes() {
+    let temp = fixture("contracts-csharp");
+    let result = map(temp.path(), &["route", "/orders"]);
+    let contracts = result["contracts"].as_array().unwrap();
+    let post_contract = contracts
+        .iter()
+        .find(|c| c["name"] == "POST /orders")
+        .expect("missing POST /orders");
+    assert_eq!(
+        post_contract["providers"][0]["symbol"], "OrderHandlers.CreateOrder",
+        "{result}"
+    );
+
+    let delete_result = map(temp.path(), &["route", "/api/orders/{}"]);
+    let delete_contracts = delete_result["contracts"].as_array().unwrap();
+    let delete_contract = delete_contracts
+        .iter()
+        .find(|c| c["name"] == "DELETE /api/orders/{}")
+        .expect("missing DELETE /api/orders/{}");
+    assert_eq!(
+        delete_contract["providers"][0]["symbol"], "OrderHandlers.DeleteOrder",
+        "{delete_result}"
+    );
+
+    let result_all = map(temp.path(), &["route"]);
+    let text = result_all.to_string();
+    assert!(!text.contains("/x"), "lookalike /x captured: {text}");
+    assert!(
+        !text.contains("not-a-route"),
+        "lookalike not-a-route captured: {text}"
+    );
+}
