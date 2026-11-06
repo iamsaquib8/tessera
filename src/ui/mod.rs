@@ -74,7 +74,7 @@ fn open_browser(url: &str) {
 
 /// Only the loopback names: a page on another host that points its name at
 /// 127.0.0.1 (DNS rebinding) gets nothing.
-fn local_host(host: Option<&str>) -> bool {
+pub(crate) fn local_host(host: Option<&str>) -> bool {
     let Some(host) = host else {
         return true;
     };

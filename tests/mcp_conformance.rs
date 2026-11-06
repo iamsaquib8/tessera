@@ -482,12 +482,20 @@ mod http {
         stream
             .set_read_timeout(Some(Duration::from_secs(10)))
             .unwrap();
+        let host = headers
+            .iter()
+            .find(|(name, _)| name.eq_ignore_ascii_case("Host"))
+            .map(|(_, value)| *value)
+            .unwrap_or(&server.addr);
         let mut head = format!(
             "{method} {path} HTTP/1.1\r\nHost: {}\r\nConnection: close\r\nContent-Type: application/json\r\nAccept: application/json, text/event-stream\r\nContent-Length: {}\r\n",
-            server.addr,
+            host,
             body.len()
         );
         for (name, value) in headers {
+            if name.eq_ignore_ascii_case("Host") {
+                continue;
+            }
             head.push_str(&format!("{name}: {value}\r\n"));
         }
         head.push_str("\r\n");
@@ -622,6 +630,20 @@ mod http {
             &note,
         );
         assert_eq!(status, 202);
+
+        // Host is validated even without Origin and before /health exposes
+        // local workspace paths. Loopback names remain usable.
+        for host in ["attacker.example", "localhost.attacker.example"] {
+            let (status, body) = request(&server, "GET", "/health", &[("Host", host)], "");
+            assert_eq!(status, 403, "{host}: {body}");
+            assert!(!body.contains("db_path"));
+            let (status, _) = request(&server, "POST", "/mcp", &[("Host", host)], &note);
+            assert_eq!(status, 403, "{host}");
+        }
+        for host in ["localhost:7474", "127.0.0.1:7474", "[::1]:7474"] {
+            let (status, body) = request(&server, "GET", "/health", &[("Host", host)], "");
+            assert_eq!(status, 200, "{host}: {body}");
+        }
 
         let (status, _) = request(&server, "GET", "/mcp", &[], "");
         assert_eq!(status, 405);
