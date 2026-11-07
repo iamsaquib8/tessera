@@ -42,6 +42,9 @@ jobs:
         with:
           toolchain: stable
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      # tests/pre_commit.rs also runs the hook through pre-commit when it is installed.
+      - if: runner.os == 'Linux'
+        run: python3 -m pip install pre-commit
       - run: cargo test --all-targets --all-features --no-fail-fast
 
   junit:

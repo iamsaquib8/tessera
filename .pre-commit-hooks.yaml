@@ -1,0 +1,10 @@
+# For the pre-commit framework (https://pre-commit.com). Needs `tessera` on PATH.
+# `verify` exits 1 for a blocking problem and 3 for an index error, so the entry
+# fails a commit only for exit 1 and never because the index is busy or broken.
+- id: tessera-verify
+  name: tessera verify --staged
+  description: Check that the staged changes do not break a call site, an argument count or an import.
+  entry: sh -c 'tessera verify --staged --format agent --quiet; [ $? -ne 1 ]'
+  language: system
+  pass_filenames: false
+  always_run: true

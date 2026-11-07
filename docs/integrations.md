@@ -153,3 +153,43 @@ yourself, append:
 ```sh
 tessera verify --staged --format agent --quiet; [ $? -ne 1 ] || exit 1
 ```
+
+Only exit code 1 (a blocking problem) refuses the commit. `verify` exits 3 for
+an index error, and a busy or broken index should not stop anyone from
+committing, so every recipe below keeps that rule. They all need `tessera` on
+your `PATH`; see [the install options](https://github.com/iamsaquib8/tessera#quick-start).
+
+### pre-commit
+
+For the [pre-commit](https://pre-commit.com) framework, add this to
+`.pre-commit-config.yaml`, with `rev` set to a release tag:
+
+```yaml
+repos:
+  - repo: https://github.com/iamsaquib8/tessera
+    rev: v1.2.0
+    hooks:
+      - id: tessera-verify
+```
+
+The hook runs `tessera verify --staged` on every commit and does not pass file
+names, because `--staged` reads the staged files itself.
+
+### lefthook
+
+In `lefthook.yml`:
+
+```yaml
+pre-commit:
+  commands:
+    tessera:
+      run: sh -c 'tessera verify --staged --format agent --quiet; [ $? -ne 1 ]'
+```
+
+### husky
+
+In `.husky/pre-commit`:
+
+```sh
+tessera verify --staged --format agent --quiet; [ $? -ne 1 ] || exit 1
+```
