@@ -164,7 +164,12 @@ fn find_path_matches_whole_path_segments() {
         outline_paths(&index, "src/user_service.ts"),
         ["src/user_service.ts"]
     );
-    assert!(outline_paths(&index, "SRC/API/index.ts").is_empty());
+    // Path matching is case-sensitive. A file system that ignores case
+    // (macOS, Windows) resolves `SRC/API/index.ts` to the stored name before
+    // the lookup, so only assert this where the name does not exist on disk.
+    if !_temp.path().join("repo/SRC/API/index.ts").exists() {
+        assert!(outline_paths(&index, "SRC/API/index.ts").is_empty());
+    }
     assert_eq!(
         outline_paths(&index, "src/api/index.ts"),
         ["src/api/index.ts"]
@@ -360,6 +365,77 @@ fn context_bundles_body_and_callers_within_budget() {
     assert!(result.tokens <= 2_000);
 }
 
+/// The sibling ranking before the callers were de-duplicated: every call edge
+/// of the target joined with every edge of its caller.
+const REFERENCE_SIBLINGS: &str = "
+    SELECT e2.to_symbol_name, COUNT(DISTINCT e1.from_symbol_id) AS shared
+    FROM edges e1
+    JOIN edges e2 ON e2.from_symbol_id = e1.from_symbol_id
+    WHERE e1.to_symbol_name = ?1
+      AND e2.to_symbol_name != ?1
+    GROUP BY e2.to_symbol_name
+    HAVING shared > 0
+    ORDER BY shared DESC, e2.to_symbol_name
+    LIMIT 5";
+
+#[test]
+fn context_siblings_ignore_how_often_a_caller_repeats_the_call() {
+    let temp = TempDir::new().unwrap();
+    let root = temp.path().join("repo");
+    std::fs::create_dir_all(&root).unwrap();
+    let mut lib = String::from("export function hub(x: number): number {\n  return x;\n}\n");
+    for name in ["alpha", "beta", "gamma", "delta", "epsilon", "zeta", "eta"] {
+        lib.push_str(&format!(
+            "export function {name}(x: number): number {{\n  return x;\n}}\n"
+        ));
+    }
+    std::fs::write(root.join("lib.ts"), lib).unwrap();
+    // Caller `i` calls `hub` (i % 4) + 1 times, which makes the join
+    // multiplicity differ per caller, and calls a different subset of the
+    // other functions so the ranking has ties and a clear order.
+    let others = ["alpha", "beta", "gamma", "delta", "epsilon", "zeta", "eta"];
+    for i in 0..40 {
+        let mut body = String::new();
+        for _ in 0..=(i % 4) {
+            body.push_str("  hub(1);\n");
+        }
+        for (j, other) in others.iter().enumerate() {
+            if i % (j + 1) == 0 {
+                body.push_str(&format!("  {other}(2);\n  {other}(3);\n"));
+            }
+        }
+        std::fs::write(
+            root.join(format!("caller_{i:02}.ts")),
+            format!(
+                "import {{ hub, {} }} from \"./lib\";\nexport function caller{i}() {{\n{body}}}\n",
+                others.join(", ")
+            ),
+        )
+        .unwrap();
+    }
+    let db = temp.path().join("t.db");
+    Index::build(&root, &db, IndexOptions::default()).unwrap();
+
+    let conn = rusqlite::Connection::open(&db).unwrap();
+    let mut stmt = conn.prepare(REFERENCE_SIBLINGS).unwrap();
+    let expected: Vec<String> = stmt
+        .query_map(["hub"], |row| row.get::<_, String>(0))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect();
+    assert_eq!(expected.len(), 5, "reference ranking: {expected:?}");
+    assert_eq!(expected[0], "alpha", "alpha is called by every caller");
+
+    let result = Index::open(&db)
+        .unwrap()
+        .context(&ContextArgs {
+            symbol: "hub".to_string(),
+            budget_tokens: 100_000,
+        })
+        .unwrap();
+    assert_eq!(result.siblings, expected);
+}
+
 #[test]
 fn verify_flags_only_invented_calls() {
     let (_temp, index) = open("typescript");
@@ -398,6 +474,58 @@ fn search_unused_skips_type_like_kinds() {
         .iter()
         .all(|h| !matches!(h.symbol.kind.as_str(), "class" | "struct" | "interface")));
     assert!(result.note.is_some());
+}
+
+#[test]
+fn status_counts_match_the_index_tables() {
+    let temp = TempDir::new().unwrap();
+    let root = temp.path().join("repo");
+    std::fs::create_dir_all(&root).unwrap();
+    for i in 0..3 {
+        std::fs::write(
+            root.join(format!("m{i}.ts")),
+            format!(
+                "export function f{i}() {{ return g{i}(); }}\nfunction g{i}() {{ return {i}; }}\n"
+            ),
+        )
+        .unwrap();
+    }
+    for i in 0..2 {
+        std::fs::write(
+            root.join(format!("m{i}.py")),
+            format!("def f{i}():\n    return g{i}()\n\ndef g{i}():\n    return {i}\n"),
+        )
+        .unwrap();
+    }
+    std::fs::write(
+        root.join("m.go"),
+        "package m\n\nfunc F() int { return G() }\n\nfunc G() int { return 1 }\n",
+    )
+    .unwrap();
+    let db = temp.path().join("t.db");
+    Index::build(&root, &db, IndexOptions::default()).unwrap();
+
+    let conn = rusqlite::Connection::open(&db).unwrap();
+    let count = |table: &str| -> usize {
+        conn.query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
+            row.get::<_, i64>(0)
+        })
+        .unwrap() as usize
+    };
+    let status = Index::open(&db).unwrap().status().unwrap();
+    assert_eq!(status.files, count("files"));
+    assert_eq!(status.symbols, count("symbols"));
+    assert_eq!(status.refs, count("refs"));
+    let languages: Vec<(&str, usize)> = status
+        .languages
+        .iter()
+        .map(|l| (l.language.as_str(), l.count))
+        .collect();
+    assert_eq!(
+        languages,
+        [("typescript", 3), ("python", 2), ("go", 1)],
+        "languages are ordered by file count"
+    );
 }
 
 #[test]

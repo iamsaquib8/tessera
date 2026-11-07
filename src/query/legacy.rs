@@ -11,9 +11,9 @@ use crate::db;
 use crate::output::MatchKind;
 use crate::types::{
     DefinitionResult, DiffChangedSymbol, DiffImpactResult, DiffImpactedSymbol, ExportResult,
-    ImportRecord, ImportsResult, KindCount, LanguageCount, OutlineResult, QueryMeta, SearchHit,
-    SearchOptions, SearchResult, Sibling, SiblingsResult, SignatureLine, SignatureResult,
-    StatsResult, SymbolRecord, SymbolSuggestion, TopFanout, ValidateResult,
+    ImportRecord, ImportsResult, OutlineResult, QueryMeta, SearchHit, SearchOptions, SearchResult,
+    Sibling, SiblingsResult, SignatureLine, SignatureResult, SymbolRecord, SymbolSuggestion,
+    ValidateResult,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -168,79 +168,6 @@ pub fn validate_conn(conn: &Connection, symbol: &str) -> Result<ValidateResult> 
         query: symbol.to_string(),
         exists,
         candidates,
-        meta: meta(tokens),
-    })
-}
-
-pub fn stats_conn(conn: &Connection, db_path: &Path) -> Result<StatsResult> {
-    let files = db::count_files(conn)?;
-    let symbols = db::count_symbols(conn)?;
-    let references = db::count_refs(conn)?;
-    let edges = db::count_edges(conn)?;
-
-    let mut languages = Vec::new();
-    {
-        let mut stmt =
-            conn.prepare("SELECT language, COUNT(*) FROM files GROUP BY language ORDER BY 2 DESC")?;
-        let rows = stmt.query_map([], |row| {
-            Ok(LanguageCount {
-                language: row.get::<_, String>(0)?,
-                count: row.get::<_, i64>(1)? as usize,
-            })
-        })?;
-        for row in rows {
-            languages.push(row?);
-        }
-    }
-
-    let mut kinds = Vec::new();
-    {
-        let mut stmt =
-            conn.prepare("SELECT kind, COUNT(*) FROM symbols GROUP BY kind ORDER BY 2 DESC")?;
-        let rows = stmt.query_map([], |row| {
-            Ok(KindCount {
-                kind: row.get::<_, String>(0)?,
-                count: row.get::<_, i64>(1)? as usize,
-            })
-        })?;
-        for row in rows {
-            kinds.push(row?);
-        }
-    }
-
-    let mut top_fanout = Vec::new();
-    {
-        let mut stmt = conn.prepare(
-            "
-            SELECT s.qualified_name, COUNT(DISTINCT e.from_symbol_id) AS callers
-            FROM edges e
-            JOIN symbols s ON s.name = e.to_symbol_name OR s.qualified_name = e.to_symbol_name
-            GROUP BY s.qualified_name
-            ORDER BY callers DESC
-            LIMIT 10
-            ",
-        )?;
-        let rows = stmt.query_map([], |row| {
-            Ok(TopFanout {
-                qualified_name: row.get::<_, String>(0)?,
-                callers: row.get::<_, i64>(1)? as usize,
-            })
-        })?;
-        for row in rows {
-            top_fanout.push(row?);
-        }
-    }
-
-    let tokens = symbols / 8 + 60;
-    Ok(StatsResult {
-        files,
-        symbols,
-        references,
-        edges,
-        languages,
-        kinds,
-        top_fanout,
-        db_path: db_path.to_string_lossy().to_string(),
         meta: meta(tokens),
     })
 }
@@ -618,16 +545,22 @@ pub fn signature_conn(conn: &Connection, symbol: &str) -> Result<SignatureResult
 }
 
 pub fn siblings_conn(conn: &Connection, symbol: &str) -> Result<SiblingsResult> {
-    // Symbols that share callers with `symbol`. The SQL self-join on `edges`
-    // finds, for each from_symbol that calls our target, the OTHER things it
-    // also calls — then ranks them by how many distinct callers they share.
+    // Symbols that share callers with `symbol`: for each distinct caller of
+    // our target, the OTHER things it also calls, ranked by how many distinct
+    // callers they share. The callers are reduced to one row each before the
+    // join; otherwise a caller that calls the target N times contributes N
+    // copies of its whole edge list.
     let mut stmt = conn.prepare(
         "
-        SELECT e2.to_symbol_name, COUNT(DISTINCT e1.from_symbol_id) AS shared
-        FROM edges e1
-        JOIN edges e2 ON e2.from_symbol_id = e1.from_symbol_id
-        WHERE (e1.to_symbol_name = ?1 OR e1.to_symbol_name = ?2)
-          AND e2.to_symbol_name != ?1
+        WITH callers AS (
+            SELECT DISTINCT from_symbol_id AS id FROM edges
+            WHERE (to_symbol_name = ?1 OR to_symbol_name = ?2)
+              AND from_symbol_id IS NOT NULL
+        )
+        SELECT e2.to_symbol_name, COUNT(DISTINCT e2.from_symbol_id) AS shared
+        FROM callers c
+        JOIN edges e2 ON e2.from_symbol_id = c.id
+        WHERE e2.to_symbol_name != ?1
           AND e2.to_symbol_name != ?2
         GROUP BY e2.to_symbol_name
         HAVING shared > 0

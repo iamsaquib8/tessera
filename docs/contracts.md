@@ -1,5 +1,9 @@
 # Contract map
 
+This page is the reference. For the steps, see
+[block breaking API changes](guides/block-breaking-api-changes.md) and
+[monorepos and several repositories](guides/monorepo-and-several-repos.md).
+
 Services talk through contracts: HTTP routes, gRPC methods, GraphQL
 fields, message topics, database tables, and configuration keys. `tessera map` finds both sides of each one, in any
 language Tessera reads, so you can see which other services a change

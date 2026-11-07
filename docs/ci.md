@@ -1,5 +1,10 @@
 # Tessera in CI
 
+This page is the reference. For the steps, see
+[run only the affected tests](guides/run-only-affected-tests.md),
+[review a pull request](guides/review-a-pull-request.md) and
+[adopt on a legacy repository](guides/adopt-on-a-legacy-repo.md).
+
 Tessera is one binary with no service behind it and no network calls, so
 it runs in any CI. The [GitHub Action](../action/README.md) wires up
 everything on this page for GitHub; the sections below are for other CI
