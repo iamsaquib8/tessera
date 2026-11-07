@@ -14,6 +14,7 @@ All notable changes to Tessera are documented here.
 ### Added
 
 - The release workflow moves the major tag (`v1`) to each new stable release once every install channel passes its smoke tests, so `iamsaquib8/tessera/action@v1` follows the latest 1.x. Pre-releases and re-runs of older releases leave it alone.
+- GitHub release notes come from the tag's `CHANGELOG.md` section instead of being generated from pull request titles, and the release workflow fails when the section is missing.
 - `verify --format junit` reports completed V1–V5 checks, including successful
   checks and unchanged affected callers, as schema-validated JUnit XML.
   Blocking findings fail their check/file case; advisory and waived findings
