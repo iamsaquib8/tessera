@@ -10,10 +10,11 @@ use super::blast::{confidence_mark, confidence_note};
 use super::common::{bare_name, is_test_path, limit_or_default};
 use super::find::page_footer;
 use super::graph::{self, DefinitionSite};
+use super::unknown;
 use crate::extract::truncate_chars;
 use crate::output::{paginate, AgentText, Confidence, Page};
 use crate::resolve::modules::{ModuleResolver, ModuleTarget};
-use crate::types::{Language, ReferenceRecord};
+use crate::types::{Language, ReferenceRecord, SymbolSuggestion};
 
 const JS_EXTENSIONS: &[&str] = &["ts", "tsx", "js", "jsx", "mjs", "cjs", "mts", "cts"];
 
@@ -42,6 +43,10 @@ pub struct RefHit {
 #[derive(Debug, Clone, Serialize)]
 pub struct RefsResult {
     pub target: String,
+    /// False when the index has no symbol, file or reference for `target`;
+    /// `suggestions` then holds the closest names.
+    pub found: bool,
+    pub suggestions: Vec<SymbolSuggestion>,
     pub definitions: usize,
     pub references: Vec<RefHit>,
     pub importers: Vec<String>,
@@ -66,6 +71,8 @@ pub fn run_at(conn: &Connection, root: Option<&Path>, args: &RefsArgs) -> Result
         let (importers, page) = paginate(importers, limit, args.cursor.as_deref())?;
         return Ok(RefsResult {
             target,
+            found: true,
+            suggestions: Vec::new(),
             definitions: 0,
             references: Vec::new(),
             importers,
@@ -83,15 +90,23 @@ pub fn run_at(conn: &Connection, root: Option<&Path>, args: &RefsArgs) -> Result
             definition,
         })
         .collect();
+    let found = !definitions.is_empty() || !references.is_empty();
     if args.tests_only {
         references.retain(|r| is_test_path(&r.reference.path));
     }
     if let Some(min) = args.min_confidence {
         references.retain(|r| r.confidence <= min);
     }
+    let suggestions = if found {
+        Vec::new()
+    } else {
+        unknown::suggest(conn, &target)?
+    };
     let (references, page) = paginate(references, limit, args.cursor.as_deref())?;
     Ok(RefsResult {
         target,
+        found,
+        suggestions,
         definitions: definitions.len(),
         references,
         importers: Vec::new(),
@@ -209,6 +224,9 @@ impl fmt::Display for RefsResult {
 
 impl AgentText for RefsResult {
     fn agent_text(&self) -> String {
+        if !self.found {
+            return unknown::message(&self.target, &self.suggestions);
+        }
         let mut out = String::new();
         if !self.importers.is_empty() {
             out.push_str(&format!("Files importing {}:\n", self.target));

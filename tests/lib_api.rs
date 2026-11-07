@@ -476,6 +476,99 @@ fn search_unused_skips_type_like_kinds() {
     assert!(result.note.is_some());
 }
 
+/// An index of one TypeScript file with `n` unused functions `x_0` .. `x_<n-1>`.
+fn many_functions(n: usize) -> (TempDir, Index) {
+    let temp = TempDir::new().unwrap();
+    let root = temp.path().join("repo");
+    std::fs::create_dir_all(&root).unwrap();
+    let source: String = (0..n)
+        .map(|i| format!("function x_{i}() {{ return {i}; }}\n"))
+        .collect();
+    std::fs::write(root.join("many.ts"), source).unwrap();
+    let db = temp.path().join("tessera.db");
+    Index::build(
+        &root,
+        &db,
+        IndexOptions {
+            full: true,
+            ..IndexOptions::default()
+        },
+    )
+    .unwrap();
+    (temp, Index::open(&db).unwrap())
+}
+
+#[test]
+fn search_says_when_it_stopped_at_its_cap() {
+    let (_temp, index) = many_functions(600);
+    let search = |limit: usize, cursor: Option<String>| {
+        index
+            .search(&SearchArgs {
+                pattern: "x_*".to_string(),
+                limit,
+                cursor,
+                ..SearchArgs::default()
+            })
+            .unwrap()
+    };
+    // one big page: not reported as the complete result
+    let big = search(1000, None);
+    assert!(big.hits.len() < 600);
+    assert!(big.page.truncated, "{:?}", big.page);
+    assert!(
+        big.note.as_deref().is_some_and(|n| n.contains("500")),
+        "{:?}",
+        big.note
+    );
+    // paging to the end returns everything, or the last page says it was capped
+    let mut seen = 0;
+    let mut cursor = None;
+    let last = loop {
+        let page = search(50, cursor);
+        seen += page.hits.len();
+        match page.page.next_cursor.clone() {
+            Some(next) => cursor = Some(next),
+            None => break page,
+        }
+    };
+    assert!(
+        seen == 600 || (last.page.truncated && last.note.is_some()),
+        "{seen}"
+    );
+    // a result that fits is still reported as complete
+    let (_small_temp, small_index) = many_functions(30);
+    let small = small_index
+        .search(&SearchArgs {
+            pattern: "x_*".to_string(),
+            limit: 1000,
+            ..SearchArgs::default()
+        })
+        .unwrap();
+    assert_eq!(small.hits.len(), 30);
+    assert!(!small.page.truncated);
+    assert!(small.note.is_none());
+}
+
+#[test]
+fn search_unused_says_when_it_stopped_at_its_cap() {
+    let (_temp, index) = many_functions(600);
+    let result = index
+        .search(&SearchArgs {
+            pattern: "x_*".to_string(),
+            unused: true,
+            limit: 1000,
+            ..SearchArgs::default()
+        })
+        .unwrap();
+    assert!(result.hits.len() < 600);
+    assert!(result.page.truncated, "{:?}", result.page);
+    assert!(
+        result.note.as_deref().is_some_and(|n| n.contains("500")),
+        "{:?}",
+        result.note
+    );
+}
+
 #[test]
 fn status_counts_match_the_index_tables() {
     let temp = TempDir::new().unwrap();

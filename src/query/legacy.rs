@@ -612,7 +612,8 @@ pub fn search_conn(
     pattern: &str,
     options: SearchOptions,
 ) -> Result<SearchResult> {
-    let limit = options.limit.clamp(1, 500);
+    // One above the scan limit lets a caller tell "exactly the limit" from "more".
+    let limit = options.limit.clamp(1, SEARCH_SCAN_LIMIT + 1);
 
     // Two query modes:
     //   - if the pattern has `*`, treat it as a glob → SQL LIKE
@@ -1195,7 +1196,7 @@ fn symbol_exists(conn: &Connection, symbol: &str) -> Result<bool> {
     Ok(false)
 }
 
-fn fuzzy_candidates(
+pub(super) fn fuzzy_candidates(
     conn: &Connection,
     symbol: &str,
     limit: usize,
