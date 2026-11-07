@@ -65,17 +65,14 @@ fn line_at(content: &str, offset: usize) -> usize {
     content[..offset].matches('\n').count() + 1
 }
 
-fn line_text(content: &str, line: usize) -> &str {
-    content.lines().nth(line - 1).unwrap_or_default()
-}
-
 /// Tables a migration creates, alters or drops.
 pub fn sql(content: &str) -> Vec<IndexedFact> {
     CREATE_TABLE
         .captures_iter(content)
         .map(|c| {
             let table = super::packs::table_name(&c[2]);
-            let line = line_at(content, c.get(0).map_or(0, |m| m.start()));
+            let at = c.get(0).map_or(0, |m| m.start());
+            let line = line_at(content, at);
             let verb = c[1].to_lowercase();
             let rule = match verb.as_str() {
                 "create" => "sql.create",
@@ -88,7 +85,7 @@ pub fn sql(content: &str) -> Vec<IndexedFact> {
                 table,
                 line,
                 rule,
-                line_text(content, line),
+                super::line_containing(content, at),
             )
         })
         .collect()
@@ -143,14 +140,15 @@ pub fn sql_strings(content: &str) -> Vec<IndexedFact> {
             ) {
                 continue;
             }
-            let line = line_at(content, c.get(1).map_or(0, |m| m.start()));
+            let at = c.get(1).map_or(0, |m| m.start());
+            let line = line_at(content, at);
             let mut fact = IndexedFact::new(
                 kind::SQL,
                 format!("table {table}"),
                 table,
                 line,
                 "sql.string",
-                line_text(content, line),
+                super::line_containing(content, at),
             );
             fact.confidence = "medium";
             out.push(fact);
