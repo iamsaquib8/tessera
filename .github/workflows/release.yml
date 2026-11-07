@@ -10,10 +10,9 @@ on:
         description: "Existing tag to (re)release, e.g. v0.10.0"
         required: true
 
+# Read by default; each job below asks for the writes it needs.
 permissions:
-  contents: write
-  id-token: write
-  attestations: write
+  contents: read
 
 env:
   TAG: ${{ inputs.tag || github.ref_name }}
@@ -25,10 +24,14 @@ jobs:
   # job succeeds, so `releases/latest` never points at a release without files.
   release:
     name: create draft release
+    # Creates the draft release.
+    permissions:
+      contents: write
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
+          persist-credentials: false
           ref: ${{ env.TAG }}
       - name: Create draft release
         env:
@@ -67,17 +70,22 @@ jobs:
             os: macos-latest
           - target: x86_64-pc-windows-msvc
             os: windows-latest
+    # Uploads the archives to the draft release.
+    permissions:
+      contents: write
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
+          persist-credentials: false
           ref: ${{ env.TAG }}
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
         with:
+          toolchain: stable
           targets: ${{ matrix.target }}
       - if: matrix.target == 'x86_64-unknown-linux-musl'
         run: sudo apt-get update && sudo apt-get install -y musl-tools
-      - uses: taiki-e/upload-rust-binary-action@v1
+      - uses: taiki-e/upload-rust-binary-action@f0d45ae91ee7b8ee928de7a9d04d893a08bcbec6 # v1.30.2
         with:
           bin: tessera
           target: ${{ matrix.target }}
@@ -88,10 +96,16 @@ jobs:
   publish:
     name: checksums, provenance, publish
     needs: binaries
+    # Uploads SHA256SUMS, attests the archives, publishes the release.
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
+          persist-credentials: false
           ref: ${{ env.TAG }}
       - name: Download release archives
         env:
@@ -107,7 +121,7 @@ jobs:
           cd dist
           sha256sum tessera-*.tar.gz tessera-*.zip > SHA256SUMS
           cat SHA256SUMS
-      - uses: actions/attest-build-provenance@v2
+      - uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2.4.0
         with:
           subject-path: "dist/tessera-*"
       - name: Upload SHA256SUMS and publish
@@ -127,14 +141,20 @@ jobs:
     needs: publish
     # crates.io versions are permanent, so release candidates stay off it.
     if: ${{ !contains(inputs.tag || github.ref_name, '-') }}
+    # Only the crates.io token is needed.
+    permissions:
+      contents: read
     runs-on: ubuntu-latest
     environment: crates-io
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
+          persist-credentials: false
           ref: ${{ env.TAG }}
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - name: Publish (idempotent; skipped without a token)
         env:
           CRATES_IO_TOKEN: ${{ secrets.CRATES_IO_TOKEN }}
@@ -156,12 +176,17 @@ jobs:
   npm:
     name: publish npm
     needs: publish
+    # id-token: npm trusted publishing and provenance.
+    permissions:
+      contents: read
+      id-token: write
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
+          persist-credentials: false
           ref: ${{ env.TAG }}
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 20
           registry-url: https://registry.npmjs.org
@@ -205,10 +230,14 @@ jobs:
     name: update Homebrew tap
     needs: publish
     if: ${{ !contains(inputs.tag || github.ref_name, '-') }}
+    # Pushes to the tap with its own token.
+    permissions:
+      contents: read
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
+          persist-credentials: false
           ref: ${{ env.TAG }}
       - name: Render formula and push to iamsaquib8/homebrew-tessera
         env:

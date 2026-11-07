@@ -92,7 +92,7 @@ runs:
     # Tessera makes no network calls: actions/cache moves the cache file.
     - name: Restore the index
       id: restore
-      uses: actions/cache/restore@v4
+      uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
       with:
         path: ${{ runner.temp }}/tessera-index.cache
         key: tessera-${{ runner.os }}-${{ steps.key.outputs.version }}-${{ steps.key.outputs.tree }}
@@ -171,7 +171,7 @@ runs:
 
     - name: Save the index
       if: steps.restore.outputs.cache-hit != 'true'
-      uses: actions/cache/save@v4
+      uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
       with:
         path: ${{ runner.temp }}/tessera-index.cache
         key: ${{ steps.restore.outputs.cache-primary-key }}
@@ -194,7 +194,7 @@ runs:
       if: inputs.upload-sarif == 'true'
       # A fork's token cannot write security events; the comment still works.
       continue-on-error: true
-      uses: github/codeql-action/upload-sarif@v3
+      uses: github/codeql-action/upload-sarif@9418214df1f2c4b8128c770156c409013b07d6b9 # v3.39.3
       with:
         sarif_file: ${{ runner.temp }}/tessera.sarif
         category: tessera

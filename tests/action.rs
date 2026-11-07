@@ -159,8 +159,8 @@ fn the_action_keys_the_index_cache_on_the_merge_base_tree() {
         !action.contains("path: .tessera/tessera.db"),
         "the database is moved as a cache file, not copied raw"
     );
-    assert!(action.contains("uses: actions/cache/restore@v4"));
-    assert!(action.contains("uses: actions/cache/save@v4"));
+    assert!(action.contains("uses: actions/cache/restore@"));
+    assert!(action.contains("uses: actions/cache/save@"));
     assert!(action.contains(
         "key: tessera-${{ runner.os }}-${{ steps.key.outputs.version }}-${{ steps.key.outputs.tree }}"
     ));
@@ -218,7 +218,7 @@ fn the_action_keys_the_index_cache_on_the_merge_base_tree() {
         export_if.as_deref(),
         Some("steps.restore.outputs.cache-hit != 'true'")
     );
-    let save = action.find("actions/cache/save@v4").unwrap();
+    let save = action.find("actions/cache/save@").unwrap();
     assert!(save < action.find("Fail on blocking problems").unwrap());
 }
 
@@ -237,7 +237,7 @@ fn the_action_uploads_sarif_to_code_scanning_when_asked() {
         "off by default: the token needs security-events: write"
     );
     assert!(action.contains("--format sarif > \"$RUNNER_TEMP/tessera.sarif\""));
-    assert!(action.contains("uses: github/codeql-action/upload-sarif@v3"));
+    assert!(action.contains("uses: github/codeql-action/upload-sarif@"));
     assert!(action.contains("category: tessera"));
     let (_, upload_if) = step("sarif");
     assert_eq!(upload_if.as_deref(), Some("inputs.upload-sarif == 'true'"));
