@@ -8,9 +8,9 @@ use serde::{Deserialize, Serialize};
 
 use super::common::{is_test_path, limit_or_default};
 use super::find::page_footer;
-use super::{graph, legacy};
+use super::{graph, legacy, unknown};
 use crate::output::{paginate, AgentText, Confidence, Page};
-use crate::types::SymbolRecord;
+use crate::types::{SymbolRecord, SymbolSuggestion};
 
 const DEFAULT_DEPTH: usize = 4;
 
@@ -38,6 +38,10 @@ pub struct BlastCaller {
 #[derive(Debug, Clone, Serialize)]
 pub struct BlastResult {
     pub target: String,
+    /// False when the index has no symbol for `target`; `suggestions` then
+    /// holds the closest names and `callers` says nothing about the target.
+    pub found: bool,
+    pub suggestions: Vec<SymbolSuggestion>,
     pub changed: Vec<SymbolRecord>,
     pub callers: Vec<BlastCaller>,
     pub tests: Vec<String>,
@@ -52,11 +56,15 @@ pub fn run(conn: &Connection, root: &Path, args: &BlastArgs) -> Result<BlastResu
         args.depth
     };
     let limit = limit_or_default(args.limit);
+    let mut suggestions = Vec::new();
+    let mut found = true;
     let (target, changed, callers, partial) = if let Some(symbol) = &args.symbol {
-        let seeds: Vec<i64> = graph::definitions(conn, symbol)?
-            .iter()
-            .map(|s| s.id)
-            .collect();
+        let definitions = graph::definitions(conn, symbol)?;
+        if definitions.is_empty() {
+            found = false;
+            suggestions = unknown::suggest(conn, symbol)?;
+        }
+        let seeds: Vec<i64> = definitions.iter().map(|s| s.id).collect();
         let (reached, capped) = graph::blast(conn, &seeds, depth)?;
         let callers = reached
             .into_iter()
@@ -98,7 +106,9 @@ pub fn run(conn: &Connection, root: &Path, args: &BlastArgs) -> Result<BlastResu
         .collect();
     let (callers, page) = paginate(callers, limit, args.cursor.as_deref())?;
     Ok(BlastResult {
+        found,
         target,
+        suggestions,
         changed,
         callers,
         tests: tests.into_iter().collect(),
@@ -115,6 +125,9 @@ impl fmt::Display for BlastResult {
 
 impl AgentText for BlastResult {
     fn agent_text(&self) -> String {
+        if !self.found {
+            return unknown::message(&self.target, &self.suggestions);
+        }
         let mut out = String::new();
         if !self.changed.is_empty() {
             out.push_str(&format!("Changed symbols in {}:\n", self.target));

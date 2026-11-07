@@ -1,0 +1,1 @@
+A damaged index file (SQLite "database disk image is malformed") is moved to `tessera.db.corrupt` and rebuilt by the next query, hook, MCP call, `tessera index` or `index --full`, instead of failing every command for good. `tessera status` reports it as `corrupt` and exits 0. Files that are not Tessera indexes are still refused.

@@ -106,6 +106,92 @@ fn find_path_gives_outline_and_imports() {
     assert!(result.imports.iter().any(|i| i.source == "../util/format"));
 }
 
+/// An index of a repository made of `files`, as (path, source) pairs.
+fn open_files(files: &[(&str, &str)]) -> (TempDir, Index) {
+    let temp = TempDir::new().unwrap();
+    let root = temp.path().join("repo");
+    for (path, body) in files {
+        let full = root.join(path);
+        std::fs::create_dir_all(full.parent().unwrap()).unwrap();
+        std::fs::write(full, body).unwrap();
+    }
+    let db = temp.path().join("tessera.db");
+    Index::build(
+        &root,
+        &db,
+        IndexOptions {
+            full: true,
+            ..IndexOptions::default()
+        },
+    )
+    .unwrap();
+    (temp, Index::open(&db).unwrap())
+}
+
+fn outline_paths(index: &Index, path: &str) -> Vec<String> {
+    let result = index
+        .find(&FindArgs {
+            path: Some(path.to_string()),
+            ..FindArgs::default()
+        })
+        .unwrap();
+    let mut paths: Vec<String> = result.outline.iter().map(|s| s.path.clone()).collect();
+    paths.dedup();
+    paths
+}
+
+#[test]
+fn find_path_matches_whole_path_segments() {
+    let (_temp, index) = open_files(&[
+        (
+            "src/api/index.ts",
+            "export function inApi() {}\nimport './x';\n",
+        ),
+        (
+            "src/api_v2/index.ts",
+            "export function inApiV2() {}\nimport './y';\n",
+        ),
+        (
+            "src/apiClient.ts",
+            "export function client() {}\nimport './z';\n",
+        ),
+        ("src/userXservice.ts", "export function userXservice() {}\n"),
+        ("src/user_service.ts", "export function user_service() {}\n"),
+    ]);
+    assert_eq!(outline_paths(&index, "src/api"), ["src/api/index.ts"]);
+    assert_eq!(outline_paths(&index, "src/api/"), ["src/api/index.ts"]);
+    assert_eq!(
+        outline_paths(&index, "src/user_service.ts"),
+        ["src/user_service.ts"]
+    );
+    // Path matching is case-sensitive. A file system that ignores case
+    // (macOS, Windows) resolves `SRC/API/index.ts` to the stored name before
+    // the lookup, so only assert this where the name does not exist on disk.
+    if !_temp.path().join("repo/SRC/API/index.ts").exists() {
+        assert!(outline_paths(&index, "SRC/API/index.ts").is_empty());
+    }
+    assert_eq!(
+        outline_paths(&index, "src/api/index.ts"),
+        ["src/api/index.ts"]
+    );
+    assert!(outline_paths(&index, ".").len() >= 5);
+    // the imports listed beside the outline follow the same boundary
+    let imports = index
+        .find(&FindArgs {
+            path: Some("src/api".to_string()),
+            ..FindArgs::default()
+        })
+        .unwrap()
+        .imports;
+    assert_eq!(
+        imports
+            .iter()
+            .map(|i| i.from_path.as_str())
+            .collect::<Vec<_>>(),
+        ["src/api/index.ts"]
+    );
+}
+
 #[test]
 fn refs_lists_cross_file_calls_and_tests() {
     let (_temp, index) = open("typescript");
@@ -147,6 +233,69 @@ fn refs_on_a_file_lists_importers() {
         result.importers,
         vec!["lib/email_worker.js", "specs/util.spec.js"]
     );
+}
+
+/// Importer files `refs <path>` lists for a repository of `files`.
+fn importers_in(files: &[(&str, &str)], target: &str) -> Vec<String> {
+    let temp = TempDir::new().unwrap();
+    let root = temp.path().join("repo");
+    for (path, body) in files {
+        let full = root.join(path);
+        std::fs::create_dir_all(full.parent().unwrap()).unwrap();
+        std::fs::write(full, body).unwrap();
+    }
+    let db = temp.path().join("tessera.db");
+    Index::build(
+        &root,
+        &db,
+        IndexOptions {
+            full: true,
+            ..IndexOptions::default()
+        },
+    )
+    .unwrap();
+    Index::open(&db)
+        .unwrap()
+        .refs(&RefsArgs {
+            target: target.to_string(),
+            ..RefsArgs::default()
+        })
+        .unwrap()
+        .importers
+}
+
+#[test]
+fn refs_on_a_file_lists_every_importer_the_resolver_linked() {
+    let files = [
+        (
+            "tsconfig.json",
+            r#"{ "compilerOptions": { "baseUrl": ".", "paths": { "@/*": ["src/*"] } } }"#,
+        ),
+        ("src/lib/util.ts", "export function util() { return 1 }\n"),
+        (
+            "src/a.ts",
+            "import { util } from \"./lib/util.js\";\nutil();\n",
+        ),
+        (
+            "src/b.ts",
+            "import { util } from \"@/lib/util\";\nutil();\n",
+        ),
+        (
+            "src/c.ts",
+            "import { util } from \"./lib/util\";\nutil();\n",
+        ),
+        ("src/lodash.js", "export const x = 1;\n"),
+        ("src/d.ts", "import _ from \"lodash\";\n_.x;\n"),
+        ("app/util.py", "def helper():\n    return 1\n"),
+        ("app/service.py", "from .util import helper\nhelper()\n"),
+    ];
+    assert_eq!(
+        importers_in(&files, "src/lib/util.ts"),
+        ["src/a.ts", "src/b.ts", "src/c.ts"]
+    );
+    assert_eq!(importers_in(&files, "app/util.py"), ["app/service.py"]);
+    // a bare package name is not a file called lodash.js somewhere in the repo
+    assert!(importers_in(&files, "src/lodash.js").is_empty());
 }
 
 #[test]
@@ -216,6 +365,132 @@ fn context_bundles_body_and_callers_within_budget() {
     assert!(result.tokens <= 2_000);
 }
 
+/// The sibling ranking before the callers were de-duplicated: every call edge
+/// of the target joined with every edge of its caller.
+const REFERENCE_SIBLINGS: &str = "
+    SELECT e2.to_symbol_name, COUNT(DISTINCT e1.from_symbol_id) AS shared
+    FROM edges e1
+    JOIN edges e2 ON e2.from_symbol_id = e1.from_symbol_id
+    WHERE e1.to_symbol_name = ?1
+      AND e2.to_symbol_name != ?1
+    GROUP BY e2.to_symbol_name
+    HAVING shared > 0
+    ORDER BY shared DESC, e2.to_symbol_name
+    LIMIT 5";
+
+#[test]
+fn context_siblings_ignore_how_often_a_caller_repeats_the_call() {
+    let temp = TempDir::new().unwrap();
+    let root = temp.path().join("repo");
+    std::fs::create_dir_all(&root).unwrap();
+    let mut lib = String::from("export function hub(x: number): number {\n  return x;\n}\n");
+    for name in ["alpha", "beta", "gamma", "delta", "epsilon", "zeta", "eta"] {
+        lib.push_str(&format!(
+            "export function {name}(x: number): number {{\n  return x;\n}}\n"
+        ));
+    }
+    std::fs::write(root.join("lib.ts"), lib).unwrap();
+    // Caller `i` calls `hub` (i % 4) + 1 times, which makes the join
+    // multiplicity differ per caller, and calls a different subset of the
+    // other functions so the ranking has ties and a clear order.
+    let others = ["alpha", "beta", "gamma", "delta", "epsilon", "zeta", "eta"];
+    for i in 0..40 {
+        let mut body = String::new();
+        for _ in 0..=(i % 4) {
+            body.push_str("  hub(1);\n");
+        }
+        for (j, other) in others.iter().enumerate() {
+            if i % (j + 1) == 0 {
+                body.push_str(&format!("  {other}(2);\n  {other}(3);\n"));
+            }
+        }
+        std::fs::write(
+            root.join(format!("caller_{i:02}.ts")),
+            format!(
+                "import {{ hub, {} }} from \"./lib\";\nexport function caller{i}() {{\n{body}}}\n",
+                others.join(", ")
+            ),
+        )
+        .unwrap();
+    }
+    let db = temp.path().join("t.db");
+    Index::build(&root, &db, IndexOptions::default()).unwrap();
+
+    let conn = rusqlite::Connection::open(&db).unwrap();
+    let mut stmt = conn.prepare(REFERENCE_SIBLINGS).unwrap();
+    let expected: Vec<String> = stmt
+        .query_map(["hub"], |row| row.get::<_, String>(0))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect();
+    assert_eq!(expected.len(), 5, "reference ranking: {expected:?}");
+    assert_eq!(expected[0], "alpha", "alpha is called by every caller");
+
+    let result = Index::open(&db)
+        .unwrap()
+        .context(&ContextArgs {
+            symbol: "hub".to_string(),
+            budget_tokens: 100_000,
+        })
+        .unwrap();
+    assert_eq!(result.siblings, expected);
+}
+
+#[test]
+fn context_keeps_callers_and_tests_when_the_body_alone_exceeds_the_budget() {
+    let temp = TempDir::new().unwrap();
+    let root = temp.path().join("repo");
+    std::fs::create_dir_all(&root).unwrap();
+    let mut body =
+        String::from("export function indexAll(items: number[]): number {\n  let total = 0;\n");
+    for i in 0..100 {
+        body.push_str(&format!(
+            "  total += helper{i}(items[{i}]) + items.length;\n"
+        ));
+    }
+    body.push_str("  return total;\n}\n");
+    for i in 0..100 {
+        body.push_str(&format!(
+            "function helper{i}(x: number): number {{\n  return x + {i};\n}}\n"
+        ));
+    }
+    std::fs::write(root.join("index.ts"), body).unwrap();
+    std::fs::write(
+        root.join("app.ts"),
+        "import { indexAll } from \"./index\";\nexport function runApp() {\n  return indexAll([1, 2, 3]);\n}\nexport function runCli() {\n  return indexAll([4]);\n}\n",
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("index.test.ts"),
+        "import { indexAll } from \"./index\";\nexport function testIndexAll() {\n  return indexAll([]);\n}\n",
+    )
+    .unwrap();
+    let db = temp.path().join("t.db");
+    Index::build(&root, &db, IndexOptions::default()).unwrap();
+    let index = Index::open(&db).unwrap();
+    for budget in [400, 800, 1_500] {
+        let result = index
+            .context(&ContextArgs {
+                symbol: "indexAll".to_string(),
+                budget_tokens: budget,
+            })
+            .unwrap();
+        // `runApp`, `runCli` and the test function all call it.
+        assert_eq!(result.callers.len(), 3, "budget {budget}: {result}");
+        assert!(!result.tests.is_empty(), "budget {budget}: {result}");
+        assert!(
+            result.tokens <= budget,
+            "budget {budget}: {}",
+            result.tokens
+        );
+        assert!(
+            result.tokens * 100 >= budget * 85,
+            "budget {budget} left unused: {}",
+            result.tokens
+        );
+    }
+}
+
 #[test]
 fn verify_flags_only_invented_calls() {
     let (_temp, index) = open("typescript");
@@ -254,6 +529,151 @@ fn search_unused_skips_type_like_kinds() {
         .iter()
         .all(|h| !matches!(h.symbol.kind.as_str(), "class" | "struct" | "interface")));
     assert!(result.note.is_some());
+}
+
+/// An index of one TypeScript file with `n` unused functions `x_0` .. `x_<n-1>`.
+fn many_functions(n: usize) -> (TempDir, Index) {
+    let temp = TempDir::new().unwrap();
+    let root = temp.path().join("repo");
+    std::fs::create_dir_all(&root).unwrap();
+    let source: String = (0..n)
+        .map(|i| format!("function x_{i}() {{ return {i}; }}\n"))
+        .collect();
+    std::fs::write(root.join("many.ts"), source).unwrap();
+    let db = temp.path().join("tessera.db");
+    Index::build(
+        &root,
+        &db,
+        IndexOptions {
+            full: true,
+            ..IndexOptions::default()
+        },
+    )
+    .unwrap();
+    (temp, Index::open(&db).unwrap())
+}
+
+#[test]
+fn search_says_when_it_stopped_at_its_cap() {
+    let (_temp, index) = many_functions(600);
+    let search = |limit: usize, cursor: Option<String>| {
+        index
+            .search(&SearchArgs {
+                pattern: "x_*".to_string(),
+                limit,
+                cursor,
+                ..SearchArgs::default()
+            })
+            .unwrap()
+    };
+    // one big page: not reported as the complete result
+    let big = search(1000, None);
+    assert!(big.hits.len() < 600);
+    assert!(big.page.truncated, "{:?}", big.page);
+    assert!(
+        big.note.as_deref().is_some_and(|n| n.contains("500")),
+        "{:?}",
+        big.note
+    );
+    // paging to the end returns everything, or the last page says it was capped
+    let mut seen = 0;
+    let mut cursor = None;
+    let last = loop {
+        let page = search(50, cursor);
+        seen += page.hits.len();
+        match page.page.next_cursor.clone() {
+            Some(next) => cursor = Some(next),
+            None => break page,
+        }
+    };
+    assert!(
+        seen == 600 || (last.page.truncated && last.note.is_some()),
+        "{seen}"
+    );
+    // a result that fits is still reported as complete
+    let (_small_temp, small_index) = many_functions(30);
+    let small = small_index
+        .search(&SearchArgs {
+            pattern: "x_*".to_string(),
+            limit: 1000,
+            ..SearchArgs::default()
+        })
+        .unwrap();
+    assert_eq!(small.hits.len(), 30);
+    assert!(!small.page.truncated);
+    assert!(small.note.is_none());
+}
+
+#[test]
+fn search_unused_says_when_it_stopped_at_its_cap() {
+    let (_temp, index) = many_functions(600);
+    let result = index
+        .search(&SearchArgs {
+            pattern: "x_*".to_string(),
+            unused: true,
+            limit: 1000,
+            ..SearchArgs::default()
+        })
+        .unwrap();
+    assert!(result.hits.len() < 600);
+    assert!(result.page.truncated, "{:?}", result.page);
+    assert!(
+        result.note.as_deref().is_some_and(|n| n.contains("500")),
+        "{:?}",
+        result.note
+    );
+}
+
+#[test]
+fn status_counts_match_the_index_tables() {
+    let temp = TempDir::new().unwrap();
+    let root = temp.path().join("repo");
+    std::fs::create_dir_all(&root).unwrap();
+    for i in 0..3 {
+        std::fs::write(
+            root.join(format!("m{i}.ts")),
+            format!(
+                "export function f{i}() {{ return g{i}(); }}\nfunction g{i}() {{ return {i}; }}\n"
+            ),
+        )
+        .unwrap();
+    }
+    for i in 0..2 {
+        std::fs::write(
+            root.join(format!("m{i}.py")),
+            format!("def f{i}():\n    return g{i}()\n\ndef g{i}():\n    return {i}\n"),
+        )
+        .unwrap();
+    }
+    std::fs::write(
+        root.join("m.go"),
+        "package m\n\nfunc F() int { return G() }\n\nfunc G() int { return 1 }\n",
+    )
+    .unwrap();
+    let db = temp.path().join("t.db");
+    Index::build(&root, &db, IndexOptions::default()).unwrap();
+
+    let conn = rusqlite::Connection::open(&db).unwrap();
+    let count = |table: &str| -> usize {
+        conn.query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
+            row.get::<_, i64>(0)
+        })
+        .unwrap() as usize
+    };
+    let status = Index::open(&db).unwrap().status().unwrap();
+    assert_eq!(status.files, count("files"));
+    assert_eq!(status.symbols, count("symbols"));
+    assert_eq!(status.refs, count("refs"));
+    let languages: Vec<(&str, usize)> = status
+        .languages
+        .iter()
+        .map(|l| (l.language.as_str(), l.count))
+        .collect();
+    assert_eq!(
+        languages,
+        [("typescript", 3), ("python", 2), ("go", 1)],
+        "languages are ordered by file count"
+    );
 }
 
 #[test]

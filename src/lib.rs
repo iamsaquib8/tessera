@@ -153,7 +153,12 @@ impl Index {
     }
 
     pub fn refs(&self, args: &RefsArgs) -> Result<RefsResult> {
-        query::refs(&self.conn, args)
+        // A path to a file in the repository, however it is spelled (`./a.ts`,
+        // absolute), names the file; anything else stays a symbol name.
+        let mut args = args.clone();
+        args.target = workspace::repo_file_argument(&self.root, &self.root, &args.target)
+            .unwrap_or(args.target);
+        query::refs_at(&self.conn, Some(&self.root), &args)
     }
 
     pub fn blast(&self, args: &BlastArgs) -> Result<BlastResult> {
@@ -205,6 +210,21 @@ impl Index {
     /// touched, tests to run.
     pub fn report(&self, changes: &query::Changes) -> Result<query::report::Report> {
         query::report::run(&self.conn, &self.root, changes)
+    }
+
+    /// [`Index::report`] with the baseline and accepted breaks applied only
+    /// when `use_waivers` is true (`verify --no-baseline` passes false).
+    pub fn report_with(
+        &self,
+        changes: &query::Changes,
+        use_waivers: bool,
+    ) -> Result<query::report::Report> {
+        let waivers = if use_waivers {
+            query::waivers::Waivers::load(&self.root)
+        } else {
+            query::waivers::Waivers::none()
+        };
+        query::report::run_with(&self.conn, &self.root, changes, &waivers)
     }
 
     pub fn map(&self, args: &query::MapArgs) -> Result<query::MapResult> {

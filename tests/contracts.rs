@@ -654,7 +654,7 @@ fn path_across_repositories_terminates_on_a_cycle() {
 }
 
 #[test]
-fn path_in_a_workspace_reports_unknown_symbols_as_before() {
+fn path_in_a_workspace_reports_unknown_symbols() {
     let temp = http_workspace();
     let web = temp.path().join("web");
     let result = tessera(&web, &["path", "noSuchThing", "getUser"]);
@@ -670,10 +670,9 @@ fn path_in_a_workspace_reports_unknown_symbols_as_before() {
         .output()
         .unwrap();
     let text = String::from_utf8_lossy(&output.stdout);
-    assert!(
-        text.contains("No call path from noSuchThing to getUser"),
-        "{text}"
-    );
+    // An unknown name is said to be unknown, not reported as "no path".
+    assert!(text.contains("No definition of noSuchThing"), "{text}");
+    assert!(!text.contains("No call path"), "{text}");
 }
 
 #[test]
@@ -1213,4 +1212,55 @@ fn route_drift_detects_possibly_served_under_a_prefix() {
     let doc_not_served = json["documented_not_served"].as_array().unwrap();
     assert_eq!(doc_not_served.len(), 1);
     assert_eq!(doc_not_served[0]["note"], "possibly served under a prefix");
+}
+
+/// The evidence of every gRPC client and call fact in `source` (a Go file),
+/// as `kind line text`.
+fn go_grpc_evidence(source: &str) -> Vec<String> {
+    let temp = TempDir::new().unwrap();
+    let root = temp.path().join("repo");
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::write(root.join("go.mod"), "module demo\n\ngo 1.22\n").unwrap();
+    std::fs::write(root.join("client.go"), source).unwrap();
+    let db = temp.path().join("t.db");
+    tessera_codegraph::Index::build(&root, &db, tessera_codegraph::IndexOptions::default())
+        .unwrap();
+    let conn = rusqlite::Connection::open(&db).unwrap();
+    let mut stmt = conn
+        .prepare(
+            "SELECT kind, line, evidence FROM facts
+             WHERE kind IN ('rpc_client', 'rpc_call') ORDER BY line, kind",
+        )
+        .unwrap();
+    stmt.query_map([], |row| {
+        Ok(format!(
+            "{} {} {}",
+            row.get::<_, String>(0)?,
+            row.get::<_, i64>(1)?,
+            row.get::<_, String>(2)?
+        ))
+    })
+    .unwrap()
+    .map(Result::unwrap)
+    .collect()
+}
+
+#[test]
+fn go_grpc_evidence_is_the_line_of_the_call_whatever_the_file_size_or_line_ending() {
+    // Hundreds of upper-case method calls on other receivers (every one of
+    // them is a candidate call until its receiver proves not to be a client),
+    // then one real client and its call at the very end, without a newline.
+    let mut source = String::from(
+        "package demo\n\nimport \"context\"\n\nfunc run(ctx context.Context, conn *Conn) {\n\tcl := pb.NewCartServiceClient(conn)\n",
+    );
+    for i in 0..400 {
+        source.push_str(&format!("\tother.Method{i}(ctx, {i})\n"));
+    }
+    source.push_str("\tcl.GetCart(ctx, req)\n}");
+    let expected = vec![
+        "rpc_client 6 cl := pb.NewCartServiceClient(conn)".to_string(),
+        "rpc_call 407 cl.GetCart(ctx, req)".to_string(),
+    ];
+    assert_eq!(go_grpc_evidence(&source), expected);
+    assert_eq!(go_grpc_evidence(&source.replace('\n', "\r\n")), expected);
 }

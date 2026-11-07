@@ -11,9 +11,9 @@ use crate::db;
 use crate::output::MatchKind;
 use crate::types::{
     DefinitionResult, DiffChangedSymbol, DiffImpactResult, DiffImpactedSymbol, ExportResult,
-    ImportRecord, ImportsResult, KindCount, LanguageCount, OutlineResult, QueryMeta, SearchHit,
-    SearchOptions, SearchResult, Sibling, SiblingsResult, SignatureLine, SignatureResult,
-    StatsResult, SymbolRecord, SymbolSuggestion, TopFanout, ValidateResult,
+    ImportRecord, ImportsResult, OutlineResult, QueryMeta, SearchHit, SearchOptions, SearchResult,
+    Sibling, SiblingsResult, SignatureLine, SignatureResult, SymbolRecord, SymbolSuggestion,
+    ValidateResult,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -67,13 +67,13 @@ impl ExportOptions {
 // from a path live at the bottom for the CLI.
 
 pub fn find_definition_conn(conn: &Connection, symbol: &str) -> Result<DefinitionResult> {
-    let mut stmt = conn.prepare(
+    let mut stmt = conn.prepare(&format!(
         "
         SELECT s.id, s.name, s.qualified_name, s.kind, s.file_id, f.path, f.language,
                s.start_line, s.end_line, s.signature, s.exported
         FROM symbols s
         JOIN files f ON f.id = s.file_id
-        WHERE s.qualified_name = ?1 OR s.name = ?1 OR s.qualified_name LIKE ?2
+        WHERE s.id IN ({ids})
         ORDER BY
             CASE
                 WHEN s.qualified_name = ?1 THEN 0
@@ -84,10 +84,18 @@ pub fn find_definition_conn(conn: &Connection, symbol: &str) -> Result<Definitio
             f.path
         LIMIT 1000
         ",
-    )?;
-    let mut matches = stmt
-        .query_map(params![symbol, format!("%.{}", symbol)], db::map_symbol)?
-        .collect::<rusqlite::Result<Vec<_>>>()?;
+        ids = db::NAME_MATCH_IDS
+    ))?;
+    let mut matches = Vec::new();
+    for spelling in std::iter::once(symbol.to_string()).chain(db::dotted_name(symbol)) {
+        let (tail, suffix) = db::name_match_params(&spelling);
+        matches = stmt
+            .query_map(params![spelling, tail, suffix], db::map_symbol)?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        if !matches.is_empty() {
+            break;
+        }
+    }
     let mut match_kind = MatchKind::Exact;
     if matches.is_empty() {
         let ranked = ranked_fuzzy_matches(conn, symbol, None, 5)?;
@@ -104,26 +112,39 @@ pub fn find_definition_conn(conn: &Connection, symbol: &str) -> Result<Definitio
     })
 }
 
+/// What a `--path` argument names: `(file, directory prefix)`. A file path
+/// matches itself; a directory path matches what lies under `dir/`. `.`, the
+/// empty path and `**` name everything (an empty prefix). Matching is by
+/// whole segments and case-sensitive, and `_` and `%` are literal.
+fn path_scope(path: &str) -> (String, String) {
+    let path = path.replace('\\', "/");
+    let trimmed = path.trim_end_matches("**").trim_end_matches('/');
+    if trimmed.is_empty() || trimmed == "." {
+        return (path, String::new());
+    }
+    (trimmed.to_string(), format!("{trimmed}/"))
+}
+
+/// SQL for "the file path is the file or lies under the directory": bind `?1` to
+/// the file and `?2` to the directory prefix.
+const PATH_IN_SCOPE: &str = "(f.path = ?1 OR substr(f.path, 1, length(?2)) = ?2)";
+
 pub fn get_outline_conn(conn: &Connection, path: &Path) -> Result<OutlineResult> {
     let prefix = path.to_string_lossy().replace('\\', "/");
-    let like = if prefix == "." || prefix.is_empty() {
-        "%".to_string()
-    } else {
-        format!("{prefix}%")
-    };
-    let mut stmt = conn.prepare(
+    let (file, dir) = path_scope(&prefix);
+    let mut stmt = conn.prepare(&format!(
         "
         SELECT s.id, s.name, s.qualified_name, s.kind, s.file_id, f.path, f.language,
                s.start_line, s.end_line, s.signature, s.exported
         FROM symbols s
         JOIN files f ON f.id = s.file_id
-        WHERE f.path = ?1 OR f.path LIKE ?2
+        WHERE {PATH_IN_SCOPE}
         ORDER BY f.path, s.start_line
         LIMIT 100000
-        ",
-    )?;
+        "
+    ))?;
     let symbols = stmt
-        .query_map(params![prefix, like], db::map_symbol)?
+        .query_map(params![file, dir], db::map_symbol)?
         .collect::<rusqlite::Result<Vec<_>>>()?;
     let tokens = estimate_tokens(&symbols);
     Ok(OutlineResult {
@@ -147,79 +168,6 @@ pub fn validate_conn(conn: &Connection, symbol: &str) -> Result<ValidateResult> 
         query: symbol.to_string(),
         exists,
         candidates,
-        meta: meta(tokens),
-    })
-}
-
-pub fn stats_conn(conn: &Connection, db_path: &Path) -> Result<StatsResult> {
-    let files = db::count_files(conn)?;
-    let symbols = db::count_symbols(conn)?;
-    let references = db::count_refs(conn)?;
-    let edges = db::count_edges(conn)?;
-
-    let mut languages = Vec::new();
-    {
-        let mut stmt =
-            conn.prepare("SELECT language, COUNT(*) FROM files GROUP BY language ORDER BY 2 DESC")?;
-        let rows = stmt.query_map([], |row| {
-            Ok(LanguageCount {
-                language: row.get::<_, String>(0)?,
-                count: row.get::<_, i64>(1)? as usize,
-            })
-        })?;
-        for row in rows {
-            languages.push(row?);
-        }
-    }
-
-    let mut kinds = Vec::new();
-    {
-        let mut stmt =
-            conn.prepare("SELECT kind, COUNT(*) FROM symbols GROUP BY kind ORDER BY 2 DESC")?;
-        let rows = stmt.query_map([], |row| {
-            Ok(KindCount {
-                kind: row.get::<_, String>(0)?,
-                count: row.get::<_, i64>(1)? as usize,
-            })
-        })?;
-        for row in rows {
-            kinds.push(row?);
-        }
-    }
-
-    let mut top_fanout = Vec::new();
-    {
-        let mut stmt = conn.prepare(
-            "
-            SELECT s.qualified_name, COUNT(DISTINCT e.from_symbol_id) AS callers
-            FROM edges e
-            JOIN symbols s ON s.name = e.to_symbol_name OR s.qualified_name = e.to_symbol_name
-            GROUP BY s.qualified_name
-            ORDER BY callers DESC
-            LIMIT 10
-            ",
-        )?;
-        let rows = stmt.query_map([], |row| {
-            Ok(TopFanout {
-                qualified_name: row.get::<_, String>(0)?,
-                callers: row.get::<_, i64>(1)? as usize,
-            })
-        })?;
-        for row in rows {
-            top_fanout.push(row?);
-        }
-    }
-
-    let tokens = symbols / 8 + 60;
-    Ok(StatsResult {
-        files,
-        symbols,
-        references,
-        edges,
-        languages,
-        kinds,
-        top_fanout,
-        db_path: db_path.to_string_lossy().to_string(),
         meta: meta(tokens),
     })
 }
@@ -266,7 +214,15 @@ pub fn diff_impact_conn(
             "--relative",
             "--no-renames",
         ])
-        .args(["--no-color", "--no-ext-diff"])
+        // Pin the output to what the parser reads: the user's git config
+        // (`diff.mnemonicPrefix`, `diff.noprefix`, `diff.srcPrefix`, ...) must
+        // not change the path prefixes.
+        .args([
+            "--no-prefix",
+            "--no-color",
+            "--no-ext-diff",
+            "--no-textconv",
+        ])
         .arg(&from);
     if let Some(to) = to_ref {
         command.arg(resolve_commit(root, to)?);
@@ -342,29 +298,14 @@ pub fn diff_impact_conn(
         let Some((file_id, _)) = db::file_sha(conn, &fh.path)? else {
             continue;
         };
-        for (old_start, old_count, new_start, new_count) in &fh.ranges {
-            let (hunk_start, hunk_end) = if *new_count > 0 {
-                (*new_start, new_start + new_count.saturating_sub(1))
+        for (_, old_count, new_start, new_count) in &fh.ranges {
+            let rows = if *new_count > 0 {
+                // The lines the hunk adds or rewrites, in the working tree.
+                symbols_spanning(conn, file_id, new_start + new_count - 1, *new_start)?
             } else {
-                (*old_start, old_start + old_count.saturating_sub(1))
+                deletion_site(conn, root, &fh.path, file_id, *new_start)?
             };
-            let mut stmt = conn.prepare(
-                "
-                SELECT s.id, s.name, s.qualified_name, s.kind, s.file_id, f.path, f.language,
-                       s.start_line, s.end_line, s.signature, s.exported
-                FROM symbols s
-                JOIN files f ON f.id = s.file_id
-                WHERE s.file_id = ?1
-                  AND s.start_line <= ?2
-                  AND s.end_line >= ?3
-                ",
-            )?;
-            let rows = stmt.query_map(
-                params![file_id, hunk_end as i64, hunk_start as i64],
-                db::map_symbol,
-            )?;
-            for row in rows {
-                let sym = row?;
+            for sym in rows {
                 if let Some(existing) = changed_symbols.iter_mut().find(|c| c.symbol.id == sym.id) {
                     existing.added_lines += *new_count;
                     existing.removed_lines += *old_count;
@@ -418,6 +359,68 @@ pub fn diff_impact_conn(
     })
 }
 
+/// Symbols with `start_line <= start_by` and `end_line >= end_from`: those
+/// overlapping the lines `end_from..=start_by`, or, with the arguments
+/// swapped to `(n, n + 1)`, those that contain both sides of a gap.
+fn symbols_spanning(
+    conn: &Connection,
+    file_id: i64,
+    start_by: usize,
+    end_from: usize,
+) -> Result<Vec<SymbolRecord>> {
+    let mut stmt = conn.prepare(
+        "
+        SELECT s.id, s.name, s.qualified_name, s.kind, s.file_id, f.path, f.language,
+               s.start_line, s.end_line, s.signature, s.exported
+        FROM symbols s
+        JOIN files f ON f.id = s.file_id
+        WHERE s.file_id = ?1
+          AND s.start_line <= ?2
+          AND s.end_line >= ?3
+        ",
+    )?;
+    let rows = stmt.query_map(
+        params![file_id, start_by as i64, end_from as i64],
+        db::map_symbol,
+    )?;
+    Ok(rows.collect::<rusqlite::Result<_>>()?)
+}
+
+/// The symbol a pure deletion belongs to. For `@@ -a,n +b,0 @@` git's `b` is
+/// the line after which the lines were removed (0 at the top of the file), and
+/// the index describes the working tree, so the old line numbers mean nothing
+/// here. That is the innermost symbol around the gap between lines `b` and
+/// `b + 1`; at the top of the file the symbol that now starts the file, and at
+/// the end the symbol that ends it. A gap between two symbols changes none.
+fn deletion_site(
+    conn: &Connection,
+    root: &Path,
+    path: &str,
+    file_id: i64,
+    after_line: usize,
+) -> Result<Vec<SymbolRecord>> {
+    let mut around = symbols_spanning(conn, file_id, after_line, after_line + 1)?;
+    if around.is_empty() && after_line == 0 {
+        around = symbols_spanning(conn, file_id, 1, 1)?;
+    } else if around.is_empty() {
+        let last_line = std::fs::read_to_string(root.join(path))
+            .map(|text| text.lines().count())
+            .unwrap_or(usize::MAX);
+        if after_line >= last_line {
+            around = symbols_spanning(conn, file_id, after_line, after_line)?;
+        }
+    }
+    around.sort_by_key(|sym| {
+        (
+            sym.end_line.saturating_sub(sym.start_line),
+            std::cmp::Reverse(sym.start_line),
+            sym.id,
+        )
+    });
+    around.truncate(1);
+    Ok(around)
+}
+
 fn parse_range(s: &str) -> Option<(usize, usize)> {
     let mut parts = s.split(',');
     let start: usize = parts.next()?.parse().ok()?;
@@ -435,35 +438,28 @@ fn parse_diff_path(rest: &str) -> Option<String> {
     } else {
         trimmed
     };
-    let stripped = unquoted
-        .strip_prefix("b/")
-        .or_else(|| unquoted.strip_prefix("a/"))
-        .unwrap_or(unquoted);
-    if stripped.is_empty() {
+    // `git diff --no-prefix`: the path is what follows, `a/` and `b/` included.
+    if unquoted.is_empty() {
         None
     } else {
-        Some(stripped.to_string())
+        Some(unquoted.to_string())
     }
 }
 
 pub fn imports_conn(conn: &Connection, path: &str) -> Result<ImportsResult> {
-    let mut stmt = conn.prepare(
+    let (file, dir) = path_scope(path);
+    let mut stmt = conn.prepare(&format!(
         "
         SELECT i.source, f.path, i.line, i.kind
         FROM imports i
         JOIN files f ON f.id = i.file_id
-        WHERE f.path = ?1 OR f.path LIKE ?2
+        WHERE {PATH_IN_SCOPE}
         ORDER BY f.path, i.line
         LIMIT 100000
-        ",
-    )?;
-    let like = if path.ends_with('/') || path.ends_with("**") {
-        format!("{}%", path.trim_end_matches("**"))
-    } else {
-        format!("{}%", path)
-    };
+        "
+    ))?;
     let imports: Vec<ImportRecord> = stmt
-        .query_map(params![path, like], |row| {
+        .query_map(params![file, dir], |row| {
             Ok(ImportRecord {
                 source: row.get(0)?,
                 from_path: row.get(1)?,
@@ -549,16 +545,22 @@ pub fn signature_conn(conn: &Connection, symbol: &str) -> Result<SignatureResult
 }
 
 pub fn siblings_conn(conn: &Connection, symbol: &str) -> Result<SiblingsResult> {
-    // Symbols that share callers with `symbol`. The SQL self-join on `edges`
-    // finds, for each from_symbol that calls our target, the OTHER things it
-    // also calls — then ranks them by how many distinct callers they share.
+    // Symbols that share callers with `symbol`: for each distinct caller of
+    // our target, the OTHER things it also calls, ranked by how many distinct
+    // callers they share. The callers are reduced to one row each before the
+    // join; otherwise a caller that calls the target N times contributes N
+    // copies of its whole edge list.
     let mut stmt = conn.prepare(
         "
-        SELECT e2.to_symbol_name, COUNT(DISTINCT e1.from_symbol_id) AS shared
-        FROM edges e1
-        JOIN edges e2 ON e2.from_symbol_id = e1.from_symbol_id
-        WHERE (e1.to_symbol_name = ?1 OR e1.to_symbol_name = ?2)
-          AND e2.to_symbol_name != ?1
+        WITH callers AS (
+            SELECT DISTINCT from_symbol_id AS id FROM edges
+            WHERE (to_symbol_name = ?1 OR to_symbol_name = ?2)
+              AND from_symbol_id IS NOT NULL
+        )
+        SELECT e2.to_symbol_name, COUNT(DISTINCT e2.from_symbol_id) AS shared
+        FROM callers c
+        JOIN edges e2 ON e2.from_symbol_id = c.id
+        WHERE e2.to_symbol_name != ?1
           AND e2.to_symbol_name != ?2
         GROUP BY e2.to_symbol_name
         HAVING shared > 0
@@ -610,7 +612,8 @@ pub fn search_conn(
     pattern: &str,
     options: SearchOptions,
 ) -> Result<SearchResult> {
-    let limit = options.limit.clamp(1, 500);
+    // One above the scan limit lets a caller tell "exactly the limit" from "more".
+    let limit = options.limit.clamp(1, SEARCH_SCAN_LIMIT + 1);
 
     // Two query modes:
     //   - if the pattern has `*`, treat it as a glob → SQL LIKE
@@ -921,7 +924,14 @@ pub(super) fn exact_symbols(
         ",
     )?;
     let rows = stmt.query_map(params![symbol, limit as i64], db::map_symbol)?;
-    Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    let found = rows.collect::<rusqlite::Result<Vec<_>>>()?;
+    match db::dotted_name(symbol) {
+        Some(dotted) if found.is_empty() => {
+            let rows = stmt.query_map(params![dotted, limit as i64], db::map_symbol)?;
+            Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+        }
+        _ => Ok(found),
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -1172,18 +1182,21 @@ fn html_escape(value: &str) -> String {
 }
 
 fn symbol_exists(conn: &Connection, symbol: &str) -> Result<bool> {
-    let count: i64 = conn.query_row(
-        "
-        SELECT COUNT(*) FROM symbols
-        WHERE qualified_name = ?1 OR name = ?1 OR qualified_name LIKE ?2
-        ",
-        params![symbol, format!("%.{}", symbol)],
-        |row| row.get(0),
-    )?;
-    Ok(count > 0)
+    for spelling in std::iter::once(symbol.to_string()).chain(db::dotted_name(symbol)) {
+        let (tail, suffix) = db::name_match_params(&spelling);
+        let found: bool = conn.query_row(
+            &format!("SELECT EXISTS({})", db::NAME_MATCH_IDS),
+            params![spelling, tail, suffix],
+            |row| row.get(0),
+        )?;
+        if found {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
-fn fuzzy_candidates(
+pub(super) fn fuzzy_candidates(
     conn: &Connection,
     symbol: &str,
     limit: usize,
@@ -1570,38 +1583,25 @@ mod tests {
 
     #[test]
     fn test_parse_diff_path() {
+        // `git diff --no-prefix`: the path is taken as written, so a real
+        // top-level directory named `a/` or `b/` survives.
         assert_eq!(
-            parse_diff_path("b/src/service.rs"),
-            Some("src/service.rs".to_string())
-        );
-        assert_eq!(
-            parse_diff_path("a/src/service.rs"),
+            parse_diff_path("src/service.rs"),
             Some("src/service.rs".to_string())
         );
         assert_eq!(parse_diff_path("/dev/null"), Some("/dev/null".to_string()));
+        for path in [
+            "b/b/service.rs",
+            "a/a/service.rs",
+            "b/a/service.rs",
+            "a/service.rs",
+        ] {
+            assert_eq!(parse_diff_path(path), Some(path.to_string()));
+        }
         assert_eq!(
-            parse_diff_path("b/b/service.rs"),
-            Some("b/service.rs".to_string())
-        );
-        assert_eq!(
-            parse_diff_path("a/a/service.rs"),
-            Some("a/service.rs".to_string())
-        );
-        assert_eq!(
-            parse_diff_path("b/a/service.rs"),
-            Some("a/service.rs".to_string())
-        );
-        assert_eq!(
-            parse_diff_path("a/b/service.rs"),
-            Some("b/service.rs".to_string())
-        );
-        assert_eq!(
-            parse_diff_path("\"b/path with spaces/file.rs\""),
+            parse_diff_path("\"path with spaces/file.rs\""),
             Some("path with spaces/file.rs".to_string())
         );
-        assert_eq!(
-            parse_diff_path("\"b/b/file.rs\""),
-            Some("b/file.rs".to_string())
-        );
+        assert_eq!(parse_diff_path(""), None);
     }
 }

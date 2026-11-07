@@ -37,16 +37,34 @@ pub fn confidence(value: &str) -> Confidence {
     }
 }
 
-/// Symbols `target` names: exact qualified-name matches, else every symbol
-/// with that simple name.
+/// Symbols `target` names: exact qualified-name matches (with `::`, `#` and
+/// `\` read as dots), then the symbols whose qualified name ends in
+/// `.target`, else every symbol with that simple name.
 pub fn definitions(conn: &Connection, target: &str) -> Result<Vec<SymbolRecord>> {
-    let exact = symbols(
-        conn,
-        &format!("{SYMBOL_SQL} WHERE s.qualified_name = ?1"),
-        target,
-    )?;
-    if !exact.is_empty() {
-        return Ok(exact);
+    let spellings: Vec<String> = std::iter::once(target.to_string())
+        .chain(db::dotted_name(target))
+        .collect();
+    for spelling in &spellings {
+        let exact = symbols(
+            conn,
+            &format!("{SYMBOL_SQL} WHERE s.qualified_name = ?1"),
+            spelling,
+        )?;
+        if !exact.is_empty() {
+            return Ok(exact);
+        }
+    }
+    for spelling in spellings.iter().filter(|s| s.contains('.')) {
+        let (tail, suffix) = db::name_match_params(spelling);
+        let mut stmt = conn.prepare_cached(&format!(
+            "{SYMBOL_SQL} WHERE s.id IN ({}) ORDER BY f.path, s.start_line, s.id",
+            db::NAME_MATCH_IDS
+        ))?;
+        let rows = stmt.query_map(params![spelling, tail, suffix], db::map_symbol)?;
+        let found: Vec<SymbolRecord> = rows.collect::<rusqlite::Result<_>>()?;
+        if !found.is_empty() {
+            return Ok(found);
+        }
     }
     let name = super::common::bare_name(target);
     symbols(conn, &format!("{SYMBOL_SQL} WHERE s.name = ?1"), name)
