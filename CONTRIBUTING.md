@@ -25,13 +25,29 @@ cargo test            # Rust 1.90+
 ```sh
 cargo fmt --check
 cargo clippy --all-targets --all-features -- -D warnings
-cargo test --all-targets --all-features
-cargo test --release --test perf -- --ignored   # perf budgets
-node --test npm/test/                            # npm launcher
+cargo test --all-targets --all-features --no-fail-fast
+cargo test --release --test perf -- --ignored --test-threads=1   # perf budgets
+node --test npm/test/*.test.js scripts/*.test.js  # npm launcher and scripts
+node scripts/changelog.js check                   # changelog fragments
+(cd website && npm ci && npm run build)           # docs site
+cargo check --locked --all-targets                # on Rust 1.90, the minimum
 python -m pip install -r tests/junit-requirements.txt
 cargo build --locked
 python tests/junit_schema.py target/debug/tessera # JUnit schema and CLI
 ```
+
+`.github/workflows/ci.yml` runs these as eight jobs:
+
+| Job | What it checks |
+| --- | --- |
+| `lint` | `cargo fmt --check` and clippy with warnings denied |
+| `test` | The whole test suite on Linux (x86_64 and arm64), macOS and Windows |
+| `junit` | The JUnit output against its schema |
+| `npm` | The npm launcher and the repository's scripts on Node 18, 20 and 22, and the changelog fragments |
+| `docs-site` | That the documentation site in `website/` builds |
+| `msrv` | That the crate checks on the minimum supported Rust (`rust-version` in `Cargo.toml`) |
+| `musl` | The static Linux builds, x86_64 and arm64 |
+| `perf` | The time budgets in `tests/perf.rs` |
 
 ## How the tests are organised
 
@@ -43,6 +59,29 @@ python tests/junit_schema.py target/debug/tessera # JUnit schema and CLI
 | `tests/mcp_conformance.rs` | MCP over stdio and HTTP, driven against the built binary |
 | `tests/robustness.rs` | Adversarial input, determinism, concurrency |
 | `tests/perf.rs` | Time budgets (ignored by default) |
+| `tests/resolution.rs` | How calls and imports resolve to definitions |
+| `tests/v06_correctness.rs` | Indexing edge cases: config include/exclude, bad UTF-8, long signatures |
+| `tests/contracts.rs` | The contract map: routes, queues, tables and gRPC across repositories |
+| `tests/cycles.rs` | Dependency cycle detection |
+| `tests/verify.rs` | `tessera verify`: findings, exit codes and the tests it lists |
+| `tests/baseline.rs` | Baselines and accepted findings |
+| `tests/affected.rs` | `tessera affected` and its safety rails |
+| `tests/cache.rs` | `cache export` and `import` |
+| `tests/hook.rs` | Agent hooks (`tessera hook`) |
+| `tests/init.rs` | `tessera init` for each coding agent |
+| `tests/plugin.rs` | The Claude Code plugin and marketplace files |
+| `tests/ui.rs` | `tessera ui` and its static export |
+| `tests/docs.rs` | That the commands in the README run |
+| `tests/stability.rs` | The 1.x contract in `docs/stability.md`, pinned under `tests/stability/` |
+| `tests/action.rs` | The GitHub Action's steps, run against fixture repositories |
+| `tests/install_script.rs` | `install.sh` against a fake release server |
+| `tests/release.rs` | Package versions, the release workflow and the npm packages |
+| `tests/release_major_tag.rs` | The release job that moves the `v1` tag |
+| `tests/release_notes.rs` | Release notes taken from the changelog |
+| `tests/ci_matrix.rs` | That CI runs the minimum Rust and Node and Linux on arm64 |
+| `tests/dependabot.rs` | That Dependabot watches every dependency source |
+| `tests/workflow_hardening.rs` | Pinned actions and least-privilege permissions |
+| `tests/repo_hygiene.rs` | That issue-form labels exist and these contributor docs match CI |
 
 When you change what Tessera extracts, the golden snapshot diff is the review.
 Explain each changed line in your PR description.

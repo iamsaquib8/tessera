@@ -1,6 +1,6 @@
 name: Agent integration
 description: Add or fix setup, MCP config, or hooks for a coding agent.
-labels: ["agents"]
+labels: ["enhancement"]
 body:
   - type: input
     id: agent

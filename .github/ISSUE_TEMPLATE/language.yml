@@ -1,6 +1,6 @@
 name: Language request or gap
 description: Ask for a new language, or report something an existing language misses.
-labels: ["language-support"]
+labels: ["enhancement"]
 body:
   - type: input
     id: language
