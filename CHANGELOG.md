@@ -4,6 +4,77 @@ All notable changes to Tessera are documented here. Changes not yet
 released are in [changes/](changes/), one file each, and are assembled into
 a section here when a release is cut.
 
+## 1.2.1 - 2026-11-07
+
+A patch release with 22 correctness and performance fixes, a current SQLite and zstd, and a docs site organised around tasks. Symbol lookups are now case-sensitive and index-backed, a damaged index rebuilds itself, and `blast`, `refs` and `path` say when a symbol is unknown. The index schema moves from 9 to 10, so each index rebuilds once after the upgrade and cache files written by 1.2.0 are not reused.
+
+### Added
+
+- Release archives, the npm packages and the container image now include `LICENSE` and `THIRD-PARTY-NOTICES` (the licenses of the crates built into the binary). Each release also publishes a CycloneDX SBOM, `tessera-<version>.cdx.json`, and its build attestation covers `SHA256SUMS` and the SBOM as well as the archives. The container image carries an SBOM and full provenance.
+- The repository now has a `.pre-commit-hooks.yaml`, so the pre-commit framework can run `tessera verify --staged` with a `repos:` entry. The integrations page has matching recipes for lefthook and husky; all three refuse a commit only for a blocking problem, never for an index error.
+- The release workflow moves the major tag (`v1`) to each new stable release once every install channel passes its smoke tests, so `iamsaquib8/tessera/action@v1` follows the latest 1.x. Pre-releases and re-runs of older releases leave it alone.
+- GitHub release notes come from the tag's `CHANGELOG.md` section instead of being generated from pull request titles, and the release workflow fails when the section is missing.
+- `verify --format junit` reports completed V1–V5 checks, including successful
+  checks and unchanged affected callers, as schema-validated JUnit XML.
+  Blocking findings fail their check/file case; advisory and waived findings
+  remain visible. Suite properties preserve finding fingerprints. Includes
+  Jenkins, CircleCI and Buildkite ingestion recipes.
+
+### Changed
+
+- The container image now runs as the numeric user `10001:10001`, so Kubernetes `runAsNonRoot` accepts it, and it is built on Debian 13 (trixie) from base images pinned by digest.
+- The docs site is organised around what you are trying to do. A Guides section
+  walks through nine tasks (connect your agent, check before you edit, catch what
+  an agent broke, run only the affected tests, review a pull request, adopt on a
+  legacy repository, block breaking API changes, work across repositories,
+  understand a new codebase), each with the commands and real output. The
+  quickstart and the first-five-minutes page are now one page built on
+  `tessera init`; the old address redirects to it. The landing page opens with
+  a "What do you want to do?" chooser, maintainer pages sit under Contribute,
+  and the troubleshooting page has a short FAQ. The `docs-site` CI job now also
+  fails on a dead relative link.
+- SECURITY.md now says how to verify a release (`gh attestation verify` and `sha256sum -c`), names the only sockets Tessera opens and which installers use the network, and gives a response time for vulnerability reports (acknowledged within 3 days, a fix or mitigation plan within 30 days). The container image is shown as built from a checkout until a public image exists.
+
+### Fixed
+
+- A misspelt key in an entry of `.tessera/accepted.toml` (for example `expire =` for `expires =`) is no longer ignored. `verify` warns on stderr naming the entry and the unknown key, and that break counts again instead of being accepted with no expiry. Other entries in the file still apply; a missing `fingerprint` or `reason` drops only that entry.
+- The GitHub Action no longer fails or truncates when the list of tests to run is very large. Over 512 KB, the `tests` output is left empty, the new `tests-truncated` output is `true`, and the full list stays in `tests-file`.
+- `tessera baseline --prune` refuses, exits 2 and names the file when `.tessera/baseline.json` cannot be read (merge-conflict markers, a hand edit) or was written with other fingerprints, instead of replacing it with an empty baseline. The file is left unchanged. Plain `tessera baseline` still rewrites it.
+- `tessera context` and the MCP `context` tool no longer drop every caller, test and callee when a symbol's body alone is over the token budget, nor leave about half the budget unused. The body keeps up to 55 percent of the budget, callers, tests, callees and related symbols share the rest (at least the first caller and first test are kept when they fit), and the body takes what they leave, so the result fills the budget. Bundles that already fit are unchanged.
+- `tessera context` trims its bundle to the token budget in one pass instead of re-rendering the whole text after every removed line, which saves about 0.2 s on a symbol that many tests reach. `--budget` below about 50 tokens no longer hangs: the body is cut once and the result is returned. Output for other budgets is unchanged.
+- A damaged index file (SQLite "database disk image is malformed") is moved to `tessera.db.corrupt` and rebuilt by the next query, hook, MCP call, `tessera index` or `index --full`, instead of failing every command for good. `tessera status` reports it as `corrupt` and exits 0. Files that are not Tessera indexes are still refused.
+- `blast --diff`, the pull-request report and `verify`'s test selection find the changed symbols again when git config sets `diff.mnemonicPrefix`, `diff.noprefix` or `diff.srcPrefix`/`diff.dstPrefix`. Tessera now asks git for prefix-less diffs, so a top-level directory named `a/` or `b/` is no longer cut either.
+- `blast --diff`, the pull-request report and `verify`'s test selection no longer flag functions a change never touched when a diff hunk only deletes lines. The deletion is mapped to the symbol around the gap in the current file (or the first or last symbol for a deletion at the top or end of the file) instead of reading the old file's line numbers against the new file.
+- `tessera export --html-out` no longer loads Mermaid from a CDN when the preview is opened. The page now lists the symbols and their calls as plain HTML, keeps the Mermaid source for copying, and makes no network request.
+- File arguments to `find --path`, `refs` and `cycles --path` accept `./src/a.ts`, absolute paths and paths relative to the directory you are in (and `\` separators on Windows); a path outside the repository is reported as such.
+- `tessera find --path` matches whole path segments and is case-sensitive: `src/api` no longer lists `src/apiClient.ts` or `src/api_v2/`, and `user_service.ts` no longer lists `userXservice.ts`.
+- `.tessera/events.jsonl` no longer gets interleaved lines when several hooks finish at the same time, and rotating the log past 4 MB no longer drops an event appended meanwhile, so `tessera stats` counts every hook run. Each event is one append under a lock file, and rotation writes a temporary file and renames it over the log.
+- `tessera init` writes the full path of the running binary when `tessera` is not on PATH, instead of an `npx` command, and replaces entries an earlier `init` wrote as `npx … tessera-codegraph@…`.
+- `install.sh` finds the latest release through GitHub's `releases/latest` redirect instead of the rate-limited REST API, and accepts `TESSERA_VERSION` (and the Action's `version`) written without the leading `v`. With `TESSERA_BASE_URL` set, `latest` needs `TESSERA_VERSION` or `TESSERA_LATEST_URL`.
+- `tessera verify --format markdown --no-baseline` now shows baselined and accepted findings as blocking, like the other formats do. The flag was ignored by the pull-request report.
+- Reject non-loopback `Host` headers on loopback-bound MCP HTTP servers, including `/health`, to prevent DNS-rebinding access. Deliberate non-loopback binds remain supported.
+- The MCP stdio server no longer exits when a request line is not valid UTF-8. It answers that line with a JSON-RPC parse error (`-32700`, `id: null`) and keeps serving the next requests.
+- A file whose name contains a backslash (or, on Linux, bytes that are not valid UTF-8) no longer makes every index build fail with "UNIQUE constraint failed: files.path". Such files are skipped with a warning naming them, and a second file with an already-seen path is skipped the same way.
+- The Claude Code plugin runs the `tessera` on PATH whatever its version (with a warning on stderr when it is older than the plugin), then `~/.local/bin/tessera` and `~/.cargo/bin/tessera`, and uses npx only as a last resort for a version that exists on npm. Before, a `tessera` that was not exactly the plugin's version was skipped for an npm package that did not exist, and every hook did nothing.
+- `tessera refs <file>` lists every importer the module resolver linked, including ESM `.js` specifiers, tsconfig `paths` aliases and Python relative imports, and no longer treats a bare package such as `lodash` as an import of a file named `lodash.js`.
+- The documented `A::B`, `Class#method` and `A\B` symbol forms now find the same symbol as `A.B` in `find`, `context`, `path`, `blast`, `refs` and `verify`, instead of falling back to fuzzy matches or to every symbol with the same bare name.
+- `tessera search` and `search --unused` say when they stopped at their 500-match limit: the page reports `truncated: true` and a note asks you to narrow the pattern, instead of presenting the first 500 matches as the complete result.
+- `find`, `context`, `verify` and `signature` match symbol names case-sensitively and treat `_` literally, so `getuser` and `get_user` no longer count as the method `getUser`.
+- `blast`, `refs` and `path` now say the symbol is unknown, with the closest names, instead of "No callers found" for a misspelt name; their JSON gains `found` and `suggestions` (`unknown` for `path`). `map` with an unknown contract kind exits 2, as a usage error.
+
+### Performance
+
+- `tessera context` on a widely called symbol is about 2.5 times faster: the related-symbols query now joins each caller once instead of once per call it makes, so a test that calls the symbol many times no longer multiplies its whole call list. The output is unchanged.
+- Indexing large Go files is up to about three times faster: the gRPC fact scan no longer re-reads the file from the top to find the line of every method call, so its cost grows with the size of the file instead of with its square. The indexed facts are unchanged.
+- The release binary is about 13% smaller (26.4 MB instead of 30.5 MB on macOS arm64) because releases are built with fat link-time optimization and stripped. The crates.io package no longer includes the website, launch material or test data.
+- `tessera status`, the MCP `status` tool and the UI's `/api/status` no longer run a call-graph fan-out query whose result they never showed, so they answer in milliseconds instead of about a second on a repository with many call edges. The output is unchanged.
+- Looking up a symbol by name uses an index instead of scanning every symbol, so `verify --snippet` and `context` stay fast on large repositories; the index rebuilds once after the upgrade.
+
+### Security
+
+- The SQLite built into Tessera is now 3.54.1 (it was 3.46.0), which includes the security fixes SQLite has made since May 2024, such as CVE-2025-29087 and CVE-2025-6965. A repository can hold its own `.tessera/tessera.db`, and Tessera opens it, so a current SQLite matters.
+- Updated the zstd library used for index cache files (zstd 0.14.3, zstd-safe 8.2.0), which fixes three published memory-safety advisories (RUSTSEC-2026-0391, RUSTSEC-2026-0398 and RUSTSEC-2026-0403).
+
 ## 1.2.0 - 2026-11-03
 
 Team and CI: run only the tests a change reaches, share the index between

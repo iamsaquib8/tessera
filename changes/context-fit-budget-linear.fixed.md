@@ -1,1 +1,0 @@
-`tessera context` trims its bundle to the token budget in one pass instead of re-rendering the whole text after every removed line, which saves about 0.2 s on a symbol that many tests reach. `--budget` below about 50 tokens no longer hangs: the body is cut once and the result is returned. Output for other budgets is unchanged.

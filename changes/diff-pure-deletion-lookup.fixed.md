@@ -1,1 +1,0 @@
-`blast --diff`, the pull-request report and `verify`'s test selection no longer flag functions a change never touched when a diff hunk only deletes lines. The deletion is mapped to the symbol around the gap in the current file (or the first or last symbol for a deletion at the top or end of the file) instead of reading the old file's line numbers against the new file.

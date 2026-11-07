@@ -1,1 +1,0 @@
-The release binary is about 13% smaller (26.4 MB instead of 30.5 MB on macOS arm64) because releases are built with fat link-time optimization and stripped. The crates.io package no longer includes the website, launch material or test data.

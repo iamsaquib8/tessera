@@ -121,7 +121,7 @@ target and renamed into place. Its first two lines say what it holds:
 
 ```text
 tessera-cache
-{"format":1,"version":"1.2.0","schema":9,"fingerprint":"…","excludes":[],"tree":"4b825dc…","root":".","files":1832,"size":41254912,"sha256":"…"}
+{"format":1,"version":"1.2.1","schema":10,"fingerprint":"…","excludes":[],"tree":"4b825dc…","root":".","files":1832,"size":41254912,"sha256":"…"}
 ```
 
 `tree` is `git rev-parse HEAD^{tree}` where it was written (`null`
@@ -151,8 +151,8 @@ files that differ, are new, or are gone are re-indexed:
 
 ```console
 $ tessera --json cache import tessera.cache
-{ "imported": true, "file": "tessera.cache", "tree": "4b825dc…", "version": "1.2.0",
-  "schema": 9, "files": 1832, "reindexed": 14, "unchanged": 1818, "removed": 0 }
+{ "imported": true, "file": "tessera.cache", "tree": "4b825dc…", "version": "1.2.1",
+  "schema": 10, "files": 1832, "reindexed": 14, "unchanged": 1818, "removed": 0 }
 ```
 
 **Keys.** Key the stored file on the merge base's tree, the Tessera
@@ -176,7 +176,7 @@ GitLab CI, where cache keys are fixed before the job runs:
 ```yaml
 tessera:
   variables:
-    TESSERA_VERSION: "1.2.0"
+    TESSERA_VERSION: "1.2.1"
     GIT_DEPTH: 0
   cache:
     key: tessera-$TESSERA_VERSION

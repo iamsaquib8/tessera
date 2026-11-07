@@ -1,1 +1,0 @@
-`tessera status`, the MCP `status` tool and the UI's `/api/status` no longer run a call-graph fan-out query whose result they never showed, so they answer in milliseconds instead of about a second on a repository with many call edges. The output is unchanged.

@@ -1,1 +1,0 @@
-`blast --diff`, the pull-request report and `verify`'s test selection find the changed symbols again when git config sets `diff.mnemonicPrefix`, `diff.noprefix` or `diff.srcPrefix`/`diff.dstPrefix`. Tessera now asks git for prefix-less diffs, so a top-level directory named `a/` or `b/` is no longer cut either.

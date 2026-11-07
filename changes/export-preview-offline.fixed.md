@@ -1,1 +1,0 @@
-`tessera export --html-out` no longer loads Mermaid from a CDN when the preview is opened. The page now lists the symbols and their calls as plain HTML, keeps the Mermaid source for copying, and makes no network request.

@@ -1,1 +1,0 @@
-`blast`, `refs` and `path` now say the symbol is unknown, with the closest names, instead of "No callers found" for a misspelt name; their JSON gains `found` and `suggestions` (`unknown` for `path`). `map` with an unknown contract kind exits 2, as a usage error.

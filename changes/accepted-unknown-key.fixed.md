@@ -1,1 +1,0 @@
-A misspelt key in an entry of `.tessera/accepted.toml` (for example `expire =` for `expires =`) is no longer ignored. `verify` warns on stderr naming the entry and the unknown key, and that break counts again instead of being accepted with no expiry. Other entries in the file still apply; a missing `fingerprint` or `reason` drops only that entry.

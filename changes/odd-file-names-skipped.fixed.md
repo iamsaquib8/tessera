@@ -1,1 +1,0 @@
-A file whose name contains a backslash (or, on Linux, bytes that are not valid UTF-8) no longer makes every index build fail with "UNIQUE constraint failed: files.path". Such files are skipped with a warning naming them, and a second file with an already-seen path is skipped the same way.
