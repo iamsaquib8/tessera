@@ -31,6 +31,9 @@ what other tools do, and what this roadmap takes from them, is in
 | v1.14 | Editors, notes and diagrams | VS Code and JetBrains over `tessera lsp`, code-anchored notes, service and call diagrams ([#151](https://github.com/iamsaquib8/tessera/issues/151), [#152](https://github.com/iamsaquib8/tessera/issues/152)) | planned |
 | v2.0 | One small surface | The deprecated commands, flags and tools removed; about seven MCP tools; a new stability contract ([#179](https://github.com/iamsaquib8/tessera/issues/179)) | planned |
 
+Every version below has an epic (its work items are sub-issues) and a
+milestone. [All milestones](https://github.com/iamsaquib8/tessera/milestones) shows progress per version.
+
 **Why this order.** Shipping 1.2.0 and measuring it showed where Tessera is
 weakest, and none of it is a missing feature. Installs failed on most
 channels until the release itself was repaired. The core audit found
@@ -146,6 +149,8 @@ until an incremental index stops re-resolving unchanged code (#237).
 
 ## 1.2.x: Every install works
 
+Epic [#264](https://github.com/iamsaquib8/tessera/issues/264) · milestone [1.2.x](https://github.com/iamsaquib8/tessera/milestone/1)
+
 Patch releases, no new surface: npm and crates.io through trusted
 publishing, the Homebrew tap, a public container image, smoke tests on every
 channel and OS that run on every release, release notes from the CHANGELOG,
@@ -157,6 +162,8 @@ tags, Dependabot, notices and an SBOM.
 every smoke test on Linux, macOS and Windows, and moves `@v1`.
 
 ## v1.3: Never silently wrong
+
+Epic [#265](https://github.com/iamsaquib8/tessera/issues/265) · milestone [v1.3](https://github.com/iamsaquib8/tessera/milestone/2)
 
 - **No silent no-ops.** A corrupted or half-built index, a missing binary,
   a watcher that cannot start, a git hook without `tessera` on PATH: each
@@ -178,6 +185,8 @@ per 100 commits that the compiler does not confirm; someone new to Tessera
 gets from install to a hook holding their agent in under five minutes.
 
 ## v1.4: Proof and the public launch
+
+Epic [#267](https://github.com/iamsaquib8/tessera/issues/267) · milestone [v1.4](https://github.com/iamsaquib8/tessera/milestone/3)
 
 - **The refactor eval, run and published:** agent arms with and without
   Tessera, 30 tasks, at least two agents, false-positive blocks counted.
@@ -201,6 +210,8 @@ are reordered by it.
 
 ## v1.5: Fast on large repositories
 
+Epic [#266](https://github.com/iamsaquib8/tessera/issues/266) · milestone [v1.5](https://github.com/iamsaquib8/tessera/milestone/4)
+
 - **Incremental re-resolution** limited to what a change can affect, so a
   one-file edit re-indexes in milliseconds and a cached CI run skips most of
   the work.
@@ -218,6 +229,8 @@ each hidden from `--help`, warned about on use, and listed with its
 replacement.
 
 ## v1.6: Contracts that know their fields
+
+Epic [#173](https://github.com/iamsaquib8/tessera/issues/173) · milestone [v1.6](https://github.com/iamsaquib8/tessera/milestone/5)
 
 V5 knows when a route, RPC or topic disappears. Most real breaks are
 smaller: a removed field, a renamed enum value, a narrowed type.
@@ -248,6 +261,8 @@ smaller: a removed field, a renamed enum value, a narrowed type.
 one, and client recall above 0.6 on bank-of-anthos.
 
 ## v1.7: Inside the agent loop
+
+Epic [#174](https://github.com/iamsaquib8/tessera/issues/174) · milestone [v1.7](https://github.com/iamsaquib8/tessera/milestone/6)
 
 Agents forget to call tools they have to choose. Put the graph where they
 already look.
@@ -285,6 +300,8 @@ latency stays within v1.5's budget.
 
 ## v1.8: Deep tier for Python and Go, precise mode
 
+Epic [#175](https://github.com/iamsaquib8/tessera/issues/175) · milestone [v1.8](https://github.com/iamsaquib8/tessera/milestone/7)
+
 - **Python:** packages and namespace packages, `pyproject.toml` source
   roots, relative imports, type hints, dataclass and Pydantic fields.
 - **Go:** module paths, package-qualified calls, struct methods and embedded
@@ -300,6 +317,8 @@ least 0.85 for Python and Go against scip-python and scip-go ground truth on
 public repositories; the bar is not lowered.
 
 ## v1.9: Architecture guardrails
+
+Epic [#176](https://github.com/iamsaquib8/tessera/issues/176) · milestone [v1.9](https://github.com/iamsaquib8/tessera/milestone/8)
 
 - **`.tessera/rules.toml`**, one file across languages: layers
   (`domain/**` may not import `infrastructure/**`), forbidden and deprecated
@@ -317,6 +336,8 @@ public repositories; the bar is not lowered.
 violation in the monorepo fixtures is caught.
 
 ## v1.10: Data and ownership
+
+Epic [#177](https://github.com/iamsaquib8/tessera/issues/177) · milestone [v1.10](https://github.com/iamsaquib8/tessera/milestone/9)
 
 - **Migrations joined with usage** (`verify --migrations`): a dropped or
   renamed column or table that code still reads is a blocking finding;
@@ -337,6 +358,8 @@ with no false block on the safe ones.
 
 ## v1.11: Runtime truth
 
+Epic [#289](https://github.com/iamsaquib8/tessera/issues/289) · milestone [v1.11](https://github.com/iamsaquib8/tessera/milestone/10)
+
 Static analysis says who can call what; traffic says who does.
 
 - **Service graphs from OpenTelemetry**, read from a file Tessera is given
@@ -353,6 +376,8 @@ reported as unexplained, and no route with traffic is reported dead.
 
 ## v1.12: Column lineage
 
+Epic [#290](https://github.com/iamsaquib8/tessera/issues/290) · milestone [v1.12](https://github.com/iamsaquib8/tessera/milestone/11)
+
 Builds on v1.10's column facts.
 
 - **Columns traced** from migrations through ORM models and query results
@@ -364,6 +389,8 @@ Builds on v1.10's column facts.
 one, and every seeded PII leak caught.
 
 ## v1.13: Extension platform
+
+Epic [#291](https://github.com/iamsaquib8/tessera/issues/291) · milestone [v1.13](https://github.com/iamsaquib8/tessera/milestone/12)
 
 - **Your own packs:** framework packs loaded from `.tessera/packs/*.scm`
   without rebuilding Tessera, checked by `tessera status`
@@ -379,6 +406,8 @@ change to Tessera's source.
 
 ## v1.14: Editors, notes and diagrams
 
+Epic [#292](https://github.com/iamsaquib8/tessera/issues/292) · milestone [v1.14](https://github.com/iamsaquib8/tessera/milestone/13)
+
 - **Editors:** VS Code and JetBrains extensions over `tessera lsp` (v1.7):
   findings as diagnostics, callers on hover, the contract map in a panel
   ([#151](https://github.com/iamsaquib8/tessera/issues/151)).
@@ -392,6 +421,8 @@ a note on a renamed or deleted symbol is flagged on the next index; diagrams
 render the contract map of the benchmark corpora without manual edits.
 
 ## v2.0: One small surface
+
+Epic [#179](https://github.com/iamsaquib8/tessera/issues/179) · milestone [v2.0](https://github.com/iamsaquib8/tessera/milestone/14)
 
 The only breaking release, and only for what 1.5 to 1.14 deprecated
 ([#179](https://github.com/iamsaquib8/tessera/issues/179)):

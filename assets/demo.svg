@@ -30,7 +30,7 @@
   <text x="28" y="564" fill="#C9D1DD"> </text>
   <text x="28" y="586" fill="#EEF0F2">$ tessera verify --snippet edit.ts --language typescript</text>
   <text x="28" y="608" fill="#F07A7A">✗ verify: 2 problem(s)</text>
-  <text x="28" y="630" fill="#F07A7A">  [V1] `findByIdd` is not defined anywhere in the index; did you mean UserRepo.findById? (line 1)</text>
-  <text x="28" y="652" fill="#F07A7A">  [V1] `loadUsr` is not defined anywhere in the index; did you mean loadUser? (line 2)</text>
+  <text x="28" y="630" fill="#F07A7A">  [V1] (line 1) `findByIdd` is not defined anywhere in the index; did you mean UserRepo.findById?</text>
+  <text x="28" y="652" fill="#F07A7A">  [V1] (line 2) `loadUsr` is not defined anywhere in the index; did you mean loadUser?</text>
   </g>
 </svg>

@@ -21,6 +21,10 @@ jobs:
           fail-on: blocking   # or `never` (default) to only comment
 ```
 
+`@v1` follows the latest stable 1.x release: the release workflow moves the
+`v1` tag to each new stable release once every install channel passes its smoke
+tests. Pin an exact tag (`@v1.2.0`) or a commit to stop that.
+
 | Input | Default | |
 | --- | --- | --- |
 | `version` | the release this action ships with | Release to install, or `latest` |

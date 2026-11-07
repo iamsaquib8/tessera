@@ -132,3 +132,147 @@ fn runner_prefers_a_matching_tessera_and_never_fails_a_hook() {
         assert!(hook.status.success(), "PATH={path}");
     }
 }
+
+/// An executable shell script `name` in `dir`.
+#[cfg(unix)]
+fn script(dir: &Path, name: &str, body: &str) -> PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+    let path = dir.join(name);
+    fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+    path
+}
+
+/// A `tessera` that reports `version` and echoes its arguments.
+#[cfg(unix)]
+fn fake_tessera(dir: &Path, version: &str) {
+    fs::create_dir_all(dir).unwrap();
+    script(
+        dir,
+        "tessera",
+        &format!(
+            "if [ \"$1\" = --version ]; then echo 'tessera {version}'; else echo \"ran $0 $*\"; fi"
+        ),
+    );
+}
+
+#[cfg(unix)]
+fn run_runner(path: &str, home: &Path, args: &[&str]) -> std::process::Output {
+    Command::new(repo().join("plugin/scripts/tessera-run"))
+        .args(args)
+        .env("PATH", path)
+        .env("HOME", home)
+        .current_dir(home)
+        .stdin(Stdio::null())
+        .output()
+        .unwrap()
+}
+
+#[cfg(unix)]
+#[test]
+fn runner_runs_an_older_tessera_on_path_instead_of_npx() {
+    let temp = tempfile::TempDir::new().unwrap();
+    let bin = temp.path().join("bin");
+    fake_tessera(&bin, "1.0.1");
+    // npx and npm exist, as on a machine with Node; neither may be used.
+    script(&bin, "npx", "echo npx was used; exit 1");
+    script(&bin, "npm", "echo 99.0.0");
+    let path = format!("{}:/usr/bin:/bin", bin.display());
+
+    let out = run_runner(&path, temp.path(), &["blast", "x"]);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "{stdout}{stderr}");
+    assert!(stdout.contains("blast x"), "{stdout}");
+    assert!(!stdout.contains("npx"), "{stdout}");
+    assert!(
+        stderr.contains("1.0.1") && stderr.contains("older"),
+        "a warning on stderr: {stderr}"
+    );
+
+    let hook = run_runner(&path, temp.path(), &["hook", "claude", "stop"]);
+    assert!(hook.status.success());
+    assert!(String::from_utf8_lossy(&hook.stdout).contains("hook claude stop"));
+}
+
+#[cfg(unix)]
+#[test]
+fn runner_is_quiet_when_tessera_is_as_new_as_the_plugin() {
+    let temp = tempfile::TempDir::new().unwrap();
+    let bin = temp.path().join("bin");
+    for version in [env!("CARGO_PKG_VERSION"), "9.9.9"] {
+        fake_tessera(&bin, version);
+        let path = format!("{}:/usr/bin:/bin", bin.display());
+        let out = run_runner(&path, temp.path(), &["status"]);
+        assert!(out.status.success());
+        assert!(out.stderr.is_empty(), "{version}: {:?}", out.stderr);
+        assert!(String::from_utf8_lossy(&out.stdout).contains("status"));
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn runner_falls_back_to_the_installer_directories() {
+    for dir in [".local/bin", ".cargo/bin"] {
+        let temp = tempfile::TempDir::new().unwrap();
+        fake_tessera(&temp.path().join(dir), env!("CARGO_PKG_VERSION"));
+        let empty = temp.path().join("empty");
+        fs::create_dir(&empty).unwrap();
+        let out = run_runner(&empty.display().to_string(), temp.path(), &["status"]);
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        assert!(out.status.success(), "{dir}: {stdout}");
+        assert!(stdout.contains(dir), "{dir}: {stdout}");
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn runner_uses_npx_last_and_only_for_a_version_that_exists() {
+    let temp = tempfile::TempDir::new().unwrap();
+    let bin = temp.path().join("bin");
+    fs::create_dir_all(&bin).unwrap();
+    script(&bin, "npx", "echo \"npx $*\"");
+    let path = bin.display().to_string();
+
+    // npm knows no such version: say how to install, run nothing, exit 0.
+    script(&bin, "npm", "exit 1");
+    let out = run_runner(&path, temp.path(), &["hook", "claude", "stop"]);
+    assert!(out.status.success());
+    assert!(!String::from_utf8_lossy(&out.stdout).contains("npx"));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("install.sh"));
+
+    // npm has it.
+    script(&bin, "npm", "echo \"$2\"");
+    let out = run_runner(&path, temp.path(), &["status"]);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains(&format!(
+            "npx --yes tessera-codegraph@{} status",
+            env!("CARGO_PKG_VERSION")
+        )),
+        "{stdout}"
+    );
+}
+
+#[test]
+fn skill_and_installer_point_at_install_channels_that_exist() {
+    let skill = fs::read_to_string(repo().join("plugin/skills/tessera/SKILL.md")).unwrap();
+    let setup = skill.split("## Setup").nth(1).unwrap();
+    let setup = setup.split("\n## ").next().unwrap();
+    let script = setup
+        .find("install.sh")
+        .expect("the install script is listed");
+    let cargo = setup.find("cargo").expect("cargo is listed");
+    assert!(script < cargo, "the install script comes first:\n{setup}");
+    for word in ["npx", "npm", "brew"] {
+        assert!(
+            !setup.contains(word),
+            "{word} is not an install path:\n{setup}"
+        );
+    }
+    let installer = fs::read_to_string(repo().join("install.sh")).unwrap();
+    assert!(
+        !installer.contains("npm "),
+        "install.sh must not send anyone to npm"
+    );
+}
