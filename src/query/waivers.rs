@@ -254,8 +254,14 @@ fn everything(conn: &rusqlite::Connection, root: &Path) -> Result<Vec<Finding>> 
 /// `tessera baseline`: today's blocking findings become the baseline. With
 /// `prune`, only entries that still fire are kept and none are added.
 pub fn baseline(conn: &rusqlite::Connection, root: &Path, prune: bool) -> Result<BaselineReport> {
+    // Pruning keeps what is already there; with nothing readable it would
+    // replace the team's record with an empty file.
+    let before = if prune {
+        readable_baseline(root).map_err(anyhow::Error::msg)?
+    } else {
+        baseline_fingerprints(root)
+    };
     let now = everything(conn, root)?;
-    let before = baseline_fingerprints(root);
     let kept: Vec<Finding> = if prune {
         now.into_iter()
             .filter(|f| before.contains(&f.fingerprint))
@@ -328,6 +334,31 @@ pub fn summary(root: &Path) -> WaiverSummary {
             .count(),
         accepted: accepted.len(),
     }
+}
+
+/// The fingerprints of the baseline file; empty when there is none. An error
+/// names the file when it exists but cannot be read or was written with other
+/// fingerprints, which `baseline --prune` must not paper over.
+pub fn readable_baseline(root: &Path) -> std::result::Result<HashSet<String>, String> {
+    let path = dir(root).join(BASELINE_FILE);
+    let text = match fs::read_to_string(&path) {
+        Ok(text) => text,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(HashSet::new()),
+        Err(error) => return Err(format!("cannot read {}: {error}", path.display())),
+    };
+    let file = serde_json::from_str::<BaselineFile>(&text).map_err(|error| {
+        format!(
+            "{} is not a readable baseline ({error}); fix or delete it, or run `tessera baseline` to write a new one",
+            path.display()
+        )
+    })?;
+    if file.fingerprints != FINGERPRINT_VERSION {
+        return Err(format!(
+            "{} was written with older fingerprints; run `tessera baseline` to write a new one",
+            path.display()
+        ));
+    }
+    Ok(file.findings.into_iter().map(|e| e.fingerprint).collect())
 }
 
 /// The fingerprints the current baseline holds, if there is one.

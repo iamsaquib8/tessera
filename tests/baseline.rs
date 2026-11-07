@@ -300,3 +300,24 @@ fn the_pull_request_report_says_why_a_finding_is_waived() {
         "{text}"
     );
 }
+
+#[test]
+fn pruning_refuses_an_unreadable_baseline_and_leaves_it_alone() {
+    let temp = legacy_repo();
+    let root = temp.path();
+    tessera(root, &["baseline"]);
+    let path = root.join(".tessera/baseline.json");
+    for damaged in [
+        "<<<<<<< HEAD\n{}\n=======\n{}\n>>>>>>> branch\n".to_string(),
+        "{\"fingerprints\": 0, \"findings\": []}".to_string(),
+    ] {
+        fs::write(&path, &damaged).unwrap();
+        let (code, out, err) = tessera(root, &["baseline", "--prune"]);
+        assert_eq!(code, 2, "{out}{err}");
+        assert!(err.contains("baseline.json"), "{err}");
+        assert_eq!(fs::read_to_string(&path).unwrap(), damaged);
+    }
+    // A plain `baseline` still rewrites from scratch.
+    let (code, out, err) = tessera(root, &["baseline"]);
+    assert_eq!(code, 0, "{out}{err}");
+}
