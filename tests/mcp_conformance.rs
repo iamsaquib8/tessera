@@ -352,6 +352,29 @@ mod live {
     }
 
     #[test]
+    fn stdio_survives_a_request_line_that_is_not_utf8() {
+        let temp = repo();
+        let mut server = Server::start(temp.path());
+        let ping = server.request("ping", json!({}), Duration::from_secs(10));
+        assert_eq!(ping["result"], json!({}));
+        server
+            .stdin
+            .write_all(b"{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":{\"name\":\"verify\",\"arguments\":{\"snippet\":\"caf\xe9()\",\"language\":\"python\"}}}\n")
+            .unwrap();
+        server.stdin.flush().unwrap();
+        let line = server
+            .lines
+            .recv_timeout(Duration::from_secs(10))
+            .expect("no reply to the invalid line");
+        let reply: Value = serde_json::from_str(&line).unwrap();
+        assert_eq!(reply["error"]["code"], -32700, "{reply}");
+        assert_eq!(reply["id"], Value::Null);
+        // The server still serves the next request.
+        let ping = server.request("ping", json!({}), Duration::from_secs(10));
+        assert_eq!(ping["result"], json!({}));
+    }
+
+    #[test]
     fn stdio_answers_initialize_quickly_without_an_index() {
         // First launch of a freshly linked binary can be slowed by OS malware scanning.
         Command::new(env!("CARGO_BIN_EXE_tessera"))

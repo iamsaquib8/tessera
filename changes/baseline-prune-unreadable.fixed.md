@@ -1,0 +1,1 @@
+`tessera baseline --prune` refuses, exits 2 and names the file when `.tessera/baseline.json` cannot be read (merge-conflict markers, a hand edit) or was written with other fingerprints, instead of replacing it with an empty baseline. The file is left unchanged. Plain `tessera baseline` still rewrites it.
