@@ -622,14 +622,27 @@ fn a_binary_path_with_spaces_is_quoted_in_hook_commands() {
         "tessera"
     });
     fs::copy(assert_cmd::cargo::cargo_bin("tessera"), &copy).unwrap();
-    let output = StdCommand::new(&copy)
-        .current_dir(&s.root)
-        .env("HOME", &s.home)
-        .env("USERPROFILE", &s.home)
-        .env("PATH", "/usr/bin:/bin")
-        .env_remove("TESSERA_DB")
-        .args(["init", "--yes", "--agent", "claude"])
-        .output()
+    // Linux refuses to execute a file another thread's fork still holds open
+    // for writing (ETXTBSY) for a moment after `fs::copy`; retry the spawn.
+    let output = (0..20)
+        .find_map(|attempt| {
+            let result = StdCommand::new(&copy)
+                .current_dir(&s.root)
+                .env("HOME", &s.home)
+                .env("USERPROFILE", &s.home)
+                .env("PATH", "/usr/bin:/bin")
+                .env_remove("TESSERA_DB")
+                .args(["init", "--yes", "--agent", "claude"])
+                .output();
+            match result {
+                Err(e) if e.kind() == std::io::ErrorKind::ExecutableFileBusy && attempt < 19 => {
+                    std::thread::sleep(std::time::Duration::from_millis(50));
+                    None
+                }
+                other => Some(other),
+            }
+        })
+        .unwrap()
         .unwrap();
     assert!(output.status.success());
     let hooks = json(&s.root.join(".claude/settings.local.json"));
