@@ -11,9 +11,9 @@ use anyhow::Result;
 use rusqlite::Connection;
 use serde::Deserialize;
 
-use super::{graph, legacy, map};
+use super::{graph, legacy, map, unknown};
 use crate::output::AgentText;
-use crate::types::{ConnectResult, PathNode, QueryMeta, SymbolRecord};
+use crate::types::{ConnectResult, PathNode, QueryMeta, SymbolRecord, UnknownSymbol};
 
 const DEFAULT_DEPTH: usize = 8;
 /// Nodes the search visits at most before giving up.
@@ -57,12 +57,26 @@ fn search(
         to: args.to.clone(),
         found: false,
         path: Vec::new(),
+        unknown: Vec::new(),
         meta: QueryMeta { tokens: 40 },
     };
     let starts = resolve(repos, &args.from, 25)?;
     let targets = resolve(repos, &args.to, 50)?;
     if starts.is_empty() || targets.is_empty() {
-        return Ok(not_found());
+        let mut result = not_found();
+        for (name, resolved) in [(&args.from, &starts), (&args.to, &targets)] {
+            if resolved.is_empty() {
+                let suggestions = match repos.first() {
+                    Some((_, conn)) => unknown::suggest(conn, name)?,
+                    None => Vec::new(),
+                };
+                result.unknown.push(UnknownSymbol {
+                    symbol: name.clone(),
+                    suggestions,
+                });
+            }
+        }
+        return Ok(result);
     }
     let target_ids: HashSet<Node> = targets.iter().map(|(r, s)| (*r, s.id)).collect();
     let node_of = |(repo, s): &(usize, SymbolRecord)| PathNode {
@@ -159,6 +173,7 @@ fn found(args: &PathArgs, path: Vec<PathNode>) -> ConnectResult {
         to: args.to.clone(),
         found: true,
         path,
+        unknown: Vec::new(),
         meta: QueryMeta {
             tokens: tokens.max(40),
         },

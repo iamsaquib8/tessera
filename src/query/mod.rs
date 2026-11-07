@@ -14,6 +14,7 @@ mod refs;
 pub mod report;
 mod search;
 mod status;
+mod unknown;
 mod verify;
 pub mod waivers;
 
@@ -52,3 +53,5 @@ pub use search::run as search;
 pub use status::run as status;
 pub use verify::run as verify;
 pub use verify::run_junit as verify_junit;
+
+pub(crate) use unknown::message as unknown_message;

@@ -654,7 +654,7 @@ fn path_across_repositories_terminates_on_a_cycle() {
 }
 
 #[test]
-fn path_in_a_workspace_reports_unknown_symbols_as_before() {
+fn path_in_a_workspace_reports_unknown_symbols() {
     let temp = http_workspace();
     let web = temp.path().join("web");
     let result = tessera(&web, &["path", "noSuchThing", "getUser"]);
@@ -670,10 +670,9 @@ fn path_in_a_workspace_reports_unknown_symbols_as_before() {
         .output()
         .unwrap();
     let text = String::from_utf8_lossy(&output.stdout);
-    assert!(
-        text.contains("No call path from noSuchThing to getUser"),
-        "{text}"
-    );
+    // An unknown name is said to be unknown, not reported as "no path".
+    assert!(text.contains("No definition of noSuchThing"), "{text}");
+    assert!(!text.contains("No call path"), "{text}");
 }
 
 #[test]

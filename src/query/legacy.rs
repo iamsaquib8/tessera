@@ -1196,7 +1196,7 @@ fn symbol_exists(conn: &Connection, symbol: &str) -> Result<bool> {
     Ok(false)
 }
 
-fn fuzzy_candidates(
+pub(super) fn fuzzy_candidates(
     conn: &Connection,
     symbol: &str,
     limit: usize,

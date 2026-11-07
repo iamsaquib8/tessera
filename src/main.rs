@@ -835,6 +835,14 @@ fn run() -> Result<u8> {
             }
         }
         Commands::Map { kind, query, drift } => {
+            if let Some(kind) = kind.as_deref() {
+                if !query::map::KINDS.contains(&kind) {
+                    return Err(usage(&format!(
+                        "unknown contract kind `{kind}`; use one of {}",
+                        query::map::KINDS.join(", ")
+                    )));
+                }
+            }
             let Some(index) = open_fresh(&ws, &out)? else {
                 return Ok(0);
             };
