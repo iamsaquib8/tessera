@@ -1,0 +1,86 @@
+# Weekly dependency updates, grouped so a week brings a few pull requests, not
+# dozens. Dependabot also keeps the commit SHAs that the workflows pin current
+# (the version comment beside each SHA is updated with it).
+version: 2
+
+updates:
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      # A dependency joins the first group that matches it. Grammar bumps change
+      # the golden snapshots, so every update type of theirs stays together and
+      # apart from the rest.
+      tree-sitter:
+        patterns:
+          - "tree-sitter*"
+      cargo-minor-patch:
+        patterns:
+          - "*"
+        update-types:
+          - minor
+          - patch
+
+  # The docs site.
+  - package-ecosystem: npm
+    directory: /website
+    schedule:
+      interval: weekly
+    groups:
+      website-minor-patch:
+        patterns:
+          - "*"
+        update-types:
+          - minor
+          - patch
+
+  # The npm launcher has no dependencies today; this covers the ones it may get.
+  - package-ecosystem: npm
+    directory: /npm
+    schedule:
+      interval: weekly
+    groups:
+      npm-minor-patch:
+        patterns:
+          - "*"
+        update-types:
+          - minor
+          - patch
+
+  # `/` reads .github/workflows; the composite action's action.yml needs its own entry.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions-minor-patch:
+        patterns:
+          - "*"
+        update-types:
+          - minor
+          - patch
+
+  - package-ecosystem: github-actions
+    directory: /action
+    schedule:
+      interval: weekly
+    groups:
+      action-minor-patch:
+        patterns:
+          - "*"
+        update-types:
+          - minor
+          - patch
+
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      docker-minor-patch:
+        patterns:
+          - "*"
+        update-types:
+          - minor
+          - patch
