@@ -31,12 +31,13 @@ node --test npm/test/*.test.js scripts/*.test.js  # npm launcher and scripts
 node scripts/changelog.js check                   # changelog fragments
 (cd website && npm ci && npm run build)           # docs site
 cargo check --locked --all-targets                # on Rust 1.90, the minimum
+cargo deny check                                  # advisories, licenses, sources
 python -m pip install -r tests/junit-requirements.txt
 cargo build --locked
 python tests/junit_schema.py target/debug/tessera # JUnit schema and CLI
 ```
 
-`.github/workflows/ci.yml` runs these as eight jobs:
+`.github/workflows/ci.yml` runs these as ten jobs:
 
 | Job | What it checks |
 | --- | --- |
@@ -47,6 +48,8 @@ python tests/junit_schema.py target/debug/tessera # JUnit schema and CLI
 | `docs-site` | That the documentation site in `website/` builds |
 | `msrv` | That the crate checks on the minimum supported Rust (`rust-version` in `Cargo.toml`) |
 | `musl` | The static Linux builds, x86_64 and arm64 |
+| `deny` | `cargo deny check`: advisories, licenses, sources and banned crates (`deny.toml`) |
+| `notices` | That `THIRD-PARTY-NOTICES` is up to date with `Cargo.lock` |
 | `perf` | The time budgets in `tests/perf.rs` |
 
 ## How the tests are organised
@@ -81,6 +84,9 @@ python tests/junit_schema.py target/debug/tessera # JUnit schema and CLI
 | `tests/ci_matrix.rs` | That CI runs the minimum Rust and Node and Linux on arm64 |
 | `tests/dependabot.rs` | That Dependabot watches every dependency source |
 | `tests/workflow_hardening.rs` | Pinned actions and least-privilege permissions |
+| `tests/package_manifest.rs` | The lints, the size-tuned release profile and the crates.io package file list |
+| `tests/deny_config.rs` | `deny.toml` and the jobs that run it |
+| `tests/sqlite_version.rs` | That the bundled SQLite is at least the minimum version |
 | `tests/repo_hygiene.rs` | That issue-form labels exist and these contributor docs match CI |
 
 When you change what Tessera extracts, the golden snapshot diff is the review.

@@ -144,6 +144,23 @@ jobs:
           "$bin" --version
           "$bin" --quiet find findById --root tests/fixtures/typescript | grep -q "UserRepo.findById"
 
+  notices:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: taiki-e/install-action@3a3daafd3b7f23b8f65d9f5ba2db203fb59b79e2 # v2.90.2
+        with:
+          tool: cargo-about@0.9.3
+      - name: THIRD-PARTY-NOTICES is up to date
+        run: |
+          cargo about generate about.hbs | tr -d '\r' > "$RUNNER_TEMP/notices"
+          diff -u THIRD-PARTY-NOTICES "$RUNNER_TEMP/notices" || {
+            echo "::error file=THIRD-PARTY-NOTICES::Out of date. Regenerate it as the header of about.hbs says."
+            exit 1
+          }
+
   deny:
     runs-on: ubuntu-latest
     steps:

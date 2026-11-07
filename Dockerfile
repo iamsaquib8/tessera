@@ -13,6 +13,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends git ca-certific
     && rm -rf /var/lib/apt/lists/* && useradd -m tessera \
     && git config --system --add safe.directory '*'
 COPY --from=build /src/target/release/tessera /usr/local/bin/tessera
+COPY LICENSE THIRD-PARTY-NOTICES /usr/share/doc/tessera/
 USER tessera
 WORKDIR /work
 # The index lives in the container, so a bind-mounted /work owned by any host
