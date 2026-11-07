@@ -10,10 +10,9 @@ on:
         description: "Existing tag to (re)release, e.g. v0.10.0"
         required: true
 
+# Read by default; each job below asks for the writes it needs.
 permissions:
-  contents: write
-  id-token: write
-  attestations: write
+  contents: read
 
 env:
   TAG: ${{ inputs.tag || github.ref_name }}
@@ -25,24 +24,68 @@ jobs:
   # job succeeds, so `releases/latest` never points at a release without files.
   release:
     name: create draft release
+    # Creates the draft release.
+    permissions:
+      contents: write
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
+          persist-credentials: false
           ref: ${{ env.TAG }}
+      - name: Extract the release notes from CHANGELOG.md
+        id: notes
+        run: |
+          set -euo pipefail
+          version="${TAG#v}"
+          notes="$RUNNER_TEMP/release-notes.md"
+          # The body of the `## <version>` section: everything up to the next
+          # `## ` heading, without blank lines at either end.
+          section() {
+            awk -v heading="## $1" '
+              /^## / {
+                if (found) exit
+                if ($0 == heading || index($0, heading " ") == 1) { found = 1; next }
+              }
+              found { lines[++n] = $0 }
+              END {
+                first = 1
+                while (first <= n && lines[first] ~ /^[[:space:]]*$/) first++
+                while (n >= first && lines[n] ~ /^[[:space:]]*$/) n--
+                for (i = first; i <= n; i++) print lines[i]
+              }
+            ' CHANGELOG.md
+          }
+          section "$version" > "$notes"
+          # A release candidate may be described by `## Unreleased` instead.
+          if [ ! -s "$notes" ] && [ "$PRERELEASE" = true ]; then
+            section Unreleased > "$notes"
+          fi
+          if [ ! -s "$notes" ]; then
+            echo "::error file=CHANGELOG.md::CHANGELOG.md has no non-empty '## $version' section for $TAG. Add one (with its date) before releasing."
+            exit 1
+          fi
+          echo "file=$notes" >> "$GITHUB_OUTPUT"
+          cat "$notes"
       - name: Create draft release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NOTES_FILE: ${{ steps.notes.outputs.file }}
         run: |
           set -euo pipefail
           if gh release view "$TAG" >/dev/null 2>&1; then
+            # Notes of a published release may have been edited by hand; a
+            # draft only has what an earlier run of this job wrote.
+            if [ "$(gh release view "$TAG" --json isDraft --jq .isDraft)" = true ]; then
+              gh release edit "$TAG" --notes-file "$NOTES_FILE"
+            fi
             echo "::notice::Release $TAG already exists; reusing it."
             exit 0
           fi
           if [ "$PRERELEASE" = true ]; then
-            gh release create "$TAG" --draft --verify-tag --title "$TAG" --generate-notes --prerelease
+            gh release create "$TAG" --draft --verify-tag --title "$TAG" --notes-file "$NOTES_FILE" --prerelease
           else
-            gh release create "$TAG" --draft --verify-tag --title "$TAG" --generate-notes
+            gh release create "$TAG" --draft --verify-tag --title "$TAG" --notes-file "$NOTES_FILE"
           fi
 
   binaries:
@@ -67,17 +110,22 @@ jobs:
             os: macos-latest
           - target: x86_64-pc-windows-msvc
             os: windows-latest
+    # Uploads the archives to the draft release.
+    permissions:
+      contents: write
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
+          persist-credentials: false
           ref: ${{ env.TAG }}
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
         with:
+          toolchain: stable
           targets: ${{ matrix.target }}
       - if: matrix.target == 'x86_64-unknown-linux-musl'
         run: sudo apt-get update && sudo apt-get install -y musl-tools
-      - uses: taiki-e/upload-rust-binary-action@v1
+      - uses: taiki-e/upload-rust-binary-action@f0d45ae91ee7b8ee928de7a9d04d893a08bcbec6 # v1.30.2
         with:
           bin: tessera
           target: ${{ matrix.target }}
@@ -88,10 +136,16 @@ jobs:
   publish:
     name: checksums, provenance, publish
     needs: binaries
+    # Uploads SHA256SUMS, attests the archives, publishes the release.
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
+          persist-credentials: false
           ref: ${{ env.TAG }}
       - name: Download release archives
         env:
@@ -107,7 +161,7 @@ jobs:
           cd dist
           sha256sum tessera-*.tar.gz tessera-*.zip > SHA256SUMS
           cat SHA256SUMS
-      - uses: actions/attest-build-provenance@v2
+      - uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2.4.0
         with:
           subject-path: "dist/tessera-*"
       - name: Upload SHA256SUMS and publish
@@ -127,14 +181,20 @@ jobs:
     needs: publish
     # crates.io versions are permanent, so release candidates stay off it.
     if: ${{ !contains(inputs.tag || github.ref_name, '-') }}
+    # Only the crates.io token is needed.
+    permissions:
+      contents: read
     runs-on: ubuntu-latest
     environment: crates-io
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
+          persist-credentials: false
           ref: ${{ env.TAG }}
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - name: Publish (idempotent; skipped without a token)
         env:
           CRATES_IO_TOKEN: ${{ secrets.CRATES_IO_TOKEN }}
@@ -156,12 +216,17 @@ jobs:
   npm:
     name: publish npm
     needs: publish
+    # id-token: npm trusted publishing and provenance.
+    permissions:
+      contents: read
+      id-token: write
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
+          persist-credentials: false
           ref: ${{ env.TAG }}
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 20
           registry-url: https://registry.npmjs.org
@@ -205,10 +270,14 @@ jobs:
     name: update Homebrew tap
     needs: publish
     if: ${{ !contains(inputs.tag || github.ref_name, '-') }}
+    # Pushes to the tap with its own token.
+    permissions:
+      contents: read
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
+          persist-credentials: false
           ref: ${{ env.TAG }}
       - name: Render formula and push to iamsaquib8/homebrew-tessera
         env:
@@ -255,3 +324,58 @@ jobs:
     with:
       version: ${{ inputs.tag || github.ref_name }}
       prerelease: ${{ contains(inputs.tag || github.ref_name, '-') }}
+
+  # `iamsaquib8/tessera/action@v1` resolves to the `v1` tag, so it follows the
+  # newest stable 1.x release. Moved last, once every channel installs.
+  major-tag:
+    name: move the major tag
+    needs: smoke
+    if: ${{ needs.smoke.result == 'success' && !contains(inputs.tag || github.ref_name, '-') }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ env.TAG }}
+          fetch-depth: 0
+      - name: Point the major tag at the release commit
+        id: move
+        run: |
+          set -euo pipefail
+          # A stable tag only: v1.2.3. Pre-releases (v1.3.0-rc.1) never move it.
+          case "$TAG" in
+            *-*)
+              echo "$TAG is a pre-release; the major tag stays where it is."
+              exit 0
+              ;;
+            v[0-9]*.[0-9]*.[0-9]*) ;;
+            *)
+              echo "::error::$TAG is not a vMAJOR.MINOR.PATCH tag."
+              exit 1
+              ;;
+          esac
+          major="${TAG%%.*}"
+          git fetch --force --tags origin
+          release=$(git rev-parse "refs/tags/$TAG^{commit}")
+
+          # Never backwards: a newer stable release of this major version wins,
+          # so re-running an old release leaves the tag alone.
+          newest=$(git tag --list "$major.*" | grep -Ev -- '-' | sort -V | tail -n 1)
+          if [ "$newest" != "$TAG" ]; then
+            echo "::notice::$newest is newer than $TAG; $major stays where it is."
+            exit 0
+          fi
+          if current=$(git rev-parse --verify --quiet "refs/tags/$major^{commit}"); then
+            if [ "$current" = "$release" ]; then
+              echo "$major already points at $TAG ($release)."
+              exit 0
+            fi
+            if ! git merge-base --is-ancestor "$current" "$release"; then
+              echo "::notice::$major points at $current, which is not an ancestor of $TAG; leaving it."
+              exit 0
+            fi
+          fi
+          git tag --force "$major" "$release"
+          git push --force origin "refs/tags/$major"
+          echo "$major now points at $TAG ($release)."

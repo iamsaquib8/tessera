@@ -12,7 +12,7 @@ const repo = "https://github.com/iamsaquib8/tessera/blob/main";
 const pages = {
   "quickstart.md": "Get started in a minute.",
   "first-five-minutes.md": "Look before you edit, check after you edit, with real output.",
-  "integrations.md": "Connect Tessera to 24 coding agents.",
+  "integrations.md": "Connect Tessera to 21 coding agents.",
   "hooks.md": "Checks before and after every edit, and at the end of each turn.",
   "ci.md": "Test selection, index cache, review formats and baselines in any CI.",
   "contracts.md": "Routes, gRPC, GraphQL, topics, tables and config keys across services.",

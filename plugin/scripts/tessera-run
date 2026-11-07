@@ -1,15 +1,47 @@
 #!/bin/sh
-# Starts the tessera this plugin was released with: one on PATH at the same
-# version, otherwise the npm package at that version through npx.
+# Starts the tessera installed on this machine: the one on PATH, whatever its
+# version, then the places the installers put it. A tessera older than this
+# plugin still runs; it only gets a warning on stderr. The npm package at the
+# plugin's version is the last resort, and only when that version is on npm.
 version=1.2.0
-if command -v tessera >/dev/null 2>&1 && [ "$(tessera --version 2>/dev/null)" = "tessera $version" ]; then
-  set -- tessera "$@"
-elif command -v npx >/dev/null 2>&1; then
-  set -- npx --yes "tessera-codegraph@$version" "$@"
-elif command -v tessera >/dev/null 2>&1; then
-  set -- tessera "$@"
+
+# True when version $1 is lower than version $2 (major.minor.patch).
+older() {
+  awk -v a="$1" -v b="$2" 'BEGIN {
+    split(a, x, /[.-]/); split(b, y, /[.-]/)
+    for (i = 1; i <= 3; i++) {
+      if (x[i] + 0 < y[i] + 0) exit 0
+      if (x[i] + 0 > y[i] + 0) exit 1
+    }
+    exit 1
+  }'
+}
+
+bin=
+if command -v tessera >/dev/null 2>&1; then
+  bin=tessera
 else
-  echo "tessera $version is not installed; see https://github.com/iamsaquib8/tessera#install" >&2
+  for candidate in "$HOME/.local/bin/tessera" "$HOME/.cargo/bin/tessera" \
+    "$HOME/.local/bin/tessera.exe" "$HOME/.cargo/bin/tessera.exe"; do
+    if [ -f "$candidate" ] && [ -x "$candidate" ]; then
+      bin=$candidate
+      break
+    fi
+  done
+fi
+
+if [ -n "$bin" ]; then
+  found=$("$bin" --version 2>/dev/null)
+  found=${found#tessera }
+  if [ -n "$found" ] && older "$found" "$version"; then
+    echo "tessera $found is older than this plugin ($version); update with: curl -fsSL https://raw.githubusercontent.com/iamsaquib8/tessera/main/install.sh | sh" >&2
+  fi
+  set -- "$bin" "$@"
+elif command -v npx >/dev/null 2>&1 && command -v npm >/dev/null 2>&1 \
+  && [ -n "$(npm view "tessera-codegraph@$version" version 2>/dev/null)" ]; then
+  set -- npx --yes "tessera-codegraph@$version" "$@"
+else
+  echo "tessera is not installed; run: curl -fsSL https://raw.githubusercontent.com/iamsaquib8/tessera/main/install.sh | sh (see https://github.com/iamsaquib8/tessera#install)" >&2
   exit 0
 fi
 # A hook never stops the agent because of a problem in Tessera itself.

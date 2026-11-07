@@ -61,5 +61,8 @@ Explain each changed line in your PR description.
 - Run the checks above before you push.
 - New user-facing behaviour needs a line in `CHANGELOG.md` and, if it changes
   a command, the matching page in `docs/`.
+- The GitHub release body is the `CHANGELOG.md` section of the tag: before
+  tagging `vX.Y.Z`, rename `## Unreleased` to `## X.Y.Z - <date>`. The release
+  workflow fails without that section.
 
 By contributing you agree your work is licensed under Apache-2.0.

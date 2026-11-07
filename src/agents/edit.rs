@@ -48,17 +48,27 @@ pub fn mcp(format: McpFormat, existing: Option<&str>, server: &Server) -> Edit {
         }
         McpFormat::Toml => toml_entry(existing, server),
         McpFormat::ContinueYaml => match existing {
+            Some(text) if is_stale_continue(text) => continue_edit(server),
             Some(_) => Edit::Unchanged,
-            None => {
-                let text = continue_yaml(server);
-                match yaml_document(&text) {
-                    Some(Yaml::Hash(_)) => Edit::Write(text),
-                    _ => manual("Tessera could not write valid YAML for it", text),
-                }
-            }
+            None => continue_edit(server),
         },
         McpFormat::GooseYaml => goose_entry(existing, server),
     }
+}
+
+fn continue_edit(server: &Server) -> Edit {
+    let text = continue_yaml(server);
+    match yaml_document(&text) {
+        Some(Yaml::Hash(_)) => Edit::Write(text),
+        _ => manual("Tessera could not write valid YAML for it", text),
+    }
+}
+
+/// A file `init` wrote for Continue, running the pinned npm package.
+fn is_stale_continue(text: &str) -> bool {
+    text.starts_with("name: Tessera\n")
+        && text.contains("command: npx\n")
+        && text.contains(PINNED_PACKAGE)
 }
 
 fn manual(reason: impl Into<String>, snippet: String) -> Edit {
@@ -96,11 +106,46 @@ fn json_entry(existing: Option<&str>, key: &str, entry: Value) -> Edit {
     let Some(servers) = servers.as_object_mut() else {
         return manual(format!("its `{key}` is not an object"), snippet);
     };
-    if servers.contains_key("tessera") {
-        return Edit::Unchanged;
+    match servers.get("tessera") {
+        Some(old) if runs_pinned_npm_package(old) => {}
+        Some(_) => return Edit::Unchanged,
+        None => {}
     }
     servers.insert("tessera".to_string(), entry);
     Edit::Write(pretty(&root, &indent_of(existing.unwrap_or_default())))
+}
+
+/// The npm package that earlier versions of `init` pinned in the commands they
+/// wrote when `tessera` was not on PATH.
+const PINNED_PACKAGE: &str = "tessera-codegraph@";
+
+/// Whether `entry` is a command `init` wrote as `npx … tessera-codegraph@…`.
+/// That package was not published at the time, so the entry never worked and
+/// is replaced rather than kept.
+fn runs_pinned_npm_package(entry: &Value) -> bool {
+    fn strings<'a>(value: &'a Value, out: &mut Vec<&'a str>) {
+        match value {
+            Value::String(text) => out.push(text),
+            Value::Array(items) => items.iter().for_each(|item| strings(item, out)),
+            Value::Object(map) => map.values().for_each(|item| strings(item, out)),
+            _ => {}
+        }
+    }
+    let mut found = Vec::new();
+    strings(entry, &mut found);
+    found.iter().any(|text| is_npx(text))
+        && found.iter().any(|text| text.starts_with(PINNED_PACKAGE))
+}
+
+fn is_npx(command: &str) -> bool {
+    let name = command.rsplit(['/', '\\']).next().unwrap_or(command);
+    matches!(name, "npx" | "npx.cmd")
+}
+
+/// A hook command line `init` wrote as `npx -y tessera-codegraph@… hook …`.
+fn is_pinned_hook_command(command: &str) -> bool {
+    let mut words = command.split_whitespace();
+    words.next().is_some_and(is_npx) && command.contains(PINNED_PACKAGE)
 }
 
 /// The indent the file already uses, so a rewrite only adds lines.
@@ -148,7 +193,12 @@ fn toml_entry(existing: Option<&str>, server: &Server) -> Edit {
     };
     match before.get("mcp_servers") {
         Some(toml::Value::Table(servers)) if servers.contains_key("tessera") => {
-            return Edit::Unchanged
+            let old = serde_json::to_value(&servers["tessera"]).unwrap_or(Value::Null);
+            return if runs_pinned_npm_package(&old) {
+                replace_toml_table(text, &before, &block)
+            } else {
+                Edit::Unchanged
+            };
         }
         Some(toml::Value::Table(_)) | None => {}
         Some(_) => return manual("its `mcp_servers` is not a table", block),
@@ -177,6 +227,54 @@ fn toml_entry(existing: Option<&str>, server: &Server) -> Edit {
     }
     if !added || after != before {
         return manual("Tessera's table cannot be appended to it", block);
+    }
+    Edit::Write(out)
+}
+
+/// The `[mcp_servers.tessera]` table `init` wrote earlier, replaced by `block`
+/// with every other line kept. Left for the user when the table is spelled any
+/// other way, or when the result is not the same settings with Tessera's table
+/// changed.
+fn replace_toml_table(text: &str, before: &toml::Table, block: &str) -> Edit {
+    let lines: Vec<&str> = text.lines().collect();
+    let Some(start) = lines
+        .iter()
+        .position(|line| line.trim() == "[mcp_servers.tessera]")
+    else {
+        return manual(
+            "its Tessera entry runs a package that was never published",
+            block.to_string(),
+        );
+    };
+    let mut end = lines[start + 1..]
+        .iter()
+        .position(|line| line.trim_start().starts_with('['))
+        .map_or(lines.len(), |at| start + 1 + at);
+    // Blank lines before the next table belong to the gap, not to the table.
+    while end > start + 1 && lines[end - 1].trim().is_empty() {
+        end -= 1;
+    }
+    let mut out: Vec<&str> = lines[..start].to_vec();
+    out.extend(block.trim_end().lines());
+    out.extend(&lines[end..]);
+    let out = out.join("\n") + "\n";
+    let (Ok(after), Ok(new)) = (out.parse::<toml::Table>(), block.parse::<toml::Table>()) else {
+        return manual(
+            "Tessera's table cannot be replaced safely",
+            block.to_string(),
+        );
+    };
+    let mut expected = before.clone();
+    if let (Some(toml::Value::Table(servers)), Some(toml::Value::Table(new))) =
+        (expected.get_mut("mcp_servers"), new.get("mcp_servers"))
+    {
+        servers.insert("tessera".to_string(), new["tessera"].clone());
+    }
+    if after != expected {
+        return manual(
+            "Tessera's table cannot be replaced safely",
+            block.to_string(),
+        );
     }
     Edit::Write(out)
 }
@@ -234,8 +332,12 @@ fn goose_entry(existing: Option<&str>, server: &Server) -> Edit {
     let tessera = Yaml::String("tessera".to_string());
     let extensions = Yaml::String("extensions".to_string());
     if let Some(Yaml::Hash(map)) = before.as_hash().and_then(|top| top.get(&extensions)) {
-        if map.contains_key(&tessera) {
-            return Edit::Unchanged;
+        if let Some(old) = map.get(&tessera) {
+            return if goose_runs_pinned_package(old) {
+                replace_goose_entry(text, &before, server)
+            } else {
+                Edit::Unchanged
+            };
         }
     }
     let lines: Vec<&str> = text.lines().collect();
@@ -288,6 +390,63 @@ fn goose_entry(existing: Option<&str>, server: &Server) -> Edit {
     };
     if !added || !unchanged {
         return manual("Tessera's entry cannot be added to it safely", snippet);
+    }
+    Edit::Write(out)
+}
+
+fn goose_runs_pinned_package(entry: &Yaml) -> bool {
+    entry["cmd"].as_str().is_some_and(is_npx)
+        && entry["args"].as_vec().is_some_and(|args| {
+            args.iter()
+                .any(|arg| arg.as_str().is_some_and(|a| a.starts_with(PINNED_PACKAGE)))
+        })
+}
+
+/// The `tessera:` entry `init` wrote under `extensions:`, replaced by one that
+/// runs `server`, with every other line kept. Checked like the other edits:
+/// the result must be the same settings with only Tessera's entry changed.
+fn replace_goose_entry(text: &str, before: &Yaml, server: &Server) -> Edit {
+    let snippet = format!("extensions:\n{}", goose_block(server, "  "));
+    let lines: Vec<&str> = text.lines().collect();
+    let indent_of = |line: &str| line.chars().take_while(|c| *c == ' ').count();
+    let Some(start) = lines
+        .iter()
+        .position(|line| line.trim() == "tessera:" && indent_of(line) > 0)
+    else {
+        return manual(
+            "its Tessera entry runs a package that was never published",
+            snippet,
+        );
+    };
+    let key_indent = indent_of(lines[start]);
+    let end = lines[start + 1..]
+        .iter()
+        .position(|line| !line.trim().is_empty() && indent_of(line) <= key_indent)
+        .map_or(lines.len(), |at| start + 1 + at);
+    let block = goose_block(server, &" ".repeat(key_indent));
+    let mut out: Vec<&str> = lines[..start].to_vec();
+    out.extend(block.trim_end().lines());
+    out.extend(&lines[end..]);
+    let out = out.join("\n") + "\n";
+    let (Some(Yaml::Hash(mut expected)), Some(Yaml::Hash(after)), Some(Yaml::Hash(new))) = (
+        Some(before.clone()),
+        yaml_document(&out),
+        yaml_document(&snippet),
+    ) else {
+        return manual("Tessera's entry cannot be replaced safely", snippet);
+    };
+    let extensions = Yaml::String("extensions".to_string());
+    let tessera = Yaml::String("tessera".to_string());
+    if let (Some(Yaml::Hash(map)), Some(Yaml::Hash(fresh))) =
+        (expected.get_mut(&extensions), new.get(&extensions))
+    {
+        // Not `insert`, which would move the entry to the end of the map.
+        if let Some(entry) = map.get_mut(&tessera) {
+            *entry = fresh[&tessera].clone();
+        }
+    }
+    if after != expected {
+        return manual("Tessera's entry cannot be replaced safely", snippet);
     }
     Edit::Write(out)
 }
@@ -403,13 +562,33 @@ pub fn hooks(
                 snippet,
             );
         };
-        let ours = list.iter().any(|entry| {
+        let is_ours = |entry: &Value| {
             let text = entry.to_string();
             text.contains("tessera")
                 && (text.contains(&marker) || text.contains(&script_name(event)))
+        };
+        // Entries that run the unpublished npm package give way to the
+        // working command, in the same place in the list.
+        let fresh = hook_entry(config, event, command, scripts);
+        let mut kept_one = list
+            .iter()
+            .any(|entry| is_ours(entry) && !hook_runs_pinned_package(entry));
+        let mut replaced = false;
+        list.retain_mut(|entry| {
+            if !(is_ours(entry) && hook_runs_pinned_package(entry)) {
+                return true;
+            }
+            replaced = true;
+            if kept_one {
+                return false;
+            }
+            kept_one = true;
+            *entry = fresh.clone();
+            true
         });
-        if !ours {
-            list.push(hook_entry(config, event, command, scripts));
+        added |= replaced;
+        if !kept_one {
+            list.push(fresh);
             added = true;
         }
     }
@@ -417,6 +596,29 @@ pub fn hooks(
         return Edit::Unchanged;
     }
     Edit::Write(pretty(&root, &indent_of(existing.unwrap_or_default())))
+}
+
+/// Whether a hook entry's command is one `init` wrote as `npx … tessera-codegraph@…`.
+fn hook_runs_pinned_package(entry: &Value) -> bool {
+    fn commands(value: &Value, out: &mut Vec<String>) {
+        match value {
+            Value::Object(map) => {
+                for (key, item) in map {
+                    match item {
+                        Value::String(text) if key == "command" || key == "bash" => {
+                            out.push(text.clone())
+                        }
+                        _ => commands(item, out),
+                    }
+                }
+            }
+            Value::Array(items) => items.iter().for_each(|item| commands(item, out)),
+            _ => {}
+        }
+    }
+    let mut found = Vec::new();
+    commands(entry, &mut found);
+    found.iter().any(|command| is_pinned_hook_command(command))
 }
 
 /// The wrapper script for `event`, for agents whose hooks run scripts.
