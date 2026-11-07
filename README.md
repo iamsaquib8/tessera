@@ -55,8 +55,8 @@ machine.
 
 ## Quick start
 
-Install the binary (macOS, Linux, Windows; checksum-verified, from the
-GitHub release):
+Install the binary (macOS and Linux; checksum-verified, from the GitHub
+release):
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/iamsaquib8/tessera/main/install.sh | sh
@@ -104,8 +104,9 @@ cargo install tessera-codegraph                  # from source, Rust 1.90+
 A Homebrew tap and a public container image (`ghcr.io/iamsaquib8/tessera`)
 are not available yet.
 
-Prebuilt binaries for every platform are also on the
-[releases page](https://github.com/iamsaquib8/tessera/releases).
+On Windows, use npm, `cargo install`, or the `.zip` on the
+[releases page](https://github.com/iamsaquib8/tessera/releases), which also
+has archives for macOS and Linux (x86_64 and aarch64).
 
 </details>
 
@@ -124,20 +125,24 @@ Prebuilt binaries for every platform are also on the
 | `tessera verify --snippet <file> --language <lang>` | Does everything this code calls exist? |
 | `tessera find <symbol>` / `--path <file>` | Where is it defined? What is in this file? |
 | `tessera refs <symbol \| file>` | Who calls it? Who imports this file? |
-| `tessera cycles` / `imports --cycles` | Which modules import each other circularly? |
+| `tessera cycles` | Which modules import each other circularly? |
 | `tessera search <pattern>` / `--unused` | Which symbols match? Which functions are never called? |
 | `tessera path <from> <to>` | Does A reach B, and how? Follows routes and gRPC calls across services |
 | `tessera map <route\|rpc\|graphql\|topic\|table\|config\|service> [query]` | Which services call this endpoint, method, field, or topic? Who sets the config key this code reads? |
+| `tessera map route --drift` | Do the routes served in code match the OpenAPI or Swagger documents? |
 | `tessera affected <rev>` | Which tests does this change reach, and why? |
 | `tessera ui` | What does my working tree change, and how do the services connect? In the browser |
 | `tessera stats` | What did the edit hooks catch, and did the agent fix it? |
+| `tessera export` | The call graph as Mermaid or Graphviz DOT |
 | `tessera status` | Is the index fresh? Is anything misconfigured? |
 | `tessera init` | Wire Tessera into the agents this project uses |
 
-The queries are also MCP tools (`tessera mcp`). The tools are read-only,
-paginated, and return compact text so they cost few tokens. Every command
-takes `--json`. See [the five-minute tour](docs/first-five-minutes.md) for
-real output.
+Eleven queries are also MCP tools (`tessera mcp`): `find`, `search`, `refs`,
+`blast`, `verify`, `context`, `path`, `map`, `status`, `affected`, and
+`import_cycles` (the CLI's `cycles`). The tools are read-only, paginated, and
+return compact text so they cost few tokens ([docs/mcp.md](docs/mcp.md)).
+Every command takes `--json`. See
+[the five-minute tour](docs/first-five-minutes.md) for real output.
 
 ## See the impact
 
@@ -189,14 +194,19 @@ inputs, including `upload-sarif` for code scanning.
   lists them, each with the chain from the test to the changed code;
   lockfile, build-file and CI-configuration changes run everything and
   say why. `--format jest | vitest | pytest | go-test | cargo` prints the
-  command. The Action exposes the list as an output.
+  command. The Action exposes the list as the `tests` and `tests-file`
+  outputs, and the reason to run everything as `full-run`. On three public
+  monorepos it selected 249 of 251 failing test files after seeded breaks
+  ([ROADMAP.md](ROADMAP.md)).
 - **Adopt it on a codebase with known problems.** `tessera baseline`
   records today's findings so only new ones block; `tessera accept
   <fingerprint> --reason …` records an intended break, with an optional
   expiry.
-- **Any CI, any review tool.** GitLab Code Quality, Azure DevOps,
-  Bitbucket Code Insights, SARIF and NDJSON formats, and an index cache
-  file (`tessera cache export` / `import`). See [docs/ci.md](docs/ci.md).
+- **Any CI, any review tool.** `verify --format` takes `human`, `agent`,
+  `json`, `sarif`, `markdown`, `gitlab` (Code Quality), `azure`, `bitbucket`
+  (Code Insights), `ndjson` and `junit`. `tessera cache export <file>` and
+  `tessera cache import <file>` carry the index between CI runs. See
+  [docs/ci.md](docs/ci.md).
 
 ## Works with every agent and every model
 
@@ -239,24 +249,41 @@ of hook capabilities is in [docs/agents.md](docs/agents.md).
 ## Languages
 
 TypeScript, TSX/React, JavaScript (ESM and CommonJS), Java, Python, Go, Rust,
-C, C++, C#, Ruby, PHP.
+C, C++, C#, Ruby, PHP. TypeScript interfaces, type aliases and enums are
+indexed as symbols.
 
 **Deep tier: TypeScript, TSX, JavaScript, and Java.** References resolve
 through imports, re-exports, tsconfig paths, workspace packages, Java
 packages, declared types, and overloads, and every one carries a confidence.
-Against compiler ground truth on excalidraw, nest, Ghost, and two Spring
-applications, high-confidence results are right **99.7%** of the time, and
-Tessera finds 99% of direct calls, 91% of calls on typed receivers, and 99%
-of type references in TypeScript/JavaScript ([accuracy](docs/accuracy.md)).
+Against scip-typescript and scip-java ground truth on excalidraw, nest,
+Ghost core, and two Spring applications, a high-confidence reference is
+right **99.8%** of the time in TypeScript/JavaScript and **99.5%** in Java.
+Tessera finds 99.0% of direct calls, 91.2% of calls on typed receivers, and
+98.6% of type references in TypeScript/JavaScript, and 87.2%, 93.5% and
+100% in Java. Some repositories fall below the release gate in one category
+(Ghost's typed receivers, for one), and the Java sample is small: read the
+numbers with their sample sizes in [accuracy](docs/accuracy.md).
 
 The other languages are at the **standard** tier: resolved within a file and
 by unique name, labelled when a match is only possible.
 [Current limits](docs/when-not-to-use.md) are listed plainly.
 
-Contracts between services are read in every language that has them: gRPC in
-Go, C#, Node, Python, Java and C++; HTTP in Express, Fastify, NestJS,
-Next.js, Spring and their clients; Kafka; SQL, JPA, TypeORM, Sequelize and
-Prisma ([docs/contracts.md](docs/contracts.md)).
+Contracts between services are read for gRPC in Go, C#, Node, Python, Java
+and C++; for HTTP in Express, Fastify, NestJS, Next.js, Spring, Go
+(`net/http`, chi, gin, echo), FastAPI, Flask, Django, Rails, Sinatra,
+actix-web, Slim and ASP.NET minimal APIs, with their clients; and for Kafka,
+GraphQL, config keys, and SQL, JPA, TypeORM, Sequelize and Prisma tables
+([docs/contracts.md](docs/contracts.md)). Hand-labelled on
+microservices-demo, 15 of 15 gRPC servers and 34 of 34 clients link, with no
+wrong links; HTTP client recall is lower where a URL is assembled at
+runtime ([measured](docs/contracts.md#accuracy)).
+
+`tessera map route --drift` compares the routes declared in OpenAPI 3 and
+Swagger documents with the routes served in code, and lists those served but
+not documented, documented but not served, or served under another method
+([spec drift](docs/contracts.md#spec-drift)). The Slim and ASP.NET packs,
+spec drift and `verify --format junit` are on `main` and not yet in a
+release; the other commands, formats and packs here are in 1.2.0.
 
 ## FAQ
 
@@ -273,16 +300,17 @@ repository, or a workspace of repositories, that any agent can query.
 `blast --diff` runs only a local `git diff`.
 
 **Is it accurate?** Measured, not claimed: on public TypeScript,
-JavaScript, and Java repositories, 99.7% of high-confidence references match
-the compiler's ground truth ([accuracy](docs/accuracy.md)). Weaker matches are
-labelled, never silent. The benchmark and its ground truth are public, so
-you can check the numbers yourself.
+JavaScript, and Java repositories, 99.8% (TypeScript/JavaScript) and 99.5%
+(Java) of high-confidence references match SCIP ground truth
+([accuracy](docs/accuracy.md)). Weaker matches are labelled, never silent.
+The benchmark is public ([tessera-bench](https://github.com/iamsaquib8/tessera-bench)),
+so you can check the numbers yourself.
 
-**Will it slow my agent down?** Through the MCP server, lookups take
-milliseconds: the server keeps the index fresh in the background as files
-change. A CLI query first checks that the index is fresh, a stat walk of the
-repository. Perf budgets run in CI: freshness check under 100 ms and lookups
-under 50 ms at p95 on 10,000 files. Indexing is incremental.
+**Will it slow my agent down?** The MCP server keeps the index fresh in the
+background as files change. A CLI query first checks that the index is
+fresh, a stat walk of the repository. Perf budgets run in CI on a synthetic
+10,000-file index: the freshness check under 100 ms, and `find` and `refs`
+under 50 ms at p95 ([tests/perf.rs](tests/perf.rs)). Indexing is incremental.
 
 **Can I build on it?** Yes. Commands, flags, `--json` fields, MCP tool
 schemas, hook replies, and exit codes are stable for 1.x, and a test suite
@@ -290,27 +318,11 @@ pins them ([docs/stability.md](docs/stability.md)).
 
 ## Roadmap
 
-| Version | Focus |
-| --- | --- |
-| v1.0 | Change-impact UI, GitHub Action, stable contracts (released) |
-| v1.1 | Contract map completed: mounted routers, GraphQL, config keys, `path` across repositories, Go/Python/Ruby frameworks (released in 1.2.0) |
-| v1.2 | Team and CI: explainable test selection, a shared index cache, code scanning and other review formats, a baseline, a merge gate (released) |
-| 1.2.x | Every install channel published and smoke-tested on every release |
-| v1.3 | Never silently wrong: no answer of "fine" without a check, no blocking false positives, a good first five minutes |
-| v1.4 | Proof and the public launch: the refactor eval and a private beta, published |
-| v1.5 | Fast on large repositories: hooks, CI and queries on a 15,000-file codebase |
-| v1.6 | Field-level contract breaks joined to the consumers they break, payload compatibility |
-| v1.7 | Inside the agent loop: graph context in the agent's own tools, `tessera lsp`, `tessera plan` |
-| v1.8 | Deep tier for Python and Go; precise mode with SCIP import and export |
-| v1.9 | Architecture rules across languages and contracts, drafted from your code |
-| v1.10 | Migration checks joined with code usage, CODEOWNERS impact, catalog export |
-| v1.11 | Runtime truth: OpenTelemetry service graphs on the contract map, callers ranked by traffic, dead routes and topics |
-| v1.12 | Column lineage from migrations to API responses, PII rules in `verify` |
-| v1.13 | Extension platform: your own packs without rebuilding, WASM extractors, your own grammars |
-| v1.14 | Editors (VS Code, JetBrains), code-anchored notes, service and call diagrams |
-| v2.0 | One small surface: deprecated commands and flags removed, about seven MCP tools, a new stability contract |
-
-See [ROADMAP.md](ROADMAP.md) for each theme and what proves it done.
+Released: v1.0 and, in 1.2.0, the completed contract map (v1.1) and team and
+CI features (v1.2). Next are every install channel published on every
+release (1.2.x), no silent wrong answers (v1.3), and the public launch
+(v1.4). [ROADMAP.md](ROADMAP.md) has every planned version through v2.0 and
+what proves each one done.
 
 ## Contributing
 
