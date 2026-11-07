@@ -759,3 +759,91 @@ fn edit_line(root: &Path, from: &str, to: &str) {
     assert!(text.contains(from));
     fs::write(path, text.replacen(from, to, 1)).unwrap();
 }
+
+fn write_repo(files: &[(&str, &str)]) -> TempDir {
+    let temp = TempDir::new().unwrap();
+    for (path, body) in files {
+        let full = temp.path().join(path);
+        fs::create_dir_all(full.parent().unwrap()).unwrap();
+        fs::write(full, body).unwrap();
+    }
+    temp
+}
+
+fn json_of(cwd: &Path, args: &[&str]) -> serde_json::Value {
+    let out = tessera(cwd).args(args).arg("--json").output().unwrap();
+    serde_json::from_slice(&out.stdout)
+        .unwrap_or_else(|e| panic!("{args:?}: {e}: {}", String::from_utf8_lossy(&out.stdout)))
+}
+
+const CASE_REPO: &[(&str, &str)] = &[(
+    "src/a.ts",
+    "export class A { getUser() { return 1 } }\n\
+     export class B { GetUser() { return 2 } }\n\
+     export class C { getXuser() { return 3 } }\n",
+)];
+
+fn matches_of(cwd: &Path, symbol: &str) -> Vec<(String, String)> {
+    json_of(cwd, &["find", symbol])["matches"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|m| {
+            (
+                m["symbol"]["qualified_name"].as_str().unwrap().to_string(),
+                m["match_kind"]["kind"].as_str().unwrap().to_string(),
+            )
+        })
+        .collect()
+}
+
+#[test]
+fn symbol_lookup_is_case_sensitive() {
+    let temp = write_repo(CASE_REPO);
+    let exact = |symbol: &str| -> Vec<String> {
+        matches_of(temp.path(), symbol)
+            .into_iter()
+            .filter(|(_, kind)| kind == "exact")
+            .map(|(name, _)| name)
+            .collect()
+    };
+    assert_eq!(exact("getUser"), ["A.getUser"]);
+    assert_eq!(exact("B.GetUser"), ["B.GetUser"]);
+    assert!(exact("getuser").is_empty(), "{:?}", exact("getuser"));
+    assert!(exact("a.getUser").is_empty());
+}
+
+#[test]
+fn underscore_in_a_symbol_name_is_not_a_wildcard() {
+    let temp = write_repo(CASE_REPO);
+    assert!(!matches_of(temp.path(), "get_user")
+        .iter()
+        .any(|(name, kind)| name == "C.getXuser" && kind == "exact"));
+    // context must not return the body of a different method either
+    tessera(temp.path())
+        .args(["context", "get_user"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("getXuser").not());
+}
+
+#[test]
+fn verify_reports_a_wrong_case_name_as_missing() {
+    let temp = write_repo(CASE_REPO);
+    tessera(temp.path())
+        .args(["verify", "getuser"])
+        .assert()
+        .code(1)
+        .stdout(predicate::str::contains("getuser"))
+        .stdout(predicate::str::contains("A.getUser"));
+    tessera(temp.path())
+        .args(["verify", "--snippet", "-", "--language", "typescript"])
+        .write_stdin("export function go() { return getuser(); }\n")
+        .assert()
+        .code(1)
+        .stdout(predicate::str::contains("V1"));
+    tessera(temp.path())
+        .args(["verify", "getUser"])
+        .assert()
+        .success();
+}

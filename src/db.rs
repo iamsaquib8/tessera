@@ -13,7 +13,7 @@ use crate::types::{
     Language, ReferenceRecord, SymbolRecord,
 };
 
-pub const SCHEMA_VERSION: i64 = 9;
+pub const SCHEMA_VERSION: i64 = 10;
 /// `PRAGMA application_id` of every Tessera index ("TSSR").
 pub const APPLICATION_ID: i64 = 0x5453_5352;
 
@@ -298,11 +298,15 @@ fn create_schema(conn: &Connection) -> Result<()> {
             container TEXT,
             arity_min INTEGER,
             arity_max INTEGER,
-            default_export INTEGER NOT NULL DEFAULT 0
+            default_export INTEGER NOT NULL DEFAULT 0,
+            -- the text after the last '.' of qualified_name: the indexed
+            -- first step of the `Class.method` suffix match (NAME_MATCH_IDS)
+            tail TEXT NOT NULL DEFAULT ''
         );
 
         CREATE INDEX idx_symbols_name ON symbols(name);
         CREATE INDEX idx_symbols_qualified ON symbols(qualified_name);
+        CREATE INDEX idx_symbols_tail ON symbols(tail);
         CREATE INDEX idx_symbols_file ON symbols(file_id);
 
         CREATE TABLE refs (
@@ -640,8 +644,8 @@ pub fn insert_symbols(
     let mut insert = conn.prepare_cached(
         "INSERT INTO symbols(
             name, qualified_name, kind, file_id, start_line, end_line, signature, exported,
-            container, arity_min, arity_max, default_export
-         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+            container, arity_min, arity_max, default_export, tail
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
     )?;
     let mut ids = Vec::with_capacity(symbols.len());
     for symbol in symbols {
@@ -657,7 +661,8 @@ pub fn insert_symbols(
             symbol.container,
             symbol.arity.map(|(min, _)| min),
             symbol.arity.and_then(|(_, max)| max),
-            i64::from(symbol.default_export)
+            i64::from(symbol.default_export),
+            name_tail(&symbol.qualified_name)
         ])?;
         ids.push(conn.last_insert_rowid());
     }
@@ -835,14 +840,41 @@ pub fn insert_references(
     Ok(refs.len())
 }
 
+/// The text after the last `.`: what `qualified_name` and a typed name
+/// share whenever the first ends with `.` plus the second.
+pub fn name_tail(name: &str) -> &str {
+    name.rsplit('.').next().unwrap_or(name)
+}
+
+/// Ids of the symbols a typed name can mean: the qualified name, the bare
+/// name, or the end of a qualified name (`method` or `Class.method` for
+/// `pkg.Class.method`). Bind `?1` to the name, `?2` to [`name_tail`] of it
+/// and `?3` to `.` plus the name. The match is case-sensitive and `_` and `%`
+/// are literal (a `LIKE` is neither). Each branch is one index search; a
+/// single `OR` makes SQLite scan the table.
+pub const NAME_MATCH_IDS: &str = "
+    SELECT id FROM symbols WHERE qualified_name = ?1
+    UNION
+    SELECT id FROM symbols WHERE name = ?1
+    UNION
+    SELECT id FROM symbols WHERE tail = ?2 AND substr(qualified_name, -length(?3)) = ?3
+";
+
+/// The bindings `?2` and `?3` of [`NAME_MATCH_IDS`] for `symbol`.
+pub fn name_match_params(symbol: &str) -> (String, String) {
+    (name_tail(symbol).to_string(), format!(".{symbol}"))
+}
+
 pub fn resolve_symbol(conn: &Connection, symbol: &str) -> Result<Option<SymbolRecord>> {
+    let (tail, suffix) = name_match_params(symbol);
     conn.query_row(
-        "
+        &format!(
+            "
         SELECT s.id, s.name, s.qualified_name, s.kind, s.file_id, f.path, f.language,
                s.start_line, s.end_line, s.signature, s.exported
         FROM symbols s
         JOIN files f ON f.id = s.file_id
-        WHERE s.qualified_name = ?1 OR s.name = ?1 OR s.qualified_name LIKE ?2
+        WHERE s.id IN ({NAME_MATCH_IDS})
         ORDER BY
             CASE
                 WHEN s.qualified_name = ?1 THEN 0
@@ -851,8 +883,9 @@ pub fn resolve_symbol(conn: &Connection, symbol: &str) -> Result<Option<SymbolRe
             END,
             length(s.qualified_name)
         LIMIT 1
-        ",
-        params![symbol, format!("%.{}", symbol)],
+        "
+        ),
+        params![symbol, tail, suffix],
         map_symbol,
     )
     .optional()
@@ -1003,6 +1036,52 @@ mod tests {
         })
         .optional()
         .unwrap();
+    }
+
+    #[test]
+    fn name_lookups_use_indexes_not_table_scans() {
+        let temp = TempDir::new().unwrap();
+        let conn = open_rw(&temp.path().join("t.db")).unwrap();
+        let queries = [
+            // resolve_symbol and find_definition_conn
+            format!(
+                "SELECT s.id FROM symbols s JOIN files f ON f.id = s.file_id
+                 WHERE s.id IN ({NAME_MATCH_IDS})
+                 ORDER BY CASE WHEN s.qualified_name = ?1 THEN 0 ELSE 1 END, length(s.qualified_name)
+                 LIMIT 1"
+            ),
+            // symbol_exists
+            format!("SELECT EXISTS({NAME_MATCH_IDS})"),
+        ];
+        for query in queries {
+            let mut stmt = conn
+                .prepare(&format!("EXPLAIN QUERY PLAN {query}"))
+                .unwrap();
+            let plan: Vec<String> = stmt
+                .query_map(params!["x", "x", ".x"], |row| row.get::<_, String>(3))
+                .unwrap()
+                .collect::<rusqlite::Result<_>>()
+                .unwrap();
+            for line in &plan {
+                let scans_symbols = line.starts_with("SCAN") && !line.contains("INDEX");
+                assert!(
+                    !scans_symbols || !(line.contains("symbols") || line.ends_with(" s")),
+                    "table scan in plan: {plan:#?}"
+                );
+            }
+            assert!(
+                plan.iter().any(|l| l.contains("idx_symbols_tail")),
+                "{plan:#?}"
+            );
+        }
+    }
+
+    #[test]
+    fn name_tail_is_the_text_after_the_last_dot() {
+        assert_eq!(name_tail("a.b.c"), "c");
+        assert_eq!(name_tail("c"), "c");
+        assert_eq!(name_tail("A::b"), "A::b");
+        assert_eq!(name_tail("a."), "");
     }
 
     #[test]
