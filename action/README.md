@@ -42,11 +42,16 @@ only on problems the pull request introduced.
 | Output | |
 | --- | --- |
 | `blocking` | `true` when the report has blocking problems |
-| `tests` | The test files the change reaches, one path per line (`tessera affected`) |
-| `tests-file` | A file holding the same list |
+| `tests` | The test files the change reaches, one path per line (`tessera affected`); empty when `tests-truncated` is `true` |
+| `tests-file` | A file holding the same list, always complete |
+| `tests-truncated` | `true` when the list is over 512 KB: GitHub limits a step output to 1 MB, so `tests` is left empty and the list stays in `tests-file` |
 | `full-run` | Why every test should run, when one should; empty otherwise |
 
 ## Running only the tests the change reaches
+
+Read the list from `tests-file`: it is complete however large the list is, and
+the example below does. `tests` is a convenience for small lists and is empty
+when `tests-truncated` is `true`.
 
 `full-run` is set when a lockfile, build file or CI configuration
 changed, a commit carries a `Tessera-No-Skip` trailer, the index holds no
