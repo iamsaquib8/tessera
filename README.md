@@ -305,12 +305,19 @@ pins them ([docs/stability.md](docs/stability.md)).
 | v1.1 | Contract map completed: mounted routers, GraphQL, config keys, `path` across repositories, Go/Python/Ruby frameworks (released in 1.2.0) |
 | v1.2 | Team and CI: explainable test selection, a shared index cache, code scanning and other review formats, a baseline, a merge gate (released) |
 | 1.2.x | Every install channel published and smoke-tested on every release |
-| v1.3 | Never silently wrong: no answer of "fine" without a check, no blocking false positives |
-| v1.4 | Fast on large repositories: hooks, CI and queries on a 15,000-file codebase |
-| v1.5 | Proof that it helps: the refactor eval and agent studies, published |
+| v1.3 | Never silently wrong: no answer of "fine" without a check, no blocking false positives, a good first five minutes |
+| v1.4 | Proof and the public launch: the refactor eval and a private beta, published |
+| v1.5 | Fast on large repositories: hooks, CI and queries on a 15,000-file codebase |
 | v1.6 | Field-level contract breaks joined to the consumers they break, payload compatibility |
 | v1.7 | Inside the agent loop: graph context in the agent's own tools, `tessera lsp`, `tessera plan` |
 | v1.8 | Deep tier for Python and Go; precise mode with SCIP import and export |
+| v1.9 | Architecture rules across languages and contracts, drafted from your code |
+| v1.10 | Migration checks joined with code usage, CODEOWNERS impact, catalog export |
+| v1.11 | Runtime truth: OpenTelemetry service graphs on the contract map, callers ranked by traffic, dead routes and topics |
+| v1.12 | Column lineage from migrations to API responses, PII rules in `verify` |
+| v1.13 | Extension platform: your own packs without rebuilding, WASM extractors, your own grammars |
+| v1.14 | Editors (VS Code, JetBrains), code-anchored notes, service and call diagrams |
+| v2.0 | One small surface: deprecated commands and flags removed, about seven MCP tools, a new stability contract |
 
 See [ROADMAP.md](ROADMAP.md) for each theme and what proves it done.
 
