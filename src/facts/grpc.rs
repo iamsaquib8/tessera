@@ -38,7 +38,8 @@ struct Call {
     service: Option<String>,
     /// The receiver's last name segment: `stub` in `self.stub.GetCart()`.
     receiver: String,
-    evidence: String,
+    /// Start byte of the call, to read its line for the calls that are kept.
+    at: usize,
 }
 
 /// A Python class, kept until the file is read so subclasses of a
@@ -67,11 +68,7 @@ impl Scan<'_> {
     }
 
     fn line_text(&self, node: Node<'_>) -> String {
-        self.source
-            .lines()
-            .nth(node.start_position().row)
-            .unwrap_or_default()
-            .to_string()
+        super::line_containing(self.source, node.start_byte()).to_string()
     }
 
     fn push(&mut self, kind: &'static str, name: String, node: Node<'_>, rule: &'static str) {
@@ -109,13 +106,12 @@ impl Scan<'_> {
         if name.is_empty() {
             return;
         }
-        let evidence = self.line_text(method);
         self.calls.push(Call {
             method: name,
             line: method.start_position().row + 1,
             service,
             receiver,
-            evidence,
+            at: method.start_byte(),
         });
     }
 }
@@ -231,7 +227,7 @@ fn finish(mut scan: Scan<'_>) -> Vec<IndexedFact> {
             format!("{service}/{}", call.method),
             call.line,
             "grpc.call",
-            &call.evidence,
+            super::line_containing(scan.source, call.at),
         ));
     }
     python_servicers(&mut scan);

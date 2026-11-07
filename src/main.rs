@@ -603,6 +603,10 @@ fn run() -> Result<u8> {
             out.print(&hook::events::stats(index_dir, &ws.root, days, now))?;
         }
         Commands::Baseline { prune } => {
+            if prune {
+                tessera_codegraph::query::waivers::readable_baseline(&ws.root)
+                    .map_err(|message| usage(&message))?;
+            }
             let Some(index) = open_fresh(&ws, &out)? else {
                 return Ok(0);
             };
@@ -638,6 +642,12 @@ fn run() -> Result<u8> {
             if symbol.is_none() && path.is_none() {
                 return Err(usage("pass a symbol name, or --path <file-or-dir>"));
             }
+            let path = path
+                .map(|p| {
+                    tessera_codegraph::workspace::repo_relative(&ws.root, &cwd, &p)
+                        .map_err(|m| usage(&m))
+                })
+                .transpose()?;
             let Some(index) = open_fresh(&ws, &out)? else {
                 return Ok(0);
             };
@@ -679,6 +689,8 @@ fn run() -> Result<u8> {
             min_confidence,
             page,
         } => {
+            let target = tessera_codegraph::workspace::repo_file_argument(&ws.root, &cwd, &target)
+                .unwrap_or(target);
             let Some(index) = open_fresh(&ws, &out)? else {
                 return Ok(0);
             };
@@ -783,7 +795,7 @@ fn run() -> Result<u8> {
                 } else {
                     query::Changes::WorkingTree
                 };
-                let report = index.report(&changes)?;
+                let report = index.report_with(&changes, !no_baseline)?;
                 if out.json {
                     out.print_json(&report)?;
                 } else {
@@ -823,6 +835,14 @@ fn run() -> Result<u8> {
             }
         }
         Commands::Map { kind, query, drift } => {
+            if let Some(kind) = kind.as_deref() {
+                if !query::map::KINDS.contains(&kind) {
+                    return Err(usage(&format!(
+                        "unknown contract kind `{kind}`; use one of {}",
+                        query::map::KINDS.join(", ")
+                    )));
+                }
+            }
             let Some(index) = open_fresh(&ws, &out)? else {
                 return Ok(0);
             };
@@ -865,6 +885,12 @@ fn run() -> Result<u8> {
             cycles: _,
             limit,
         } => {
+            let path = path
+                .map(|p| {
+                    tessera_codegraph::workspace::repo_relative(&ws.root, &cwd, &p)
+                        .map_err(|m| usage(&m))
+                })
+                .transpose()?;
             let Some(index) = open_fresh(&ws, &out)? else {
                 return Ok(0);
             };
