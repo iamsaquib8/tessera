@@ -255,3 +255,58 @@ jobs:
     with:
       version: ${{ inputs.tag || github.ref_name }}
       prerelease: ${{ contains(inputs.tag || github.ref_name, '-') }}
+
+  # `iamsaquib8/tessera/action@v1` resolves to the `v1` tag, so it follows the
+  # newest stable 1.x release. Moved last, once every channel installs.
+  major-tag:
+    name: move the major tag
+    needs: smoke
+    if: ${{ needs.smoke.result == 'success' && !contains(inputs.tag || github.ref_name, '-') }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
+          fetch-depth: 0
+      - name: Point the major tag at the release commit
+        id: move
+        run: |
+          set -euo pipefail
+          # A stable tag only: v1.2.3. Pre-releases (v1.3.0-rc.1) never move it.
+          case "$TAG" in
+            *-*)
+              echo "$TAG is a pre-release; the major tag stays where it is."
+              exit 0
+              ;;
+            v[0-9]*.[0-9]*.[0-9]*) ;;
+            *)
+              echo "::error::$TAG is not a vMAJOR.MINOR.PATCH tag."
+              exit 1
+              ;;
+          esac
+          major="${TAG%%.*}"
+          git fetch --force --tags origin
+          release=$(git rev-parse "refs/tags/$TAG^{commit}")
+
+          # Never backwards: a newer stable release of this major version wins,
+          # so re-running an old release leaves the tag alone.
+          newest=$(git tag --list "$major.*" | grep -Ev -- '-' | sort -V | tail -n 1)
+          if [ "$newest" != "$TAG" ]; then
+            echo "::notice::$newest is newer than $TAG; $major stays where it is."
+            exit 0
+          fi
+          if current=$(git rev-parse --verify --quiet "refs/tags/$major^{commit}"); then
+            if [ "$current" = "$release" ]; then
+              echo "$major already points at $TAG ($release)."
+              exit 0
+            fi
+            if ! git merge-base --is-ancestor "$current" "$release"; then
+              echo "::notice::$major points at $current, which is not an ancestor of $TAG; leaving it."
+              exit 0
+            fi
+          fi
+          git tag --force "$major" "$release"
+          git push --force origin "refs/tags/$major"
+          echo "$major now points at $TAG ($release)."
