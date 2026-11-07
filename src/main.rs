@@ -642,6 +642,12 @@ fn run() -> Result<u8> {
             if symbol.is_none() && path.is_none() {
                 return Err(usage("pass a symbol name, or --path <file-or-dir>"));
             }
+            let path = path
+                .map(|p| {
+                    tessera_codegraph::workspace::repo_relative(&ws.root, &cwd, &p)
+                        .map_err(|m| usage(&m))
+                })
+                .transpose()?;
             let Some(index) = open_fresh(&ws, &out)? else {
                 return Ok(0);
             };
@@ -683,6 +689,8 @@ fn run() -> Result<u8> {
             min_confidence,
             page,
         } => {
+            let target = tessera_codegraph::workspace::repo_file_argument(&ws.root, &cwd, &target)
+                .unwrap_or(target);
             let Some(index) = open_fresh(&ws, &out)? else {
                 return Ok(0);
             };
@@ -869,6 +877,12 @@ fn run() -> Result<u8> {
             cycles: _,
             limit,
         } => {
+            let path = path
+                .map(|p| {
+                    tessera_codegraph::workspace::repo_relative(&ws.root, &cwd, &p)
+                        .map_err(|m| usage(&m))
+                })
+                .transpose()?;
             let Some(index) = open_fresh(&ws, &out)? else {
                 return Ok(0);
             };

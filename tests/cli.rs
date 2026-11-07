@@ -49,6 +49,102 @@ fn queries_from_a_subdirectory_use_the_repo_root() {
     assert!(!temp.path().join("src/users/.tessera").exists());
 }
 
+fn outline_files(cwd: &Path, path: &str) -> Vec<String> {
+    let out = tessera(cwd)
+        .args(["find", "--path", path, "--json"])
+        .output()
+        .unwrap();
+    let value: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let mut files: Vec<String> = value["outline"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| s["path"].as_str().unwrap().to_string())
+        .collect();
+    files.dedup();
+    files
+}
+
+#[test]
+fn file_arguments_are_taken_relative_to_the_repository_root() {
+    let temp = repo("typescript");
+    fs::create_dir_all(temp.path().join(".git")).unwrap();
+    let root = temp.path();
+    let absolute = format!("{}/src/users/repo.ts", root.display());
+    let want = ["src/users/repo.ts".to_string()];
+    for path in [
+        "src/users/repo.ts",
+        "./src/users/repo.ts",
+        "src\\users\\repo.ts",
+        ".\\src\\users\\repo.ts",
+        "src/users/../users/repo.ts",
+        absolute.as_str(),
+    ] {
+        assert_eq!(outline_files(root, path), want, "from the root: {path}");
+    }
+    // typed from a subdirectory, a path is relative to where the user stands
+    let src = root.join("src");
+    assert_eq!(outline_files(&src, "users/repo.ts"), want);
+    assert_eq!(outline_files(&src, "./users/repo.ts"), want);
+    assert_eq!(outline_files(&src, "../src/users/repo.ts"), want);
+    assert_eq!(outline_files(&src, &absolute), want);
+    assert_eq!(
+        outline_files(&src.join("users"), "."),
+        want,
+        "a directory argument is relative to the cwd too"
+    );
+}
+
+#[test]
+fn a_path_outside_the_repository_is_a_usage_error() {
+    let temp = repo("typescript");
+    fs::create_dir_all(temp.path().join(".git")).unwrap();
+    for path in ["/etc/hosts", "../outside.ts"] {
+        tessera(temp.path())
+            .args(["find", "--path", path])
+            .assert()
+            .code(2)
+            .stderr(predicate::str::contains("outside the repository"));
+    }
+}
+
+#[test]
+fn refs_on_a_file_accepts_relative_and_absolute_paths() {
+    let temp = repo("typescript");
+    fs::create_dir_all(temp.path().join(".git")).unwrap();
+    let absolute = format!("{}/src/util/format.ts", temp.path().display());
+    let from_root = [
+        "src/util/format.ts",
+        "./src/util/format.ts",
+        absolute.as_str(),
+    ];
+    for target in from_root {
+        tessera(temp.path())
+            .args(["refs", target])
+            .assert()
+            .success()
+            .stdout(predicate::str::contains(
+                "Files importing src/util/format.ts",
+            ))
+            .stdout(predicate::str::contains("src/users/repo.ts"));
+    }
+    for target in ["util/format.ts", "./util/format.ts"] {
+        tessera(&temp.path().join("src"))
+            .args(["refs", target])
+            .assert()
+            .success()
+            .stdout(predicate::str::contains(
+                "Files importing src/util/format.ts",
+            ));
+    }
+    // a symbol name is still a symbol name
+    tessera(temp.path())
+        .args(["refs", "formatName"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Files importing").not());
+}
+
 #[test]
 fn verify_exit_codes() {
     let temp = repo("typescript");

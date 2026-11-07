@@ -153,7 +153,12 @@ impl Index {
     }
 
     pub fn refs(&self, args: &RefsArgs) -> Result<RefsResult> {
-        query::refs(&self.conn, args)
+        // A path to a file in the repository, however it is spelled (`./a.ts`,
+        // absolute), names the file; anything else stays a symbol name.
+        let mut args = args.clone();
+        args.target = workspace::repo_file_argument(&self.root, &self.root, &args.target)
+            .unwrap_or(args.target);
+        query::refs(&self.conn, &args)
     }
 
     pub fn blast(&self, args: &BlastArgs) -> Result<BlastResult> {
