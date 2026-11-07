@@ -13,7 +13,7 @@ use crate::types::{
     Language, ReferenceRecord, SymbolRecord,
 };
 
-pub const SCHEMA_VERSION: i64 = 9;
+pub const SCHEMA_VERSION: i64 = 10;
 /// `PRAGMA application_id` of every Tessera index ("TSSR").
 pub const APPLICATION_ID: i64 = 0x5453_5352;
 
@@ -61,6 +61,10 @@ impl From<rusqlite::Error> for DbError {
 }
 
 pub fn open_rw(path: &Path) -> Result<Connection> {
+    recovering(path, || open_rw_once(path))
+}
+
+fn open_rw_once(path: &Path) -> Result<Connection> {
     if let Some(parent) = path.parent() {
         if !parent.as_os_str().is_empty() {
             fs::create_dir_all(parent)?;
@@ -76,13 +80,105 @@ pub fn open_rw(path: &Path) -> Result<Connection> {
     // SQLite's 2 MB default, pages spill to the WAL and are read back.
     conn.pragma_update(None, "cache_size", WRITER_CACHE_KIB)?;
     let version = user_version(&conn)?;
-    if version != SCHEMA_VERSION {
+    if version == SCHEMA_VERSION {
+        check_health(&conn, path)?;
+    } else {
         drop_all(&conn)?;
         create_schema(&conn)?;
         conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
         conn.pragma_update(None, "application_id", APPLICATION_ID)?;
     }
     Ok(conn)
+}
+
+/// Reads the small tables, and checks the whole file when a write-ahead log
+/// outlived its writer (a crash). Corruption shows up as SQLITE_CORRUPT.
+fn check_health(conn: &Connection, path: &Path) -> rusqlite::Result<()> {
+    conn.query_row("SELECT COUNT(*) FROM meta", [], |row| row.get::<_, i64>(0))?;
+    conn.query_row("SELECT COUNT(*) FROM files", [], |row| row.get::<_, i64>(0))?;
+    let unclean = fs::metadata(sidecar(path, "-wal")).is_ok_and(|meta| meta.len() > 0);
+    if unclean {
+        let verdict: String = conn.query_row("PRAGMA quick_check", [], |row| row.get(0))?;
+        if verdict != "ok" {
+            return Err(rusqlite::Error::SqliteFailure(
+                rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_CORRUPT),
+                Some(verdict),
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// True when `error` is SQLite reporting a damaged file or one that is no database.
+pub fn is_corrupt(error: &anyhow::Error) -> bool {
+    use rusqlite::ErrorCode::{DatabaseCorrupt, NotADatabase};
+    error.chain().any(|cause| {
+        let sqlite =
+            cause
+                .downcast_ref::<rusqlite::Error>()
+                .or(match cause.downcast_ref::<DbError>() {
+                    Some(DbError::Sqlite(error)) => Some(error),
+                    _ => None,
+                });
+        matches!(
+            sqlite,
+            Some(rusqlite::Error::SqliteFailure(failure, _))
+                if matches!(failure.code, DatabaseCorrupt | NotADatabase)
+        )
+    })
+}
+
+/// Runs `attempt`; if it fails because the index file is damaged, moves the
+/// file aside and runs it once more against a new index. Only files that carry
+/// Tessera's `application_id` are ever moved.
+pub fn recovering<T>(path: &Path, mut attempt: impl FnMut() -> Result<T>) -> Result<T> {
+    match attempt() {
+        Err(error) if is_corrupt(&error) && carries_application_id(path) => {
+            let moved = quarantine(path)?;
+            eprintln!(
+                "tessera: the index {} is damaged ({}); moved it to {} and rebuilding",
+                path.display(),
+                root_cause(&error),
+                moved.display()
+            );
+            attempt()
+        }
+        other => other,
+    }
+}
+
+fn root_cause(error: &anyhow::Error) -> String {
+    let text = error.root_cause().to_string();
+    text.split(": Error code")
+        .next()
+        .unwrap_or(&text)
+        .to_string()
+}
+
+fn carries_application_id(path: &Path) -> bool {
+    Connection::open(path)
+        .and_then(|conn| conn.query_row("PRAGMA application_id", [], |row| row.get::<_, i64>(0)))
+        .is_ok_and(|id| id == APPLICATION_ID)
+}
+
+fn sidecar(path: &Path, suffix: &str) -> PathBuf {
+    let mut name = path.as_os_str().to_os_string();
+    name.push(suffix);
+    PathBuf::from(name)
+}
+
+/// Moves the index and its `-wal`/`-shm` files to `<db>.corrupt…`, replacing
+/// an earlier quarantined copy.
+pub fn quarantine(path: &Path) -> Result<PathBuf> {
+    let moved = sidecar(path, ".corrupt");
+    for suffix in ["", "-wal", "-shm"] {
+        let (from, to) = (sidecar(path, suffix), sidecar(&moved, suffix));
+        let _ = fs::remove_file(&to);
+        if from.exists() {
+            fs::rename(&from, &to)?;
+        }
+    }
+    Ok(moved)
 }
 
 pub fn open_ro(path: &Path) -> std::result::Result<Connection, DbError> {
@@ -202,11 +298,15 @@ fn create_schema(conn: &Connection) -> Result<()> {
             container TEXT,
             arity_min INTEGER,
             arity_max INTEGER,
-            default_export INTEGER NOT NULL DEFAULT 0
+            default_export INTEGER NOT NULL DEFAULT 0,
+            -- the text after the last '.' of qualified_name: the indexed
+            -- first step of the `Class.method` suffix match (NAME_MATCH_IDS)
+            tail TEXT NOT NULL DEFAULT ''
         );
 
         CREATE INDEX idx_symbols_name ON symbols(name);
         CREATE INDEX idx_symbols_qualified ON symbols(qualified_name);
+        CREATE INDEX idx_symbols_tail ON symbols(tail);
         CREATE INDEX idx_symbols_file ON symbols(file_id);
 
         CREATE TABLE refs (
@@ -544,8 +644,8 @@ pub fn insert_symbols(
     let mut insert = conn.prepare_cached(
         "INSERT INTO symbols(
             name, qualified_name, kind, file_id, start_line, end_line, signature, exported,
-            container, arity_min, arity_max, default_export
-         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+            container, arity_min, arity_max, default_export, tail
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
     )?;
     let mut ids = Vec::with_capacity(symbols.len());
     for symbol in symbols {
@@ -561,7 +661,8 @@ pub fn insert_symbols(
             symbol.container,
             symbol.arity.map(|(min, _)| min),
             symbol.arity.and_then(|(_, max)| max),
-            i64::from(symbol.default_export)
+            i64::from(symbol.default_export),
+            name_tail(&symbol.qualified_name)
         ])?;
         ids.push(conn.last_insert_rowid());
     }
@@ -739,14 +840,68 @@ pub fn insert_references(
     Ok(refs.len())
 }
 
+/// The text after the last `.`: what `qualified_name` and a typed name
+/// share whenever the first ends with `.` plus the second.
+pub fn name_tail(name: &str) -> &str {
+    name.rsplit('.').next().unwrap_or(name)
+}
+
+/// Ids of the symbols a typed name can mean: the qualified name, the bare
+/// name, or the end of a qualified name (`method` or `Class.method` for
+/// `pkg.Class.method`). Bind `?1` to the name, `?2` to [`name_tail`] of it
+/// and `?3` to `.` plus the name. The match is case-sensitive and `_` and `%`
+/// are literal (a `LIKE` is neither). Each branch is one index search; a
+/// single `OR` makes SQLite scan the table.
+pub const NAME_MATCH_IDS: &str = "
+    SELECT id FROM symbols WHERE qualified_name = ?1
+    UNION
+    SELECT id FROM symbols WHERE name = ?1
+    UNION
+    SELECT id FROM symbols WHERE tail = ?2 AND substr(qualified_name, -length(?3)) = ?3
+";
+
+/// The bindings `?2` and `?3` of [`NAME_MATCH_IDS`] for `symbol`.
+pub fn name_match_params(symbol: &str) -> (String, String) {
+    (name_tail(symbol).to_string(), format!(".{symbol}"))
+}
+
+/// `A::B`, `A#b` and `A\B` as the stored `A.B`; `None` when `symbol` has no
+/// such separator. A lookup tries the typed name first (Ruby's compact
+/// `class A::B` is stored with its colons) and this form after it.
+pub fn dotted_name(symbol: &str) -> Option<String> {
+    if !symbol.contains([':', '#', '\\']) {
+        return None;
+    }
+    let dotted = symbol
+        .replace("::", ".")
+        .replace(['#', '\\'], ".")
+        .trim_start_matches('.')
+        .to_string();
+    (dotted != symbol && !dotted.is_empty()).then_some(dotted)
+}
+
+/// The best symbol for a typed name, in the spelling typed or, failing
+/// that, with `::`, `#` and `\` as dots.
 pub fn resolve_symbol(conn: &Connection, symbol: &str) -> Result<Option<SymbolRecord>> {
+    if let Some(found) = resolve_exact_spelling(conn, symbol)? {
+        return Ok(Some(found));
+    }
+    match dotted_name(symbol) {
+        Some(dotted) => resolve_exact_spelling(conn, &dotted),
+        None => Ok(None),
+    }
+}
+
+fn resolve_exact_spelling(conn: &Connection, symbol: &str) -> Result<Option<SymbolRecord>> {
+    let (tail, suffix) = name_match_params(symbol);
     conn.query_row(
-        "
+        &format!(
+            "
         SELECT s.id, s.name, s.qualified_name, s.kind, s.file_id, f.path, f.language,
                s.start_line, s.end_line, s.signature, s.exported
         FROM symbols s
         JOIN files f ON f.id = s.file_id
-        WHERE s.qualified_name = ?1 OR s.name = ?1 OR s.qualified_name LIKE ?2
+        WHERE s.id IN ({NAME_MATCH_IDS})
         ORDER BY
             CASE
                 WHEN s.qualified_name = ?1 THEN 0
@@ -755,8 +910,9 @@ pub fn resolve_symbol(conn: &Connection, symbol: &str) -> Result<Option<SymbolRe
             END,
             length(s.qualified_name)
         LIMIT 1
-        ",
-        params![symbol, format!("%.{}", symbol)],
+        "
+        ),
+        params![symbol, tail, suffix],
         map_symbol,
     )
     .optional()
@@ -907,6 +1063,67 @@ mod tests {
         })
         .optional()
         .unwrap();
+    }
+
+    #[test]
+    fn name_lookups_use_indexes_not_table_scans() {
+        let temp = TempDir::new().unwrap();
+        let conn = open_rw(&temp.path().join("t.db")).unwrap();
+        let queries = [
+            // resolve_symbol and find_definition_conn
+            format!(
+                "SELECT s.id FROM symbols s JOIN files f ON f.id = s.file_id
+                 WHERE s.id IN ({NAME_MATCH_IDS})
+                 ORDER BY CASE WHEN s.qualified_name = ?1 THEN 0 ELSE 1 END, length(s.qualified_name)
+                 LIMIT 1"
+            ),
+            // symbol_exists
+            format!("SELECT EXISTS({NAME_MATCH_IDS})"),
+        ];
+        for query in queries {
+            let mut stmt = conn
+                .prepare(&format!("EXPLAIN QUERY PLAN {query}"))
+                .unwrap();
+            let plan: Vec<String> = stmt
+                .query_map(params!["x", "x", ".x"], |row| row.get::<_, String>(3))
+                .unwrap()
+                .collect::<rusqlite::Result<_>>()
+                .unwrap();
+            for line in &plan {
+                let scans_symbols = line.starts_with("SCAN") && !line.contains("INDEX");
+                assert!(
+                    !scans_symbols || !(line.contains("symbols") || line.ends_with(" s")),
+                    "table scan in plan: {plan:#?}"
+                );
+            }
+            assert!(
+                plan.iter().any(|l| l.contains("idx_symbols_tail")),
+                "{plan:#?}"
+            );
+        }
+    }
+
+    #[test]
+    fn dotted_name_reads_scope_separators_as_dots() {
+        assert_eq!(dotted_name("Index::find").as_deref(), Some("Index.find"));
+        assert_eq!(
+            dotted_name("Billing::Invoice#total").as_deref(),
+            Some("Billing.Invoice.total")
+        );
+        assert_eq!(
+            dotted_name("App\\Service.run").as_deref(),
+            Some("App.Service.run")
+        );
+        assert_eq!(dotted_name("Index.find"), None);
+        assert_eq!(dotted_name("find"), None);
+    }
+
+    #[test]
+    fn name_tail_is_the_text_after_the_last_dot() {
+        assert_eq!(name_tail("a.b.c"), "c");
+        assert_eq!(name_tail("c"), "c");
+        assert_eq!(name_tail("A::b"), "A::b");
+        assert_eq!(name_tail("a."), "");
     }
 
     #[test]

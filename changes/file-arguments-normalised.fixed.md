@@ -1,0 +1,1 @@
+File arguments to `find --path`, `refs` and `cycles --path` accept `./src/a.ts`, absolute paths and paths relative to the directory you are in (and `\` separators on Windows); a path outside the repository is reported as such.
