@@ -86,10 +86,16 @@ pub fn find_definition_conn(conn: &Connection, symbol: &str) -> Result<Definitio
         ",
         ids = db::NAME_MATCH_IDS
     ))?;
-    let (tail, suffix) = db::name_match_params(symbol);
-    let mut matches = stmt
-        .query_map(params![symbol, tail, suffix], db::map_symbol)?
-        .collect::<rusqlite::Result<Vec<_>>>()?;
+    let mut matches = Vec::new();
+    for spelling in std::iter::once(symbol.to_string()).chain(db::dotted_name(symbol)) {
+        let (tail, suffix) = db::name_match_params(&spelling);
+        matches = stmt
+            .query_map(params![spelling, tail, suffix], db::map_symbol)?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        if !matches.is_empty() {
+            break;
+        }
+    }
     let mut match_kind = MatchKind::Exact;
     if matches.is_empty() {
         let ranked = ranked_fuzzy_matches(conn, symbol, None, 5)?;
@@ -923,7 +929,14 @@ pub(super) fn exact_symbols(
         ",
     )?;
     let rows = stmt.query_map(params![symbol, limit as i64], db::map_symbol)?;
-    Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    let found = rows.collect::<rusqlite::Result<Vec<_>>>()?;
+    match db::dotted_name(symbol) {
+        Some(dotted) if found.is_empty() => {
+            let rows = stmt.query_map(params![dotted, limit as i64], db::map_symbol)?;
+            Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+        }
+        _ => Ok(found),
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -1174,13 +1187,18 @@ fn html_escape(value: &str) -> String {
 }
 
 fn symbol_exists(conn: &Connection, symbol: &str) -> Result<bool> {
-    let (tail, suffix) = db::name_match_params(symbol);
-    let found: bool = conn.query_row(
-        &format!("SELECT EXISTS({})", db::NAME_MATCH_IDS),
-        params![symbol, tail, suffix],
-        |row| row.get(0),
-    )?;
-    Ok(found)
+    for spelling in std::iter::once(symbol.to_string()).chain(db::dotted_name(symbol)) {
+        let (tail, suffix) = db::name_match_params(&spelling);
+        let found: bool = conn.query_row(
+            &format!("SELECT EXISTS({})", db::NAME_MATCH_IDS),
+            params![spelling, tail, suffix],
+            |row| row.get(0),
+        )?;
+        if found {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 fn fuzzy_candidates(

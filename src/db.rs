@@ -769,7 +769,34 @@ pub fn name_match_params(symbol: &str) -> (String, String) {
     (name_tail(symbol).to_string(), format!(".{symbol}"))
 }
 
+/// `A::B`, `A#b` and `A\B` as the stored `A.B`; `None` when `symbol` has no
+/// such separator. A lookup tries the typed name first (Ruby's compact
+/// `class A::B` is stored with its colons) and this form after it.
+pub fn dotted_name(symbol: &str) -> Option<String> {
+    if !symbol.contains([':', '#', '\\']) {
+        return None;
+    }
+    let dotted = symbol
+        .replace("::", ".")
+        .replace(['#', '\\'], ".")
+        .trim_start_matches('.')
+        .to_string();
+    (dotted != symbol && !dotted.is_empty()).then_some(dotted)
+}
+
+/// The best symbol for a typed name, in the spelling typed or, failing
+/// that, with `::`, `#` and `\` as dots.
 pub fn resolve_symbol(conn: &Connection, symbol: &str) -> Result<Option<SymbolRecord>> {
+    if let Some(found) = resolve_exact_spelling(conn, symbol)? {
+        return Ok(Some(found));
+    }
+    match dotted_name(symbol) {
+        Some(dotted) => resolve_exact_spelling(conn, &dotted),
+        None => Ok(None),
+    }
+}
+
+fn resolve_exact_spelling(conn: &Connection, symbol: &str) -> Result<Option<SymbolRecord>> {
     let (tail, suffix) = name_match_params(symbol);
     conn.query_row(
         &format!(
@@ -978,6 +1005,21 @@ mod tests {
                 "{plan:#?}"
             );
         }
+    }
+
+    #[test]
+    fn dotted_name_reads_scope_separators_as_dots() {
+        assert_eq!(dotted_name("Index::find").as_deref(), Some("Index.find"));
+        assert_eq!(
+            dotted_name("Billing::Invoice#total").as_deref(),
+            Some("Billing.Invoice.total")
+        );
+        assert_eq!(
+            dotted_name("App\\Service.run").as_deref(),
+            Some("App.Service.run")
+        );
+        assert_eq!(dotted_name("Index.find"), None);
+        assert_eq!(dotted_name("find"), None);
     }
 
     #[test]
