@@ -69,7 +69,9 @@ pub fn run(ws: &Workspace) -> Result<StatusResult> {
         parse_error_first: None,
         hints: Vec::new(),
     };
-    if let Ok(conn) = db::open_ro(&ws.db_path) {
+    if status.freshness == Freshness::Corrupt {
+        // The tables cannot be read; the index is rebuilt by the next run.
+    } else if let Ok(conn) = db::open_ro(&ws.db_path) {
         fill_counts(&mut status, &conn)?;
     }
     status.hints = hints(&status);
@@ -110,13 +112,17 @@ fn hints(status: &StatusResult) -> Vec<String> {
             "Index was built by another tessera version or config; the next query rebuilds it."
                 .to_string(),
         ),
+        Freshness::Corrupt => hints.push(format!(
+            "The index file is damaged. The next query or `tessera index` moves it to {}.corrupt and rebuilds it.",
+            status.db_path.display()
+        )),
         Freshness::Pending => hints.push(format!(
             "An edit changed code that more than {} files use; they are re-resolved by the next query or `tessera index`, and results about them may be stale until then.",
             resolve::MAX_INCREMENTAL_FILES
         )),
         Freshness::Fresh => {}
     }
-    if status.files == 0 && status.freshness != Freshness::Missing {
+    if status.files == 0 && !matches!(status.freshness, Freshness::Missing | Freshness::Corrupt) {
         hints.push("No supported source files found under the root.".to_string());
     }
     if let Some(first) = status.unreadable.first() {
@@ -194,6 +200,7 @@ impl AgentText for StatusResult {
             Freshness::Fresh => "fresh".to_string(),
             Freshness::Missing => "missing".to_string(),
             Freshness::Outdated => "outdated".to_string(),
+            Freshness::Corrupt => "corrupt".to_string(),
             Freshness::Pending => "re-resolve pending".to_string(),
             Freshness::Stale {
                 changed,
