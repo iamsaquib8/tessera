@@ -1,10 +1,21 @@
 name: Docs site
 
+# The site documents the latest release, so it is published when a release is
+# (release.yml calls this workflow) and never on a push to main. Run it by
+# hand to republish: it builds the latest release unless you name another ref,
+# for example `main` to publish a docs fix between releases.
 on:
-  push:
-    branches: [main]
-    paths: [docs/**, website/**, assets/**, .github/workflows/pages.yml]
+  workflow_call:
+    inputs:
+      tag:
+        type: string
+        required: true
   workflow_dispatch:
+    inputs:
+      ref:
+        description: "Tag or branch to build; empty for the latest release"
+        required: false
+        default: ""
 
 permissions:
   contents: read
@@ -17,9 +28,27 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
+      - name: Choose what to build
+        id: ref
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REQUESTED: ${{ inputs.tag || inputs.ref }}
+        run: |
+          set -euo pipefail
+          ref="$REQUESTED"
+          if [ -z "$ref" ]; then
+            ref=$(gh release view --repo "$GITHUB_REPOSITORY" --json tagName --jq .tagName)
+          fi
+          echo "ref=$ref" >> "$GITHUB_OUTPUT"
+          # The banner on every page names the version the page describes.
+          case "$ref" in
+            v[0-9]*.[0-9]*.[0-9]*) echo "version=${ref#v}" >> "$GITHUB_OUTPUT" ;;
+            *) echo "version=$ref (not released yet)" >> "$GITHUB_OUTPUT" ;;
+          esac
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           persist-credentials: false
+          ref: ${{ steps.ref.outputs.ref }}
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 22
@@ -29,6 +58,8 @@ jobs:
         working-directory: website
       - run: npm run build
         working-directory: website
+        env:
+          TESSERA_DOCS_VERSION: ${{ steps.ref.outputs.version }}
       - uses: actions/upload-pages-artifact@56afc609e74202658d3ffba0e8f6dda462b719fa # v3.0.1
         with:
           path: website/dist
