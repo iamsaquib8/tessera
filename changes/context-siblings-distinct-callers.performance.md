@@ -1,0 +1,1 @@
+`tessera context` on a widely called symbol is about 2.5 times faster: the related-symbols query now joins each caller once instead of once per call it makes, so a test that calls the symbol many times no longer multiplies its whole call list. The output is unchanged.

@@ -618,16 +618,22 @@ pub fn signature_conn(conn: &Connection, symbol: &str) -> Result<SignatureResult
 }
 
 pub fn siblings_conn(conn: &Connection, symbol: &str) -> Result<SiblingsResult> {
-    // Symbols that share callers with `symbol`. The SQL self-join on `edges`
-    // finds, for each from_symbol that calls our target, the OTHER things it
-    // also calls — then ranks them by how many distinct callers they share.
+    // Symbols that share callers with `symbol`: for each distinct caller of
+    // our target, the OTHER things it also calls, ranked by how many distinct
+    // callers they share. The callers are reduced to one row each before the
+    // join; otherwise a caller that calls the target N times contributes N
+    // copies of its whole edge list.
     let mut stmt = conn.prepare(
         "
-        SELECT e2.to_symbol_name, COUNT(DISTINCT e1.from_symbol_id) AS shared
-        FROM edges e1
-        JOIN edges e2 ON e2.from_symbol_id = e1.from_symbol_id
-        WHERE (e1.to_symbol_name = ?1 OR e1.to_symbol_name = ?2)
-          AND e2.to_symbol_name != ?1
+        WITH callers AS (
+            SELECT DISTINCT from_symbol_id AS id FROM edges
+            WHERE (to_symbol_name = ?1 OR to_symbol_name = ?2)
+              AND from_symbol_id IS NOT NULL
+        )
+        SELECT e2.to_symbol_name, COUNT(DISTINCT e2.from_symbol_id) AS shared
+        FROM callers c
+        JOIN edges e2 ON e2.from_symbol_id = c.id
+        WHERE e2.to_symbol_name != ?1
           AND e2.to_symbol_name != ?2
         GROUP BY e2.to_symbol_name
         HAVING shared > 0
