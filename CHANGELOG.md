@@ -8,6 +8,7 @@ All notable changes to Tessera are documented here.
 
 - The Claude Code plugin runs the `tessera` on PATH whatever its version (with a warning on stderr when it is older than the plugin), then `~/.local/bin/tessera` and `~/.cargo/bin/tessera`, and uses npx only as a last resort for a version that exists on npm. Before, a `tessera` that was not exactly the plugin's version was skipped for an npm package that did not exist, and every hook did nothing.
 - `tessera init` writes the full path of the running binary when `tessera` is not on PATH, instead of an `npx` command, and replaces entries an earlier `init` wrote as `npx … tessera-codegraph@…`.
+- `install.sh` finds the latest release through GitHub's `releases/latest` redirect instead of the rate-limited REST API, and accepts `TESSERA_VERSION` (and the Action's `version`) written without the leading `v`. With `TESSERA_BASE_URL` set, `latest` needs `TESSERA_VERSION` or `TESSERA_LATEST_URL`.
 - Reject non-loopback `Host` headers on loopback-bound MCP HTTP servers, including `/health`, to prevent DNS-rebinding access. Deliberate non-loopback binds remain supported.
 
 ### Added

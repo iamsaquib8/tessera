@@ -3,9 +3,14 @@
 #   curl -fsSL https://raw.githubusercontent.com/iamsaquib8/tessera/main/install.sh | sh
 #
 # Environment:
-#   TESSERA_VERSION      tag to install, e.g. v0.10.0 (default: latest release)
+#   TESSERA_VERSION      version to install, with or without the leading v
+#                        (v1.2.0 or 1.2.0; default: the latest release)
 #   TESSERA_INSTALL_DIR  where to put the binary (default: $HOME/.local/bin)
 #   TESSERA_BASE_URL     release download base (default: GitHub releases)
+#   TESSERA_LATEST_URL   a URL that redirects to <anything>/tag/<tag> for the
+#                        latest release (default: GitHub's releases/latest).
+#                        With TESSERA_BASE_URL set (a mirror), "latest" needs
+#                        this or an explicit TESSERA_VERSION.
 #
 # Every download is checked against the release's SHA256SUMS before install.
 set -eu
@@ -14,6 +19,13 @@ REPO="iamsaquib8/tessera"
 BIN="tessera"
 INSTALL_DIR="${TESSERA_INSTALL_DIR:-${TESSERA_BIN_DIR:-$HOME/.local/bin}}"
 BASE_URL="${TESSERA_BASE_URL:-https://github.com/${REPO}/releases/download}"
+if [ -n "${TESSERA_LATEST_URL:-}" ]; then
+  LATEST_URL="$TESSERA_LATEST_URL"
+elif [ -z "${TESSERA_BASE_URL:-}" ]; then
+  LATEST_URL="https://github.com/${REPO}/releases/latest"
+else
+  LATEST_URL=""
+fi
 
 say() { printf 'tessera-install: %s\n' "$1" >&2; }
 die() { say "error: $1"; exit 1; }
@@ -23,8 +35,14 @@ need uname
 need tar
 if command -v curl >/dev/null 2>&1; then
   fetch() { curl -fsSL "$1" -o "$2"; }
+  # Where `$1` redirects to, without following it.
+  redirect_of() { curl -fsSI -o /dev/null -w '%{redirect_url}' "$1"; }
 elif command -v wget >/dev/null 2>&1; then
   fetch() { wget -qO "$2" "$1"; }
+  redirect_of() {
+    wget -qS --spider --max-redirect=0 "$1" 2>&1 |
+      sed -n 's/^ *[Ll]ocation: *//p' | head -n 1 | tr -d '\r'
+  }
 else
   die "need curl or wget"
 fi
@@ -53,13 +71,23 @@ esac
 
 version="${TESSERA_VERSION:-latest}"
 if [ "$version" = "latest" ]; then
-  tmp_json="$(mktemp)"
-  fetch "https://api.github.com/repos/${REPO}/releases/latest" "$tmp_json" ||
-    die "could not query the latest release; set TESSERA_VERSION=vX.Y.Z"
-  version="$(sed -n 's/.*"tag_name" *: *"\([^"]*\)".*/\1/p' "$tmp_json" | head -n 1)"
-  rm -f "$tmp_json"
+  # GitHub redirects /releases/latest to /releases/tag/<tag>. Unlike the REST
+  # API, the redirect has no rate limit for anonymous clients.
+  [ -n "$LATEST_URL" ] ||
+    die "TESSERA_BASE_URL is set, so \"latest\" cannot be resolved; set TESSERA_VERSION (or TESSERA_LATEST_URL)"
+  location="$(redirect_of "$LATEST_URL" || true)"
+  case "$location" in
+    */tag/*) version="${location##*/tag/}" ;;
+    *) die "could not find the latest release at ${LATEST_URL}; set TESSERA_VERSION=vX.Y.Z" ;;
+  esac
+  version="${version%%[?#]*}"
   [ -n "$version" ] || die "could not determine the latest version; set TESSERA_VERSION=vX.Y.Z"
 fi
+# Release tags start with v, but 1.2.0 is the natural way to write a version.
+case "$version" in
+  v*) ;;
+  *) version="v${version}" ;;
+esac
 
 archive="${BIN}-${target}.tar.gz"
 tmp="$(mktemp -d)"
@@ -67,7 +95,7 @@ trap 'rm -rf "$tmp"' EXIT INT TERM
 
 say "downloading ${BIN} ${version} for ${target}"
 fetch "${BASE_URL}/${version}/${archive}" "$tmp/$archive" ||
-  die "download failed: ${BASE_URL}/${version}/${archive}"
+  die "download failed: ${BASE_URL}/${version}/${archive} (is ${version} a released version? see https://github.com/${REPO}/releases)"
 fetch "${BASE_URL}/${version}/SHA256SUMS" "$tmp/SHA256SUMS" ||
   die "could not download SHA256SUMS for ${version}; refusing to install unverified binary"
 
