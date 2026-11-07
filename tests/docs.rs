@@ -144,3 +144,79 @@ fn readme_agent_grid_matches_the_registry() {
         );
     }
 }
+
+/// Install channels that exist today. A page may not advertise one that does
+/// not; set a flag here in the pull request that publishes the channel.
+const HOMEBREW_PUBLISHED: bool = false;
+const PUBLIC_IMAGE_PUBLISHED: bool = false;
+
+/// The pages a visitor reads: the README, the docs, the site and the plugin.
+fn user_facing_pages() -> Vec<std::path::PathBuf> {
+    let mut found = vec![std::path::PathBuf::from("README.md")];
+    for dir in ["docs", "website/src", "plugin"] {
+        let mut stack = vec![std::path::PathBuf::from(dir)];
+        while let Some(path) = stack.pop() {
+            if path.is_dir() {
+                // Design notes are not install guidance, and the site's content
+                // folder is copied from docs/ at build time.
+                if path.ends_with("docs/design") || path.ends_with("website/src/content") {
+                    continue;
+                }
+                stack.extend(fs::read_dir(&path).unwrap().map(|e| e.unwrap().path()));
+            } else if path.extension().is_some_and(|e| e == "md" || e == "mdx")
+                && !path.ends_with("docs/repo-settings.md")
+            {
+                found.push(path);
+            }
+        }
+    }
+    found
+}
+
+#[test]
+fn pages_do_not_advertise_channels_that_are_not_published() {
+    let pages = user_facing_pages();
+    assert!(pages.len() > 20, "found {} pages", pages.len());
+    for page in pages {
+        let text = fs::read_to_string(&page).unwrap();
+        if !HOMEBREW_PUBLISHED {
+            assert!(
+                !text.contains("brew install"),
+                "{} tells people to `brew install`, but there is no tap yet",
+                page.display()
+            );
+        }
+        if !PUBLIC_IMAGE_PUBLISHED {
+            assert!(
+                !text.contains("ghcr.io/iamsaquib8/tessera"),
+                "{} names the container image, which is not public yet",
+                page.display()
+            );
+        }
+    }
+}
+
+#[test]
+fn the_unpublished_channels_are_said_to_be_unavailable() {
+    for page in ["README.md", "docs/quickstart.md"] {
+        let text = fs::read_to_string(page).unwrap();
+        let text = text.split_whitespace().collect::<Vec<_>>().join(" ");
+        assert!(
+            text.contains("Homebrew tap and a public container image are not available yet"),
+            "{page}"
+        );
+    }
+}
+
+#[test]
+fn security_md_says_how_to_verify_a_release_and_where_the_network_is_used() {
+    let text = fs::read_to_string("SECURITY.md").unwrap();
+    assert!(text.contains("gh attestation verify tessera-"));
+    assert!(text.contains("--repo iamsaquib8/tessera"));
+    assert!(text.contains("sha256sum -c --ignore-missing SHA256SUMS"));
+    assert!(text.contains("It opens no outbound connection."));
+    for installer in ["install.sh", "npx", "cargo install"] {
+        assert!(text.contains(installer), "{installer}");
+    }
+    assert!(text.contains("within 3 days"), "a response target in days");
+}

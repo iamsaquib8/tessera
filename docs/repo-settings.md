@@ -39,9 +39,14 @@ written down here so they can be applied once and checked later.
 
 ## Labels
 
-Sync `.github/labels.yml`, for example with
-`gh label create --force <name> --color <hex> --description <text>` for each
-entry.
+`.github/labels.yml` lists the labels the repository has, as `gh label list`
+shows them, and the issue forms apply only labels from that list
+(`tests/repo_hygiene.rs` checks). To add a label, create it first, then add it
+to the file:
+
+```sh
+gh label create <name> --color <hex> --description <text>
+```
 
 ## Release secrets and accounts
 

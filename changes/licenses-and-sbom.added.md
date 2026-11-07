@@ -1,0 +1,1 @@
+Release archives, the npm packages and the container image now include `LICENSE` and `THIRD-PARTY-NOTICES` (the licenses of the crates built into the binary). Each release also publishes a CycloneDX SBOM, `tessera-<version>.cdx.json`, and its build attestation covers `SHA256SUMS` and the SBOM as well as the archives. The container image carries an SBOM and full provenance.
