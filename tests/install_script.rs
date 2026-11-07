@@ -52,14 +52,63 @@ fn fake_release(dir: &Path, version: &str) {
     fs::write(release.join("SHA256SUMS"), sums.stdout).unwrap();
 }
 
-fn run_installer(base: &Path, install_dir: &Path) -> std::process::Output {
-    Command::new("sh")
+fn installer(base: &Path, install_dir: &Path) -> Command {
+    let mut command = Command::new("sh");
+    command
         .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("install.sh"))
-        .env("TESSERA_VERSION", "v9.9.9")
+        .env_remove("TESSERA_VERSION")
+        .env_remove("TESSERA_LATEST_URL")
         .env("TESSERA_BASE_URL", format!("file://{}", base.display()))
-        .env("TESSERA_INSTALL_DIR", install_dir)
+        .env("TESSERA_INSTALL_DIR", install_dir);
+    command
+}
+
+fn run_installer(base: &Path, install_dir: &Path) -> std::process::Output {
+    installer(base, install_dir)
+        .env("TESSERA_VERSION", "v9.9.9")
         .output()
         .unwrap()
+}
+
+fn installed_version(install_dir: &Path) -> String {
+    let out = Command::new(install_dir.join("tessera"))
+        .arg("--version")
+        .output()
+        .unwrap();
+    String::from_utf8_lossy(&out.stdout).trim().to_string()
+}
+
+/// A server that answers every request with `302 Location: <location>` and
+/// records each request line. Returns its address and the recorded lines.
+fn redirect_server(
+    location: impl Fn(u16) -> String + Send + 'static,
+) -> (u16, std::sync::Arc<std::sync::Mutex<Vec<String>>>) {
+    use std::io::{BufRead, BufReader, Write};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let log = seen.clone();
+    std::thread::spawn(move || {
+        for stream in listener.incoming().flatten() {
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            let mut line = String::new();
+            reader.read_line(&mut line).unwrap();
+            log.lock().unwrap().push(line.trim().to_string());
+            loop {
+                let mut header = String::new();
+                if reader.read_line(&mut header).unwrap() == 0 || header.trim().is_empty() {
+                    break;
+                }
+            }
+            let mut stream = stream;
+            let _ = write!(
+                stream,
+                "HTTP/1.1 302 Found\r\nLocation: {}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                location(port)
+            );
+        }
+    });
+    (port, seen)
 }
 
 #[test]
@@ -131,4 +180,101 @@ fn replaces_an_existing_binary_by_rename() {
         .filter(|name| name != "tessera")
         .collect();
     assert!(leftovers.is_empty(), "{leftovers:?}");
+}
+
+#[test]
+fn accepts_a_version_written_without_the_leading_v() {
+    let temp = TempDir::new().unwrap();
+    let base = temp.path().join("releases");
+    fake_release(&base, "v9.9.9");
+    let install_dir = temp.path().join("bin");
+    let output = installer(&base, &install_dir)
+        .env("TESSERA_VERSION", "9.9.9")
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(installed_version(&install_dir), "tessera 9.9.9");
+}
+
+#[test]
+fn a_missing_version_names_the_tag_it_asked_for() {
+    let temp = TempDir::new().unwrap();
+    let base = temp.path().join("releases");
+    fake_release(&base, "v9.9.9");
+    let output = installer(&base, &temp.path().join("bin"))
+        .env("TESSERA_VERSION", "1.0.1")
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("v1.0.1"), "{stderr}");
+}
+
+#[test]
+fn latest_follows_the_releases_redirect_and_never_calls_the_api() {
+    let script =
+        fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("install.sh")).unwrap();
+    assert!(
+        !script.contains("api.github.com"),
+        "the installer must not use the rate-limited API"
+    );
+    assert!(script.contains("releases/latest"));
+
+    let temp = TempDir::new().unwrap();
+    let base = temp.path().join("releases");
+    fake_release(&base, "v9.9.9");
+    let install_dir = temp.path().join("bin");
+    let (port, seen) =
+        redirect_server(|port| format!("http://127.0.0.1:{port}/o/r/releases/tag/v9.9.9"));
+    let output = installer(&base, &install_dir)
+        .env(
+            "TESSERA_LATEST_URL",
+            format!("http://127.0.0.1:{port}/o/r/releases/latest"),
+        )
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(installed_version(&install_dir), "tessera 9.9.9");
+    let requests = seen.lock().unwrap().clone();
+    assert_eq!(requests.len(), 1, "{requests:?}");
+    assert!(requests[0].contains("/o/r/releases/latest"), "{requests:?}");
+}
+
+#[test]
+fn latest_fails_clearly_when_the_redirect_is_not_a_release() {
+    let temp = TempDir::new().unwrap();
+    let base = temp.path().join("releases");
+    fake_release(&base, "v9.9.9");
+    let (port, _) = redirect_server(|port| format!("http://127.0.0.1:{port}/login"));
+    let install_dir = temp.path().join("bin");
+    let output = installer(&base, &install_dir)
+        .env("TESSERA_LATEST_URL", format!("http://127.0.0.1:{port}/x"))
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("TESSERA_VERSION"), "{stderr}");
+    assert!(!install_dir.join("tessera").exists());
+}
+
+#[test]
+fn latest_with_a_mirror_needs_a_version_or_a_latest_url() {
+    let temp = TempDir::new().unwrap();
+    let base = temp.path().join("releases");
+    fake_release(&base, "v9.9.9");
+    let output = installer(&base, &temp.path().join("bin")).output().unwrap();
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("TESSERA_VERSION") && stderr.contains("TESSERA_BASE_URL"),
+        "{stderr}"
+    );
 }
