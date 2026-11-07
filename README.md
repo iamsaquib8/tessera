@@ -313,6 +313,10 @@ pins them ([docs/stability.md](docs/stability.md)).
 | v1.8 | Deep tier for Python and Go; precise mode with SCIP import and export |
 | v1.9 | Architecture rules across languages and contracts, drafted from your code |
 | v1.10 | Migration checks joined with code usage, CODEOWNERS impact, catalog export |
+| v1.11 | Runtime truth: OpenTelemetry service graphs on the contract map, callers ranked by traffic, dead routes and topics |
+| v1.12 | Column lineage from migrations to API responses, PII rules in `verify` |
+| v1.13 | Extension platform: your own packs without rebuilding, WASM extractors, your own grammars |
+| v1.14 | Editors (VS Code, JetBrains), code-anchored notes, service and call diagrams |
 | v2.0 | One small surface: deprecated commands and flags removed, about seven MCP tools, a new stability contract |
 
 See [ROADMAP.md](ROADMAP.md) for each theme and what proves it done.

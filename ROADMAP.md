@@ -25,8 +25,11 @@ what other tools do, and what this roadmap takes from them, is in
 | v1.8 | Deep tier for Python and Go, precise mode | Import- and type-aware Python and Go, SCIP import and export ([#175](https://github.com/iamsaquib8/tessera/issues/175)) | planned |
 | v1.9 | Architecture guardrails | One rules file across languages and contracts, drafted from your code, with a baseline ([#176](https://github.com/iamsaquib8/tessera/issues/176)) | planned |
 | v1.10 | Data and ownership | Migration checks joined with the code that reads the data, CODEOWNERS impact, catalog export ([#177](https://github.com/iamsaquib8/tessera/issues/177)) | planned |
+| v1.11 | Runtime truth | OpenTelemetry service graphs on the contract map, callers ranked by traffic, dead routes and topics ([#149](https://github.com/iamsaquib8/tessera/issues/149), [#178](https://github.com/iamsaquib8/tessera/issues/178)) | planned |
+| v1.12 | Column lineage | Columns traced from migrations through models and API responses to their readers, PII rules in `verify` ([#178](https://github.com/iamsaquib8/tessera/issues/178)) | planned |
+| v1.13 | Extension platform | Your own framework packs without rebuilding, then WASM extractors and your own grammars ([#150](https://github.com/iamsaquib8/tessera/issues/150)) | planned |
+| v1.14 | Editors, notes and diagrams | VS Code and JetBrains over `tessera lsp`, code-anchored notes, service and call diagrams ([#151](https://github.com/iamsaquib8/tessera/issues/151), [#152](https://github.com/iamsaquib8/tessera/issues/152)) | planned |
 | v2.0 | One small surface | The deprecated commands, flags and tools removed; about seven MCP tools; a new stability contract ([#179](https://github.com/iamsaquib8/tessera/issues/179)) | planned |
-| After 2.0 | Runtime and extension | OpenTelemetry overlays, column lineage, your own packs, editors, code-anchored notes | ideas |
 
 **Why this order.** Shipping 1.2.0 and measuring it showed where Tessera is
 weakest, and none of it is a missing feature. Installs failed on most
@@ -40,7 +43,7 @@ and v1.4's results reorder everything after that.
 
 Every 1.x item is additive: 1.x keeps what [docs/stability.md](docs/stability.md)
 promises. The only breaking changes are the surface cuts in v2.0, each
-deprecated with a warning and a replacement during 1.5 to 1.10 first.
+deprecated with a warning and a replacement during 1.5 to 1.14 first.
 
 ## Where Tessera stands
 
@@ -210,7 +213,7 @@ are reordered by it.
 **Gate:** on vscode, post-edit hook p95 under 300 ms, Stop under 2 s, a
 cached CI run under 25% of a cold index.
 
-The 2.0 deprecations start here: one or two per minor from v1.5 to v1.10,
+The 2.0 deprecations start here: one or two per minor from v1.5 to v1.14,
 each hidden from `--help`, warned about on use, and listed with its
 replacement.
 
@@ -332,9 +335,65 @@ violation in the monorepo fixtures is caught.
 **Gate:** every unsafe drop in a corpus of historical migrations is caught,
 with no false block on the safe ones.
 
+## v1.11: Runtime truth
+
+Static analysis says who can call what; traffic says who does.
+
+- **Service graphs from OpenTelemetry**, read from a file Tessera is given
+  (it still makes no network calls): edges on the contract map ranked by
+  traffic, static edges no traffic uses, runtime edges with no static
+  evidence ([#149](https://github.com/iamsaquib8/tessera/issues/149)).
+- **Traces next**, so `blast` ranks callers by how often they run.
+- **Dead code after each change:** routes nothing calls, consumers of topics
+  nothing produces, exports nobody imports.
+
+**Gate:** on a corpus with recorded traffic (microservices-demo or
+opentelemetry-demo), every runtime edge is matched to a static one or
+reported as unexplained, and no route with traffic is reported dead.
+
+## v1.12: Column lineage
+
+Builds on v1.10's column facts.
+
+- **Columns traced** from migrations through ORM models and query results
+  to the API responses and code that read them.
+- **PII rules in `verify`:** a column marked personal that reaches a log
+  call, a response or a topic payload is a finding.
+
+**Gate:** hand-labelled lineage for two corpora, no wrong link on a held-out
+one, and every seeded PII leak caught.
+
+## v1.13: Extension platform
+
+- **Your own packs:** framework packs loaded from `.tessera/packs/*.scm`
+  without rebuilding Tessera, checked by `tessera status`
+  ([#150](https://github.com/iamsaquib8/tessera/issues/150)).
+- **WASM extractors**, then bring-your-own tree-sitter grammar, so a
+  language can be added outside this repository.
+- **A pack and extractor registry** in the docs, with the benchmark row each
+  one must carry.
+
+**Gate:** two packs and one language added outside the repository, each
+passing the same fixture and benchmark checks as built-in ones, with no
+change to Tessera's source.
+
+## v1.14: Editors, notes and diagrams
+
+- **Editors:** VS Code and JetBrains extensions over `tessera lsp` (v1.7):
+  findings as diagnostics, callers on hover, the contract map in a panel
+  ([#151](https://github.com/iamsaquib8/tessera/issues/151)).
+- **Code-anchored notes:** `tessera note add <symbol>`, shown in `context`
+  and `blast`, flagged stale when the code changes.
+- **Diagrams:** service and call diagrams from the graph
+  (`tessera map service --format mermaid | dot`, [#152](https://github.com/iamsaquib8/tessera/issues/152)).
+
+**Gate:** the extensions add no latency beyond `tessera lsp`'s budget;
+a note on a renamed or deleted symbol is flagged on the next index; diagrams
+render the contract map of the benchmark corpora without manual edits.
+
 ## v2.0: One small surface
 
-The only breaking release, and only for what 1.5 to 1.10 deprecated
+The only breaking release, and only for what 1.5 to 1.14 deprecated
 ([#179](https://github.com/iamsaquib8/tessera/issues/179)):
 
 - **One command per job:** `report` for the pull-request report, `find` for
@@ -354,22 +413,11 @@ and a replacement; the migration check finds nothing on the tessera-bench
 corpora after migration; every 1.x hook reply and exit code keeps its
 meaning.
 
-## After 2.0
+## Every release
 
-| Theme | What |
-| --- | --- |
-| Runtime truth | OpenTelemetry service-graph metrics first, then traces: callers ranked by traffic, static edges no traffic uses, runtime edges with no static evidence |
-| Data lineage | Columns traced from migrations through models and API responses to their readers; PII rules in `verify` |
-| Extension platform | Framework packs loaded from `.tessera/packs/*.scm` without rebuilding, then WASM extractors and bring-your-own grammar |
-| Editors | VS Code and JetBrains extensions over `tessera lsp`: callers on hover, the contract map in a panel |
-| Code-anchored notes | `tessera note add <symbol>`, shown in `context` and `blast`, flagged stale when the code changes |
-| Diagrams | Service and call diagrams generated from the graph for docs and reviews |
-| Dead code | Routes nothing calls, consumers of topics nothing produces, exports nobody imports, after each change |
-
-**Every release also brings:** framework and queue packs, infrastructure
-packs (Kubernetes, Terraform, serverless) that map services to deployments,
-new agent adapters as hook systems ship, and a benchmark row for every
-addition.
+Framework and queue packs, infrastructure packs (Kubernetes, Terraform,
+serverless) that map services to deployments, new agent adapters as hook
+systems ship, and a benchmark row for every addition.
 
 ## Not planned
 
