@@ -248,7 +248,7 @@ pub fn run(language: Language, source: &str, tree: &Tree) -> Vec<IndexedFact> {
         let mut matches = cursor.matches(query, tree.root_node(), source.as_bytes());
         while let Some(m) = matches.next() {
             let mut captures: HashMap<&str, Node<'_>> = HashMap::new();
-            for capture in m.captures {
+            for capture in m.captures() {
                 captures
                     .entry(names[capture.index as usize])
                     .or_insert(capture.node);
