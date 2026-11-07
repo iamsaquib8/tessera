@@ -291,7 +291,7 @@ enum Commands {
         /// Only edges between exported symbols.
         #[arg(long)]
         exported_only: bool,
-        /// Also write a self-contained HTML preview.
+        /// Also write an HTML preview that loads nothing from the network.
         #[arg(long, value_name = "FILE")]
         html_out: Option<PathBuf>,
     },
