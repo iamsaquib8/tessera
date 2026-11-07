@@ -787,7 +787,7 @@ fn run() -> Result<u8> {
                 } else {
                     query::Changes::WorkingTree
                 };
-                let report = index.report(&changes)?;
+                let report = index.report_with(&changes, !no_baseline)?;
                 if out.json {
                     out.print_json(&report)?;
                 } else {

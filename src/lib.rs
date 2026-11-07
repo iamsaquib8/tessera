@@ -207,6 +207,21 @@ impl Index {
         query::report::run(&self.conn, &self.root, changes)
     }
 
+    /// [`Index::report`] with the baseline and accepted breaks applied only
+    /// when `use_waivers` is true (`verify --no-baseline` passes false).
+    pub fn report_with(
+        &self,
+        changes: &query::Changes,
+        use_waivers: bool,
+    ) -> Result<query::report::Report> {
+        let waivers = if use_waivers {
+            query::waivers::Waivers::load(&self.root)
+        } else {
+            query::waivers::Waivers::none()
+        };
+        query::report::run_with(&self.conn, &self.root, changes, &waivers)
+    }
+
     pub fn map(&self, args: &query::MapArgs) -> Result<query::MapResult> {
         query::map(&self.conn, &self.root, args)
     }
