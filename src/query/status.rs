@@ -7,7 +7,6 @@ use anyhow::Result;
 use rusqlite::Connection;
 use serde::Serialize;
 
-use super::legacy;
 use crate::db;
 use crate::fresh::{self, Freshness};
 use crate::output::AgentText;
@@ -69,7 +68,9 @@ pub fn run(ws: &Workspace) -> Result<StatusResult> {
         parse_error_first: None,
         hints: Vec::new(),
     };
-    if let Ok(conn) = db::open_ro(&ws.db_path) {
+    if status.freshness == Freshness::Corrupt {
+        // The tables cannot be read; the index is rebuilt by the next run.
+    } else if let Ok(conn) = db::open_ro(&ws.db_path) {
         fill_counts(&mut status, &conn)?;
     }
     status.hints = hints(&status);
@@ -77,12 +78,11 @@ pub fn run(ws: &Workspace) -> Result<StatusResult> {
 }
 
 fn fill_counts(status: &mut StatusResult, conn: &Connection) -> Result<()> {
-    let stats = legacy::stats_conn(conn, &status.db_path)?;
     status.schema = db::schema_version(conn)?;
-    status.files = stats.files;
-    status.symbols = stats.symbols;
-    status.refs = stats.references;
-    status.languages = stats.languages;
+    status.files = db::count_files(conn)?;
+    status.symbols = db::count_symbols(conn)?;
+    status.refs = db::count_refs(conn)?;
+    status.languages = language_counts(conn)?;
     status.skipped = conn.query_row(
         "SELECT COUNT(*) FROM skipped_files WHERE reason != 'excluded'",
         [],
@@ -94,6 +94,18 @@ fn fill_counts(status: &mut StatusResult, conn: &Connection) -> Result<()> {
     status.parse_error_first = parse_errors.into_iter().next();
     status.resolution = resolve::last_report(conn)?;
     Ok(())
+}
+
+fn language_counts(conn: &Connection) -> Result<Vec<LanguageCount>> {
+    let mut stmt =
+        conn.prepare("SELECT language, COUNT(*) FROM files GROUP BY language ORDER BY 2 DESC")?;
+    let rows = stmt.query_map([], |row| {
+        Ok(LanguageCount {
+            language: row.get::<_, String>(0)?,
+            count: row.get::<_, i64>(1)? as usize,
+        })
+    })?;
+    Ok(rows.collect::<rusqlite::Result<_>>()?)
 }
 
 fn hints(status: &StatusResult) -> Vec<String> {
@@ -110,13 +122,17 @@ fn hints(status: &StatusResult) -> Vec<String> {
             "Index was built by another tessera version or config; the next query rebuilds it."
                 .to_string(),
         ),
+        Freshness::Corrupt => hints.push(format!(
+            "The index file is damaged. The next query or `tessera index` moves it to {}.corrupt and rebuilds it.",
+            status.db_path.display()
+        )),
         Freshness::Pending => hints.push(format!(
             "An edit changed code that more than {} files use; they are re-resolved by the next query or `tessera index`, and results about them may be stale until then.",
             resolve::MAX_INCREMENTAL_FILES
         )),
         Freshness::Fresh => {}
     }
-    if status.files == 0 && status.freshness != Freshness::Missing {
+    if status.files == 0 && !matches!(status.freshness, Freshness::Missing | Freshness::Corrupt) {
         hints.push("No supported source files found under the root.".to_string());
     }
     if let Some(first) = status.unreadable.first() {
@@ -194,6 +210,7 @@ impl AgentText for StatusResult {
             Freshness::Fresh => "fresh".to_string(),
             Freshness::Missing => "missing".to_string(),
             Freshness::Outdated => "outdated".to_string(),
+            Freshness::Corrupt => "corrupt".to_string(),
             Freshness::Pending => "re-resolve pending".to_string(),
             Freshness::Stale {
                 changed,

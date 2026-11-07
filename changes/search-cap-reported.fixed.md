@@ -1,0 +1,1 @@
+`tessera search` and `search --unused` say when they stopped at their 500-match limit: the page reports `truncated: true` and a note asks you to narrow the pattern, instead of presenting the first 500 matches as the complete result.

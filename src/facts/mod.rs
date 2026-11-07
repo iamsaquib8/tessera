@@ -103,6 +103,19 @@ impl IndexedFact {
     }
 }
 
+/// The line of `source` that holds byte offset `byte`, without its line
+/// ending. Costs time proportional to that line, not to the offset, unlike
+/// `source.lines().nth(row)`. Same text as `lines().nth(row)` for the row
+/// that contains `byte`.
+pub(crate) fn line_containing(source: &str, byte: usize) -> &str {
+    let at = byte.min(source.len());
+    let start = source[..at].rfind('\n').map_or(0, |i| i + 1);
+    let end = source[at..].find('\n').map_or(source.len(), |i| at + i);
+    source[start..end]
+        .strip_suffix('\r')
+        .unwrap_or(&source[start..end])
+}
+
 /// Evidence is one line of at most 160 characters.
 fn trim_evidence(text: &str) -> String {
     let line = text.lines().map(str::trim).collect::<Vec<_>>().join(" ");
@@ -189,6 +202,48 @@ pub fn is_generated(path: &str, content: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Byte offset of the start of every row, the way tree-sitter counts rows.
+    fn row_starts(source: &str) -> Vec<usize> {
+        std::iter::once(0)
+            .chain(source.match_indices('\n').map(|(i, _)| i + 1))
+            .collect()
+    }
+
+    #[test]
+    fn line_containing_matches_lines_nth_for_every_row() {
+        let sources = [
+            "first\nmiddle\nlast",
+            "first\nmiddle\nlast\n",
+            "crlf one\r\ncrlf two\r\nno newline at the end",
+            "a\n\n\nb\r\n\r\nc",
+            "héllo wörld\n日本語 テキスト\nñ",
+            "single line",
+            "",
+        ];
+        for source in sources {
+            for (row, start) in row_starts(source).into_iter().enumerate() {
+                let expected = source.lines().nth(row).unwrap_or_default();
+                // The first byte of the row and the one just past its text.
+                let end = source[start..]
+                    .find('\n')
+                    .map_or(source.len(), |i| start + i);
+                for byte in [start, end] {
+                    assert_eq!(
+                        line_containing(source, byte),
+                        expected,
+                        "row {row} of {source:?} at byte {byte}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn line_containing_clamps_an_offset_past_the_end() {
+        assert_eq!(line_containing("a\nb", 99), "b");
+        assert_eq!(line_containing("", 5), "");
+    }
 
     #[test]
     fn generated_files_are_recognised() {
