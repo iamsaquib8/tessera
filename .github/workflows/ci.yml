@@ -25,7 +25,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        os: [ubuntu-latest, ubuntu-24.04-arm, macos-latest, windows-latest]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     steps:
@@ -47,13 +47,20 @@ jobs:
       - run: python tests/junit_schema.py target/debug/tessera
 
   npm:
+    name: npm launcher (node ${{ matrix.node }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # The floor in npm/package.json `engines`, then the LTS lines.
+        node: [18, 20, 22]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
-      - run: node --test npm/test/
+          node-version: ${{ matrix.node }}
+      # A glob: Node 21 and later no longer run every test in a directory.
+      - run: node --test npm/test/*.test.js
 
   docs-site:
     runs-on: ubuntu-latest
@@ -69,23 +76,47 @@ jobs:
 
   msrv:
     runs-on: ubuntu-latest
+    env:
+      # rust-toolchain.toml pins `stable`, and rustup lets that file override
+      # the default the action installs, but not this variable. Keep it equal to
+      # `rust-version` in Cargo.toml (tests/ci_matrix.rs checks).
+      RUSTUP_TOOLCHAIN: "1.90"
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@1.90
       - uses: Swatinem/rust-cache@v2
-      - run: cargo check --locked
+      - name: Toolchain in use
+        run: rustc --version && cargo --version
+      - run: cargo check --locked --all-targets
 
   musl:
-    runs-on: ubuntu-latest
+    name: musl (${{ matrix.target }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-musl
+            os: ubuntu-latest
+          - target: aarch64-unknown-linux-musl
+            os: ubuntu-24.04-arm
+    runs-on: ${{ matrix.os }}
+    env:
+      # musl-tools installs `musl-gcc` for the runner's own architecture.
+      CC_x86_64_unknown_linux_musl: musl-gcc
+      CC_aarch64_unknown_linux_musl: musl-gcc
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
-          targets: x86_64-unknown-linux-musl
+          targets: ${{ matrix.target }}
       - uses: Swatinem/rust-cache@v2
       - run: sudo apt-get update && sudo apt-get install -y musl-tools
-      - run: cargo build --release --locked --target x86_64-unknown-linux-musl
-      - run: ./target/x86_64-unknown-linux-musl/release/tessera --version
+      - run: cargo build --release --locked --target ${{ matrix.target }}
+      - name: Runs and answers a real query
+        run: |
+          bin="./target/${{ matrix.target }}/release/tessera"
+          "$bin" --version
+          "$bin" --quiet find findById --root tests/fixtures/typescript | grep -q "UserRepo.findById"
 
   perf:
     name: perf budgets
