@@ -53,8 +53,41 @@ pub struct BaselineEntry {
 
 #[derive(Debug, Default, Deserialize)]
 struct AcceptedFile {
+    /// Entries stay tables until each is checked, so one bad entry (an unknown
+    /// key, a missing field) drops that entry and not the whole file.
     #[serde(default)]
-    accept: Vec<Accepted>,
+    accept: Vec<toml::Table>,
+}
+
+const ACCEPTED_KEYS: [&str; 4] = ["fingerprint", "reason", "expires", "by"];
+
+/// The usable entries of `accepted.toml`, and a message per entry that is not
+/// usable. An entry with a key Tessera does not know (`expire =` for
+/// `expires =`) waives nothing, so a typo never turns a time-limited
+/// exception into a permanent one.
+fn parse_accepted(
+    text: &str,
+) -> std::result::Result<(Vec<Accepted>, Vec<String>), toml::de::Error> {
+    let file: AcceptedFile = toml::from_str(text)?;
+    let (mut entries, mut problems) = (Vec::new(), Vec::new());
+    for (index, table) in file.accept.into_iter().enumerate() {
+        let name = match table.get("fingerprint").and_then(toml::Value::as_str) {
+            Some(print) => format!("entry {} ({print})", index + 1),
+            None => format!("entry {}", index + 1),
+        };
+        if let Some(key) = table.keys().find(|k| !ACCEPTED_KEYS.contains(&k.as_str())) {
+            problems.push(format!(
+                "{name} has an unknown key `{key}` (known: {}), so that break counts again",
+                ACCEPTED_KEYS.join(", ")
+            ));
+            continue;
+        }
+        match table.try_into::<Accepted>() {
+            Ok(entry) => entries.push(entry),
+            Err(error) => problems.push(format!("{name} is ignored: {}", error.message())),
+        }
+    }
+    Ok((entries, problems))
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -151,9 +184,12 @@ impl Waivers {
         }
         let accepted = dir(root).join(ACCEPTED_FILE);
         if let Ok(text) = fs::read_to_string(&accepted) {
-            match toml::from_str::<AcceptedFile>(&text) {
-                Ok(file) => {
-                    for entry in &file.accept {
+            match parse_accepted(&text) {
+                Ok((entries, problems)) => {
+                    for problem in problems {
+                        eprintln!("tessera: {}: {problem}", accepted.display());
+                    }
+                    for entry in &entries {
                         if let Some(date) = entry.expires.as_deref().filter(|d| !is_date(d)) {
                             eprintln!(
                                 "tessera: {}: expires `{date}` for {} is not a date like 2026-12-31, so that break counts again",
@@ -162,8 +198,7 @@ impl Waivers {
                             );
                         }
                     }
-                    waivers.accepted = file
-                        .accept
+                    waivers.accepted = entries
                         .into_iter()
                         .map(|a| (a.fingerprint.clone(), a))
                         .collect();
@@ -254,8 +289,14 @@ fn everything(conn: &rusqlite::Connection, root: &Path) -> Result<Vec<Finding>> 
 /// `tessera baseline`: today's blocking findings become the baseline. With
 /// `prune`, only entries that still fire are kept and none are added.
 pub fn baseline(conn: &rusqlite::Connection, root: &Path, prune: bool) -> Result<BaselineReport> {
+    // Pruning keeps what is already there; with nothing readable it would
+    // replace the team's record with an empty file.
+    let before = if prune {
+        readable_baseline(root).map_err(anyhow::Error::msg)?
+    } else {
+        baseline_fingerprints(root)
+    };
     let now = everything(conn, root)?;
-    let before = baseline_fingerprints(root);
     let kept: Vec<Finding> = if prune {
         now.into_iter()
             .filter(|f| before.contains(&f.fingerprint))
@@ -316,8 +357,8 @@ pub struct WaiverSummary {
 pub fn summary(root: &Path) -> WaiverSummary {
     let accepted: Vec<Accepted> = fs::read_to_string(dir(root).join(ACCEPTED_FILE))
         .ok()
-        .and_then(|text| toml::from_str::<AcceptedFile>(&text).ok())
-        .map(|file| file.accept)
+        .and_then(|text| parse_accepted(&text).ok())
+        .map(|(entries, _)| entries)
         .unwrap_or_default();
     let today = today();
     WaiverSummary {
@@ -328,6 +369,31 @@ pub fn summary(root: &Path) -> WaiverSummary {
             .count(),
         accepted: accepted.len(),
     }
+}
+
+/// The fingerprints of the baseline file; empty when there is none. An error
+/// names the file when it exists but cannot be read or was written with other
+/// fingerprints, which `baseline --prune` must not paper over.
+pub fn readable_baseline(root: &Path) -> std::result::Result<HashSet<String>, String> {
+    let path = dir(root).join(BASELINE_FILE);
+    let text = match fs::read_to_string(&path) {
+        Ok(text) => text,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(HashSet::new()),
+        Err(error) => return Err(format!("cannot read {}: {error}", path.display())),
+    };
+    let file = serde_json::from_str::<BaselineFile>(&text).map_err(|error| {
+        format!(
+            "{} is not a readable baseline ({error}); fix or delete it, or run `tessera baseline` to write a new one",
+            path.display()
+        )
+    })?;
+    if file.fingerprints != FINGERPRINT_VERSION {
+        return Err(format!(
+            "{} was written with older fingerprints; run `tessera baseline` to write a new one",
+            path.display()
+        ));
+    }
+    Ok(file.findings.into_iter().map(|e| e.fingerprint).collect())
 }
 
 /// The fingerprints the current baseline holds, if there is one.
