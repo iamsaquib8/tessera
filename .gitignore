@@ -3,3 +3,8 @@
 !/.tessera/config.toml
 /.claude
 /npm/platforms/*/bin/
+/npm/LICENSE
+/npm/THIRD-PARTY-NOTICES
+/npm/platforms/*/LICENSE
+/npm/platforms/*/THIRD-PARTY-NOTICES
+/*.cdx.json

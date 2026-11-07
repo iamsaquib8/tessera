@@ -250,3 +250,95 @@ fn npm_publishes_with_trusted_publishing_and_has_a_local_fallback() {
         assert!(mode & 0o111 != 0, "publish-local.sh is executable");
     }
 }
+
+/// Every release archive, npm package and the image carry the license and the
+/// third-party notices, and every release has an SBOM.
+#[test]
+fn releases_ship_the_license_notices_and_an_sbom() {
+    let workflow = fs::read_to_string(".github/workflows/release.yml").unwrap();
+    assert!(
+        workflow.contains("include: LICENSE,THIRD-PARTY-NOTICES"),
+        "the release archives keep their license and notices"
+    );
+    let publish = workflow
+        .split("  publish:\n")
+        .nth(1)
+        .and_then(|rest| rest.split("\n  crates:").next())
+        .unwrap();
+    assert!(publish.contains("cargo cyclonedx"), "an SBOM is generated");
+    assert!(
+        publish.contains("actions/attest-sbom@"),
+        "the SBOM is attested"
+    );
+    assert!(
+        publish.contains("dist/SHA256SUMS\n"),
+        "SHA256SUMS is a subject of the provenance attestation"
+    );
+    assert!(
+        publish.contains("gh release upload \"$TAG\" dist/SHA256SUMS \"$SBOM\""),
+        "the SBOM is uploaded with the release"
+    );
+
+    let docker = fs::read_to_string(".github/workflows/docker.yml").unwrap();
+    assert!(docker.contains("sbom: true"));
+    assert!(docker.contains("provenance: mode=max"));
+    let dockerfile = fs::read_to_string("Dockerfile").unwrap();
+    assert!(
+        dockerfile.contains("COPY LICENSE THIRD-PARTY-NOTICES /usr/share/doc/tessera/"),
+        "the image carries the license and notices"
+    );
+    for file in ["LICENSE", "THIRD-PARTY-NOTICES"] {
+        let dockerignore = fs::read_to_string(".dockerignore").unwrap();
+        assert!(
+            !dockerignore.lines().any(|line| line.trim() == file),
+            "{file} is in .dockerignore"
+        );
+    }
+}
+
+/// `THIRD-PARTY-NOTICES` names every crate a release binary is built from.
+#[test]
+fn the_notices_cover_every_crate_in_the_dependency_graph() {
+    let notices = fs::read_to_string("THIRD-PARTY-NOTICES").unwrap();
+    let mut missing = Vec::new();
+    let mut seen = std::collections::BTreeSet::new();
+    for target in [
+        "x86_64-unknown-linux-gnu",
+        "aarch64-unknown-linux-gnu",
+        "x86_64-unknown-linux-musl",
+        "aarch64-unknown-linux-musl",
+        "x86_64-apple-darwin",
+        "aarch64-apple-darwin",
+        "x86_64-pc-windows-msvc",
+    ] {
+        let tree = std::process::Command::new(env!("CARGO"))
+            .args(["tree", "--locked", "--offline", "-e", "normal,build"])
+            .args(["--target", target, "--prefix", "none", "-f", "{p}"])
+            .output()
+            .unwrap();
+        assert!(
+            tree.status.success(),
+            "{}",
+            String::from_utf8_lossy(&tree.stderr)
+        );
+        for line in String::from_utf8(tree.stdout).unwrap().lines() {
+            let mut parts = line.split_whitespace();
+            let (Some(name), Some(version)) = (parts.next(), parts.next()) else {
+                continue;
+            };
+            let entry = format!("  - {name} {} ", version.trim_start_matches('v'));
+            let bare = entry.trim_end();
+            if seen.insert(entry.clone())
+                && !notices.contains(&entry)
+                && !notices.contains(&format!("{bare}\n"))
+            {
+                missing.push(bare.to_string());
+            }
+        }
+    }
+    assert!(seen.len() > 100, "found only {} crates", seen.len());
+    assert!(
+        missing.is_empty(),
+        "THIRD-PARTY-NOTICES lacks {missing:?}; regenerate it with `cargo about generate about.hbs > THIRD-PARTY-NOTICES`"
+    );
+}
