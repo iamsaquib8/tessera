@@ -48,7 +48,7 @@ case "$os" in
   # Static musl builds run on any Linux distribution, glibc or not.
   Linux) target="${arch}-unknown-linux-musl" ;;
   Darwin) target="${arch}-apple-darwin" ;;
-  *) die "unsupported OS: $os (try: npm i -g tessera-codegraph, or cargo install tessera-codegraph)" ;;
+  *) die "unsupported OS: $os (download a release archive from https://github.com/iamsaquib8/tessera/releases, or run: cargo install tessera-codegraph)" ;;
 esac
 
 version="${TESSERA_VERSION:-latest}"

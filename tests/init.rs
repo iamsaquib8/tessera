@@ -572,21 +572,192 @@ fn apply_replaces_files_whole_and_keeps_their_mode_and_links() {
     }
 }
 
+/// Where the test binary lives, as `init` reports it for itself.
+fn running_binary() -> String {
+    assert_cmd::cargo::cargo_bin("tessera")
+        .canonicalize()
+        .unwrap()
+        .display()
+        .to_string()
+}
+
+fn same_file(a: &str, b: &str) -> bool {
+    match (Path::new(a).canonicalize(), Path::new(b).canonicalize()) {
+        (Ok(a), Ok(b)) => a == b,
+        _ => false,
+    }
+}
+
 #[test]
-fn without_tessera_on_path_configs_run_the_pinned_npm_package() {
+fn without_tessera_on_path_configs_run_the_binary_that_ran_init() {
     let s = setup();
     let (out, ok) = init_with_path(&s, &["--yes", "--agent", "claude"], "/usr/bin:/bin");
     assert!(ok, "{out}");
-    let package = format!("tessera-codegraph@{}", env!("CARGO_PKG_VERSION"));
     let mcp = json(&s.root.join(".mcp.json"));
-    assert_eq!(mcp["mcpServers"]["tessera"]["command"], "npx");
-    assert_eq!(mcp["mcpServers"]["tessera"]["args"][0], "-y");
-    assert_eq!(mcp["mcpServers"]["tessera"]["args"][1], package.as_str());
-    assert_eq!(mcp["mcpServers"]["tessera"]["args"][2], "mcp");
+    let command = mcp["mcpServers"]["tessera"]["command"].as_str().unwrap();
+    assert!(Path::new(command).is_absolute(), "{command}");
+    assert!(same_file(command, &running_binary()), "{command}");
+    assert_eq!(mcp["mcpServers"]["tessera"]["args"][0], "mcp");
     let hooks = json(&s.root.join(".claude/settings.local.json"));
     let stop = hooks["hooks"]["Stop"][0]["hooks"][0]["command"]
         .as_str()
         .unwrap();
-    assert_eq!(stop, format!("npx -y {package} hook claude stop"));
-    assert!(out.contains("npx"), "{out}");
+    let program = stop.strip_suffix(" hook claude stop").expect(stop);
+    assert!(
+        same_file(program.trim_matches('"'), &running_binary()),
+        "{stop}"
+    );
+    assert!(!out.contains("npx") && !out.contains("npm"), "{out}");
+    assert!(out.contains("not on your PATH"), "{out}");
+}
+
+#[test]
+fn a_binary_path_with_spaces_is_quoted_in_hook_commands() {
+    let s = setup();
+    let dir = s._temp.path().join("my tools");
+    fs::create_dir_all(&dir).unwrap();
+    let copy = dir.join(if cfg!(windows) {
+        "tessera.exe"
+    } else {
+        "tessera"
+    });
+    fs::copy(assert_cmd::cargo::cargo_bin("tessera"), &copy).unwrap();
+    let output = StdCommand::new(&copy)
+        .current_dir(&s.root)
+        .env("HOME", &s.home)
+        .env("USERPROFILE", &s.home)
+        .env("PATH", "/usr/bin:/bin")
+        .env_remove("TESSERA_DB")
+        .args(["init", "--yes", "--agent", "claude"])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let hooks = json(&s.root.join(".claude/settings.local.json"));
+    let stop = hooks["hooks"]["Stop"][0]["hooks"][0]["command"]
+        .as_str()
+        .unwrap();
+    assert!(
+        stop.starts_with('"') && stop.ends_with("\" hook claude stop"),
+        "{stop}"
+    );
+    let mcp = json(&s.root.join(".mcp.json"));
+    let command = mcp["mcpServers"]["tessera"]["command"].as_str().unwrap();
+    assert!(
+        command.contains("my tools"),
+        "no quotes in the command field: {command}"
+    );
+}
+
+const STALE_MCP: &str = r#"{
+  "mcpServers": {
+    "other": { "command": "other" },
+    "tessera": { "command": "npx", "args": ["-y", "tessera-codegraph@1.1.0", "mcp"] }
+  }
+}
+"#;
+
+const STALE_HOOKS: &str = r#"{
+  "hooks": {
+    "Stop": [
+      { "hooks": [ { "type": "command", "command": "mine.sh" } ] },
+      { "hooks": [ { "type": "command", "command": "npx -y tessera-codegraph@1.1.0 hook claude stop", "timeout": 30 } ] }
+    ]
+  }
+}
+"#;
+
+#[test]
+fn entries_init_wrote_as_npx_are_replaced() {
+    let s = setup();
+    touch(&s.root, ".mcp.json", STALE_MCP);
+    touch(&s.root, ".claude/settings.local.json", STALE_HOOKS);
+    touch(
+        &s.root,
+        ".codex/config.toml",
+        "model = \"o4\"\n\n[mcp_servers.tessera]\ncommand = \"npx\"\nargs = [\"-y\", \"tessera-codegraph@1.1.0\", \"mcp\"]\n\n[mcp_servers.other]\ncommand = \"other\"\n",
+    );
+    touch(
+        &s.root,
+        ".continue/mcpServers/tessera.yaml",
+        "name: Tessera\nversion: 0.0.1\nschema: v1\nmcpServers:\n  - name: tessera\n    command: npx\n    args:\n      - \"-y\"\n      - \"tessera-codegraph@1.1.0\"\n      - mcp\n",
+    );
+    touch(
+        &s.home,
+        ".config/goose/config.yaml",
+        "extensions:\n  tessera:\n    name: tessera\n    type: stdio\n    cmd: npx\n    args:\n    - \"-y\"\n    - \"tessera-codegraph@1.1.0\"\n    - mcp\n    enabled: true\n    timeout: 300\n  developer:\n    enabled: true\n",
+    );
+    let (out, ok) = init(
+        &s,
+        &[
+            "--yes", "--global", "--agent", "claude", "--agent", "codex", "--agent", "continue",
+            "--agent", "goose",
+        ],
+    );
+    assert!(ok, "{out}");
+
+    let mcp = json(&s.root.join(".mcp.json"));
+    assert_eq!(mcp["mcpServers"]["tessera"]["command"], "tessera");
+    assert_eq!(
+        mcp["mcpServers"]["tessera"]["args"],
+        serde_json::json!(["mcp"])
+    );
+    assert_eq!(mcp["mcpServers"]["other"]["command"], "other");
+
+    let hooks = json(&s.root.join(".claude/settings.local.json"));
+    let stop = hooks["hooks"]["Stop"].as_array().unwrap();
+    let commands: Vec<&str> = stop
+        .iter()
+        .map(|g| g["hooks"][0]["command"].as_str().unwrap())
+        .collect();
+    assert_eq!(commands, ["mine.sh", "tessera hook claude stop"], "{hooks}");
+
+    let codex = fs::read_to_string(s.root.join(".codex/config.toml")).unwrap();
+    assert!(
+        !codex.contains("npx") && !codex.contains("tessera-codegraph"),
+        "{codex}"
+    );
+    let table: toml::Table = codex.parse().unwrap();
+    assert_eq!(
+        table["mcp_servers"]["tessera"]["command"].as_str(),
+        Some("tessera")
+    );
+    assert_eq!(
+        table["mcp_servers"]["other"]["command"].as_str(),
+        Some("other")
+    );
+    assert_eq!(table["model"].as_str(), Some("o4"));
+
+    let cont = fs::read_to_string(s.root.join(".continue/mcpServers/tessera.yaml")).unwrap();
+    assert!(
+        !cont.contains("npx") && cont.contains("command: tessera"),
+        "{cont}"
+    );
+
+    let goose = fs::read_to_string(s.home.join(".config/goose/config.yaml")).unwrap();
+    assert!(
+        !goose.contains("npx") && goose.contains("cmd: tessera"),
+        "{goose}"
+    );
+    assert!(goose.contains("developer:"), "{goose}");
+
+    // A second run has nothing left to change.
+    let (again, ok) = init(
+        &s,
+        &[
+            "--yes", "--global", "--agent", "claude", "--agent", "codex", "--agent", "continue",
+            "--agent", "goose",
+        ],
+    );
+    assert!(ok, "{again}");
+    assert!(!again.contains("+++"), "{again}");
+}
+
+#[test]
+fn a_tessera_entry_the_user_wrote_is_left_alone() {
+    let s = setup();
+    let mine = r#"{"mcpServers":{"tessera":{"command":"/opt/tessera/bin/tessera","args":["mcp","--db","/x.db"]}}}"#;
+    touch(&s.root, ".mcp.json", mine);
+    let (out, ok) = init(&s, &["--yes", "--agent", "claude"]);
+    assert!(ok, "{out}");
+    assert_eq!(fs::read_to_string(s.root.join(".mcp.json")).unwrap(), mine);
 }
