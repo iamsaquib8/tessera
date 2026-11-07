@@ -1,0 +1,1 @@
+`.tessera/events.jsonl` no longer gets interleaved lines when several hooks finish at the same time, and rotating the log past 4 MB no longer drops an event appended meanwhile, so `tessera stats` counts every hook run. Each event is one append under a lock file, and rotation writes a temporary file and renames it over the log.

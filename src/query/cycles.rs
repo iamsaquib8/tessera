@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::path::{Component, Path, PathBuf};
 
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 
@@ -70,6 +70,14 @@ impl AgentText for CyclesResult {
     }
 }
 
+/// `file` is `scope` or lies under it (`scope/...`).
+fn in_scope(file: &str, scope: &str) -> bool {
+    file == scope
+        || file
+            .strip_prefix(scope)
+            .is_some_and(|rest| rest.starts_with('/'))
+}
+
 pub fn run(conn: &Connection, root: &Path, args: &CyclesArgs) -> Result<CyclesResult> {
     let limit = if args.limit == 0 {
         100
@@ -82,7 +90,9 @@ pub fn run(conn: &Connection, root: &Path, args: &CyclesArgs) -> Result<CyclesRe
     let prefix = args
         .path
         .as_deref()
-        .map(|p| p.trim().trim_start_matches("./").replace('\\', "/"));
+        .map(|p| crate::workspace::repo_relative(root, root, p).map_err(|e| anyhow!(e)))
+        .transpose()?
+        .filter(|p| p != ".");
 
     let mut cycles = Vec::new();
     for raw in raw_cycles {
@@ -99,7 +109,7 @@ pub fn run(conn: &Connection, root: &Path, args: &CyclesArgs) -> Result<CyclesRe
         if let Some(ref p) = prefix {
             if !links
                 .iter()
-                .any(|l| l.from.starts_with(p) || l.to.starts_with(p))
+                .any(|l| in_scope(&l.from, p) || in_scope(&l.to, p))
             {
                 continue;
             }

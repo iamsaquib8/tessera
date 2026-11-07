@@ -4,6 +4,10 @@ import starlight from "@astrojs/starlight";
 export default defineConfig({
   site: "https://iamsaquib8.github.io",
   base: "/tessera",
+  // Pages that moved keep working.
+  redirects: {
+    "/first-five-minutes": "/tessera/quickstart/",
+  },
   integrations: [
     starlight({
       title: "Tessera",
@@ -53,11 +57,36 @@ export default defineConfig({
         "./src/styles/tessera.css",
       ],
       sidebar: [
-        { label: "Start", items: ["quickstart", "first-five-minutes"] },
-        { label: "Use", items: ["integrations", "hooks", "ci", "contracts", "configuration", "troubleshooting"] },
-        { label: "Reference", items: ["mcp", "stability", "accuracy", "agents", "architecture", "when-not-to-use"] },
-        { label: "Contribute", items: ["how-to-add-a-language", "how-to-add-an-agent"] },
-        { label: "Roadmap", items: ["roadmap", "landscape"] },
+        { label: "Start", items: ["quickstart", "troubleshooting"] },
+        {
+          label: "Guides",
+          items: [
+            { slug: "guides", label: "All guides" },
+            "guides/connect-your-agent",
+            "guides/check-before-you-edit",
+            "guides/catch-what-an-agent-broke",
+            "guides/run-only-affected-tests",
+            "guides/review-a-pull-request",
+            "guides/adopt-on-a-legacy-repo",
+            "guides/block-breaking-api-changes",
+            "guides/monorepo-and-several-repos",
+            "guides/understand-a-new-codebase",
+          ],
+        },
+        {
+          label: "Reference",
+          items: ["integrations", "hooks", "ci", "contracts", "configuration", "mcp", "accuracy", "when-not-to-use", "architecture"],
+        },
+        { label: "Contribute", items: ["how-to-add-a-language", "how-to-add-an-agent", "agents"] },
+        {
+          label: "Project",
+          items: [
+            "stability",
+            "roadmap",
+            "landscape",
+            { label: "Changelog", link: "https://github.com/iamsaquib8/tessera/blob/main/CHANGELOG.md" },
+          ],
+        },
       ],
     }),
   ],

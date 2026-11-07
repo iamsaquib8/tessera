@@ -6,7 +6,8 @@
     "sync": "node scripts/sync-docs.mjs",
     "dev": "npm run sync && astro dev",
     "build": "npm run sync && astro build",
-    "preview": "astro preview"
+    "preview": "astro preview",
+    "check-links": "node scripts/check-links.mjs"
   },
   "dependencies": {
     "@astrojs/starlight": "0.42.8",

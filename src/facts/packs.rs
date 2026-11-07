@@ -322,10 +322,7 @@ fn facts(
 }
 
 fn line_of<'s>(source: &'s str, node: Node<'_>) -> &'s str {
-    source
-        .lines()
-        .nth(node.start_position().row)
-        .unwrap_or_default()
+    super::line_containing(source, node.start_byte())
 }
 
 /// String constants in this file: `static final String ORDERS = "orders"`,
@@ -667,10 +664,7 @@ fn fact(
         .and_then(|p| p.parse().ok())
         .unwrap_or(0);
     let specific = u8::from(prefix.is_some()) + u8::from(method != "ANY") + priority;
-    let line_text = source
-        .lines()
-        .nth(at.start_position().row)
-        .unwrap_or_default();
+    let line_text = line_of(source, at);
     let handler = captures
         .get("handler")
         .copied()

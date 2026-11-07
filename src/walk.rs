@@ -154,6 +154,7 @@ pub fn discover(root: &Path, config: &TesseraConfig, opts: &WalkOptions) -> Resu
         });
 
     let mut discovery = Discovery::default();
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
     for result in builder.build() {
         let entry = match result {
             Ok(entry) => entry,
@@ -172,7 +173,23 @@ pub fn discover(root: &Path, config: &TesseraConfig, opts: &WalkOptions) -> Resu
         let Some(language) = Language::from_path(path) else {
             continue;
         };
-        let rel_path = relative_path(root, path);
+        let rel_path = match checked_relative_path(root, path) {
+            Ok(rel_path) => rel_path,
+            Err(reason) => {
+                discovery.warnings.push(IndexWarning {
+                    path: relative_path(root, path),
+                    message: format!("skipped: {reason}"),
+                });
+                continue;
+            }
+        };
+        if !seen.insert(rel_path.clone()) {
+            discovery.warnings.push(IndexWarning {
+                path: rel_path,
+                message: "skipped: another file has the same path".to_string(),
+            });
+            continue;
+        }
         match classify(rel_path, path, language, config, &excludes, opts) {
             Ok(FileStatus::Source(file)) => discovery.files.push(file),
             Ok(FileStatus::Skipped(skipped)) => discovery.skipped.push(skipped),
@@ -357,11 +374,33 @@ pub fn is_minified(name: &str, head: &[u8]) -> bool {
     minified_name(name) || minified_content(head)
 }
 
+/// The path under `root`, joined with `/` from its components, so only real
+/// separators become `/`. Names that are not valid UTF-8 are shown lossily.
 pub fn relative_path(root: &Path, path: &Path) -> String {
     path.strip_prefix(root)
         .unwrap_or(path)
-        .to_string_lossy()
-        .replace('\\', "/")
+        .components()
+        .map(|part| part.as_os_str().to_string_lossy())
+        .collect::<Vec<_>>()
+        .join("/")
+}
+
+/// Like `relative_path`, but refuses names the index cannot store faithfully:
+/// not valid UTF-8, or (on Unix, where it is an ordinary character) a
+/// backslash, which would collide with the `/`-joined spelling of another file.
+fn checked_relative_path(root: &Path, path: &Path) -> std::result::Result<String, &'static str> {
+    let mut parts = Vec::new();
+    for part in path.strip_prefix(root).unwrap_or(path).components() {
+        let part = part
+            .as_os_str()
+            .to_str()
+            .ok_or("the file name is not valid UTF-8")?;
+        if cfg!(unix) && part.contains('\\') {
+            return Err("the file name contains a backslash");
+        }
+        parts.push(part);
+    }
+    Ok(parts.join("/"))
 }
 
 fn minified_name(name: &str) -> bool {

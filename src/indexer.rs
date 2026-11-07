@@ -119,6 +119,11 @@ pub fn index_path_locked(
     db_path: &Path,
     options: IndexOptions,
 ) -> Result<IndexReport> {
+    // A damaged index is moved aside and rebuilt from scratch.
+    db::recovering(db_path, || index_once(root, db_path, options.clone()))
+}
+
+fn index_once(root: &Path, db_path: &Path, options: IndexOptions) -> Result<IndexReport> {
     let started = Instant::now();
     let root = root
         .canonicalize()
@@ -231,6 +236,10 @@ pub fn stored_fingerprint(conn: &Connection) -> Result<Option<String>> {
 
 pub fn index_files(ws: &Workspace, rel_paths: &[String]) -> Result<IndexReport> {
     let _lock = IndexLock::acquire(&ws.db_path)?;
+    db::recovering(&ws.db_path, || index_files_once(ws, rel_paths))
+}
+
+fn index_files_once(ws: &Workspace, rel_paths: &[String]) -> Result<IndexReport> {
     let started = Instant::now();
     let root = ws
         .root

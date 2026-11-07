@@ -1139,11 +1139,30 @@ pub struct ConnectResult {
     pub found: bool,
     /// Ordered call path from `from` to `to` (inclusive of both endpoints).
     pub path: Vec<PathNode>,
+    /// Endpoints the index has no symbol for, each with the closest names.
+    #[serde(default)]
+    pub unknown: Vec<UnknownSymbol>,
     pub meta: QueryMeta,
+}
+
+/// A name the index does not know, with the closest real symbols.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UnknownSymbol {
+    pub symbol: String,
+    pub suggestions: Vec<SymbolSuggestion>,
 }
 
 impl Display for ConnectResult {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if !self.unknown.is_empty() {
+            for unknown in &self.unknown {
+                f.write_str(&crate::query::unknown_message(
+                    &unknown.symbol,
+                    &unknown.suggestions,
+                ))?;
+            }
+            return Ok(());
+        }
         if !self.found {
             writeln!(
                 f,

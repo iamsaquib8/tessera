@@ -78,20 +78,25 @@ fn every_page_says_which_version_it_describes() {
         String::from_utf8_lossy(&run.stderr)
     );
     let mut checked = 0;
-    for entry in fs::read_dir(out.path()).unwrap() {
-        let path = entry.unwrap().path();
-        if path.extension().is_some_and(|e| e == "md") {
-            let page = fs::read_to_string(&path).unwrap();
-            let frontmatter = page.split("---").nth(1).unwrap();
-            assert!(
-                frontmatter.contains("banner:") && frontmatter.contains("Tessera 9.8.7"),
-                "{} has no version banner",
-                path.display()
-            );
-            checked += 1;
+    let mut stack = vec![out.path().to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        for entry in fs::read_dir(&dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                stack.push(path);
+            } else if path.extension().is_some_and(|e| e == "md") {
+                let page = fs::read_to_string(&path).unwrap();
+                let frontmatter = page.split("---").nth(1).unwrap();
+                assert!(
+                    frontmatter.contains("banner:") && frontmatter.contains("Tessera 9.8.7"),
+                    "{} has no version banner",
+                    path.display()
+                );
+                checked += 1;
+            }
         }
     }
-    assert!(checked >= 16, "only {checked} pages");
+    assert!(checked >= 26, "only {checked} pages");
 }
 
 #[test]
@@ -106,4 +111,61 @@ fn without_a_version_the_banner_reads_the_crate_version() {
     assert!(run.status.success());
     let page = fs::read_to_string(out.path().join("quickstart.md")).unwrap();
     assert!(page.contains(&format!("Tessera {}", env!("CARGO_PKG_VERSION"))));
+}
+
+#[test]
+fn the_docs_site_job_builds_the_site_and_checks_its_links() {
+    let ci = workflow("ci.yml");
+    let steps = ci["jobs"]["docs-site"]["steps"].as_vec().unwrap();
+    let run = steps
+        .iter()
+        .filter_map(|step| step["run"].as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(run.contains("npm run build"), "{run}");
+    assert!(run.contains("npm run check-links"), "{run}");
+    let scripts = fs::read_to_string(root().join("website/package.json")).unwrap();
+    assert!(scripts.contains("scripts/check-links.mjs"));
+}
+
+#[test]
+fn a_dead_relative_link_fails_the_link_check() {
+    // A built site with one good page and one page linking to nothing.
+    let dist = tempfile::TempDir::new().unwrap();
+    let page = |links: &str| {
+        format!(
+            "<!doctype html><html><body><main><h1 id=\"top\">T</h1>{links}</main></body></html>"
+        )
+    };
+    fs::create_dir_all(dist.path().join("a")).unwrap();
+    fs::create_dir_all(dist.path().join("b")).unwrap();
+    fs::write(
+        dist.path().join("a/index.html"),
+        page("<a href=\"/tessera/b/#top\">b</a>"),
+    )
+    .unwrap();
+    fs::write(dist.path().join("b/index.html"), page("")).unwrap();
+    let check = |dist: &std::path::Path| {
+        Command::new("node")
+            .arg(root().join("website/scripts/check-links.mjs"))
+            .env("TESSERA_DOCS_DIST", dist)
+            .output()
+            .unwrap()
+    };
+    let good = check(dist.path());
+    assert!(
+        good.status.success(),
+        "{}",
+        String::from_utf8_lossy(&good.stderr)
+    );
+    fs::write(
+        dist.path().join("b/index.html"),
+        page("<a href=\"../missing/\">x</a><a href=\"../a/#nope\">y</a>"),
+    )
+    .unwrap();
+    let bad = check(dist.path());
+    assert_eq!(bad.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&bad.stderr);
+    assert!(stderr.contains("../missing/"), "{stderr}");
+    assert!(stderr.contains("#nope"), "{stderr}");
 }

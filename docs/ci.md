@@ -1,5 +1,10 @@
 # Tessera in CI
 
+This page is the reference. For the steps, see
+[run only the affected tests](guides/run-only-affected-tests.md),
+[review a pull request](guides/review-a-pull-request.md) and
+[adopt on a legacy repository](guides/adopt-on-a-legacy-repo.md).
+
 Tessera is one binary with no service behind it and no network calls, so
 it runs in any CI. The [GitHub Action](../action/README.md) wires up
 everything on this page for GitHub; the sections below are for other CI
@@ -429,7 +434,9 @@ committed and reviewed like code. Until it expires, the finding is
 reported with its reason (in the terminal and in the pull-request
 comment) and does not block; after the `expires` day (UTC) it blocks
 again. An `expires` that is not a real date, quoted or bare
-(`2026-12-31`), lapses at once, with a warning naming the entry.
+(`2026-12-31`), lapses at once, with a warning naming the entry. An entry
+with a key Tessera does not know (`expire =` for `expires =`) is ignored with
+a warning naming the entry and the key, so the break counts again.
 
 Both files are read leniently in one direction only: a file that cannot be
 read is named on stderr and waives nothing, so a broken file never turns

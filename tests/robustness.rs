@@ -450,3 +450,170 @@ fn explicit_paths_obey_the_same_rules_as_the_walk() {
     assert!(!dump.contains("secret"), "{dump}");
     assert_eq!(fresh::check(&ws).unwrap(), fresh::Freshness::Fresh);
 }
+#[cfg(unix)]
+#[test]
+fn a_backslash_in_a_file_name_is_skipped_with_a_warning() {
+    let temp = tempfile::TempDir::new().unwrap();
+    let root = temp.path().join("repo");
+    fs::create_dir_all(root.join("foo")).unwrap();
+    fs::write(
+        root.join("foo/bar.ts"),
+        "export function real() { return 1; }\n",
+    )
+    .unwrap();
+    fs::write(
+        root.join("foo\\bar.ts"),
+        "export function odd() { return 2; }\n",
+    )
+    .unwrap();
+    let db = temp.path().join("tessera.db");
+    let report = Index::build(&root, &db, IndexOptions::default()).unwrap();
+    assert!(
+        report
+            .warnings
+            .iter()
+            .any(|w| w.path.contains("foo\\bar.ts")),
+        "{:?}",
+        report.warnings
+    );
+    let output = Command::cargo_bin("tessera")
+        .unwrap()
+        .arg("--root")
+        .arg(&root)
+        .arg("--db")
+        .arg(&db)
+        .args(["find", "real"])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    assert!(String::from_utf8_lossy(&output.stdout).contains("foo/bar.ts"));
+}
+
+#[cfg(unix)]
+#[test]
+fn a_lone_backslash_file_is_not_stored_under_a_path_that_does_not_exist() {
+    let temp = tempfile::TempDir::new().unwrap();
+    let root = temp.path().join("repo");
+    fs::create_dir_all(&root).unwrap();
+    fs::write(
+        root.join("only\\one.ts"),
+        "export function odd() { return 2; }\n",
+    )
+    .unwrap();
+    let db = temp.path().join("tessera.db");
+    let report = Index::build(&root, &db, IndexOptions::default()).unwrap();
+    assert_eq!(report.files_indexed, 0);
+    assert_eq!(report.warnings.len(), 1);
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn file_names_that_are_not_utf8_are_skipped_with_a_warning() {
+    use std::ffi::OsStr;
+    use std::os::unix::ffi::OsStrExt;
+    let temp = tempfile::TempDir::new().unwrap();
+    let root = temp.path().join("repo");
+    fs::create_dir_all(&root).unwrap();
+    fs::write(root.join("ok.ts"), "export function ok() { return 1; }\n").unwrap();
+    for name in [&b"a\xff.ts"[..], &b"a\xfe.ts"[..]] {
+        fs::write(
+            root.join(OsStr::from_bytes(name)),
+            "export function x() {}\n",
+        )
+        .unwrap();
+    }
+    let db = temp.path().join("tessera.db");
+    let report = Index::build(&root, &db, IndexOptions::default()).unwrap();
+    assert_eq!(report.files_indexed, 1);
+    assert_eq!(report.warnings.len(), 2, "{:?}", report.warnings);
+}
+
+fn damage_index(db: &Path) {
+    let mut bytes = fs::read(db).unwrap();
+    assert!(
+        bytes.len() > 4096 * 6,
+        "fixture index is too small to damage"
+    );
+    for byte in &mut bytes[4096..4096 * 6] {
+        *byte = 0xAB;
+    }
+    fs::write(db, bytes).unwrap();
+}
+
+fn tessera_at(root: &Path, db: &Path) -> Command {
+    let mut cmd = Command::cargo_bin("tessera").unwrap();
+    cmd.arg("--root").arg(root).arg("--db").arg(db);
+    cmd
+}
+
+#[test]
+fn damaged_index_is_moved_aside_and_rebuilt_by_index() {
+    let (temp, db) = index_fixture("typescript");
+    let root = temp.path().join("repo");
+    damage_index(&db);
+    let output = tessera_at(&root, &db)
+        .arg("index")
+        .arg(&root)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("damaged") && stderr.contains(".corrupt"),
+        "{stderr}"
+    );
+    assert!(temp.path().join("tessera.db.corrupt").exists());
+    tessera_at(&root, &db)
+        .args(["find", "findById"])
+        .assert()
+        .success();
+}
+
+#[test]
+fn damaged_index_is_rebuilt_by_a_query_and_by_full_index() {
+    let (temp, db) = index_fixture("typescript");
+    let root = temp.path().join("repo");
+    damage_index(&db);
+    let output = tessera_at(&root, &db)
+        .args(["find", "findById"])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(String::from_utf8_lossy(&output.stdout).contains("findById"));
+    damage_index(&db);
+    tessera_at(&root, &db)
+        .args(["index", "--full"])
+        .arg(&root)
+        .assert()
+        .success();
+    tessera_at(&root, &db).arg("status").assert().success();
+}
+
+#[test]
+fn status_reports_a_damaged_index_without_failing() {
+    let (temp, db) = index_fixture("typescript");
+    let root = temp.path().join("repo");
+    damage_index(&db);
+    let output = tessera_at(&root, &db)
+        .args(["--json", "status"])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(value["freshness"]["state"], "corrupt");
+    let text = tessera_at(&root, &db).arg("status").output().unwrap();
+    assert!(text.status.success());
+    assert!(String::from_utf8_lossy(&text.stdout).contains("corrupt"));
+}

@@ -1,7 +1,7 @@
 use std::fmt;
 use std::path::Path;
 
-use anyhow::{bail, Result};
+use anyhow::{anyhow, bail, Result};
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 
@@ -75,6 +75,7 @@ pub fn run(conn: &Connection, root: &Path, args: &FindArgs) -> Result<FindResult
         });
     }
     if let Some(path) = &args.path {
+        let path = &crate::workspace::repo_relative(root, root, path).map_err(|e| anyhow!(e))?;
         let outline = legacy::get_outline_conn(conn, Path::new(path))?.symbols;
         let imports = legacy::imports_conn(conn, path)?.imports;
         let (outline, page) = paginate(outline, limit, args.cursor.as_deref())?;

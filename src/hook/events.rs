@@ -41,20 +41,51 @@ pub fn path(index_dir: &Path) -> PathBuf {
 }
 
 /// Appends `event`; a failure is ignored, as hooks fail open.
+///
+/// Hooks of several agents run in parallel. Each event is one `write_all` of
+/// the whole line to a file opened for appending, under a lock file that also
+/// serialises rotation, so lines never interleave and a rotation never drops
+/// an event appended while it runs.
 pub fn record(index_dir: &Path, event: &HookEvent) {
-    let file = path(index_dir);
-    if fs::metadata(&file).is_ok_and(|m| m.len() > MAX_BYTES) {
-        if let Ok(text) = fs::read_to_string(&file) {
-            let lines: Vec<&str> = text.lines().collect();
-            let kept = lines[lines.len() / 2..].join("\n");
-            let _ = fs::write(&file, format!("{kept}\n"));
-        }
-    }
-    let Ok(line) = serde_json::to_string(event) else {
+    let Ok(mut line) = serde_json::to_string(event) else {
         return;
     };
+    line.push('\n');
+    let file = path(index_dir);
+    let _lock = lock(index_dir);
+    if fs::metadata(&file).is_ok_and(|m| m.len() > MAX_BYTES) {
+        rotate(&file);
+    }
     if let Ok(mut out) = OpenOptions::new().create(true).append(true).open(&file) {
-        let _ = writeln!(out, "{line}");
+        let _ = out.write_all(line.as_bytes());
+    }
+}
+
+/// Holds the log's lock file until dropped. `None` when it cannot be taken:
+/// the event is then still written, as a lost lock is better than a lost event.
+fn lock(index_dir: &Path) -> Option<fs::File> {
+    let file = OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(index_dir.join(format!("{EVENTS_FILE}.lock")))
+        .ok()?;
+    file.lock().ok()?;
+    Some(file)
+}
+
+/// Keeps the newer half of the log: written beside it, then renamed over it.
+fn rotate(file: &Path) {
+    let Ok(text) = fs::read_to_string(file) else {
+        return;
+    };
+    let lines: Vec<&str> = text.lines().collect();
+    let kept = lines[lines.len() / 2..].join("\n");
+    let mut temp = file.as_os_str().to_os_string();
+    temp.push(".tmp");
+    let temp = PathBuf::from(temp);
+    if fs::write(&temp, format!("{kept}\n")).is_ok() && fs::rename(&temp, file).is_err() {
+        let _ = fs::remove_file(&temp);
     }
 }
 
