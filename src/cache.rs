@@ -319,7 +319,7 @@ fn unpack(reader: impl BufRead, path: &Path, header: &Header) -> Result<()> {
         out.write_all(&buffer[..read])?;
     }
     out.flush()?;
-    if size != header.size || format!("{:x}", hasher.finalize()) != header.sha256 {
+    if size != header.size || crate::indexer::hex(&hasher.finalize()) != header.sha256 {
         anyhow::bail!("its checksum does not match");
     }
     Ok(())
@@ -390,8 +390,17 @@ fn install(source: &Connection, db_path: &Path) -> Result<()> {
 fn digest(path: &Path) -> Result<(u64, String)> {
     let mut file = File::open(path)?;
     let mut hasher = Sha256::new();
-    let size = io::copy(&mut file, &mut hasher)?;
-    Ok((size, format!("{:x}", hasher.finalize())))
+    let mut size: u64 = 0;
+    let mut buffer = vec![0u8; 1 << 16];
+    loop {
+        let read = file.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        size += read as u64;
+        hasher.update(&buffer[..read]);
+    }
+    Ok((size, crate::indexer::hex(&hasher.finalize())))
 }
 
 fn parent_dir(path: &Path) -> PathBuf {

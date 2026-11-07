@@ -207,6 +207,11 @@ pub fn index_path_locked(
     Ok(report)
 }
 
+/// Lowercase hex of a digest (`sha2` 0.11 digests no longer implement `LowerHex`).
+pub(crate) fn hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
 /// Changes whenever the binary, `.tessera/config.toml`, or the excludes change,
 /// so an index built under different rules is rebuilt rather than trusted.
 pub fn fingerprint(root: &Path, excludes: &[String]) -> String {
@@ -217,7 +222,7 @@ pub fn fingerprint(root: &Path, excludes: &[String]) -> String {
     hasher.update(&config);
     hasher.update([0]);
     hasher.update(excludes.join("\n"));
-    format!("{:x}", hasher.finalize())
+    hex(&hasher.finalize())
 }
 
 pub fn stored_fingerprint(conn: &Connection) -> Result<Option<String>> {
@@ -360,7 +365,7 @@ fn prepare(file: &SourceFile, known_sha: Option<&str>) -> Prepared {
     if walk::is_minified(&name, content.as_bytes()) {
         return Prepared::Minified;
     }
-    let sha = format!("{:x}", Sha256::digest(content.as_bytes()));
+    let sha = hex(&Sha256::digest(content.as_bytes()));
     if known_sha == Some(sha.as_str()) {
         return Prepared::SameContent;
     }
