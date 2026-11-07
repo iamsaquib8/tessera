@@ -414,6 +414,58 @@ fn search_unused_skips_type_like_kinds() {
 }
 
 #[test]
+fn status_counts_match_the_index_tables() {
+    let temp = TempDir::new().unwrap();
+    let root = temp.path().join("repo");
+    std::fs::create_dir_all(&root).unwrap();
+    for i in 0..3 {
+        std::fs::write(
+            root.join(format!("m{i}.ts")),
+            format!(
+                "export function f{i}() {{ return g{i}(); }}\nfunction g{i}() {{ return {i}; }}\n"
+            ),
+        )
+        .unwrap();
+    }
+    for i in 0..2 {
+        std::fs::write(
+            root.join(format!("m{i}.py")),
+            format!("def f{i}():\n    return g{i}()\n\ndef g{i}():\n    return {i}\n"),
+        )
+        .unwrap();
+    }
+    std::fs::write(
+        root.join("m.go"),
+        "package m\n\nfunc F() int { return G() }\n\nfunc G() int { return 1 }\n",
+    )
+    .unwrap();
+    let db = temp.path().join("t.db");
+    Index::build(&root, &db, IndexOptions::default()).unwrap();
+
+    let conn = rusqlite::Connection::open(&db).unwrap();
+    let count = |table: &str| -> usize {
+        conn.query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
+            row.get::<_, i64>(0)
+        })
+        .unwrap() as usize
+    };
+    let status = Index::open(&db).unwrap().status().unwrap();
+    assert_eq!(status.files, count("files"));
+    assert_eq!(status.symbols, count("symbols"));
+    assert_eq!(status.refs, count("refs"));
+    let languages: Vec<(&str, usize)> = status
+        .languages
+        .iter()
+        .map(|l| (l.language.as_str(), l.count))
+        .collect();
+    assert_eq!(
+        languages,
+        [("typescript", 3), ("python", 2), ("go", 1)],
+        "languages are ordered by file count"
+    );
+}
+
+#[test]
 fn status_reports_a_fresh_index() {
     let (_temp, index) = open("go");
     let status = index.status().unwrap();
