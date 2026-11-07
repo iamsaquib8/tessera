@@ -2,7 +2,7 @@ Third-party notices for Tessera
 
 Tessera is licensed under the Apache License 2.0 (see LICENSE). The tessera
 binary also contains the open-source crates listed below, under their own
-licenses. This file is generated with `cargo about generate about.hbs`; do not
+licenses. This file is generated with `cargo about generate about.hbs | tr -d '\r'`; do not
 edit it by hand.
 
 Crates per license:

@@ -339,6 +339,6 @@ fn the_notices_cover_every_crate_in_the_dependency_graph() {
     assert!(seen.len() > 100, "found only {} crates", seen.len());
     assert!(
         missing.is_empty(),
-        "THIRD-PARTY-NOTICES lacks {missing:?}; regenerate it with `cargo about generate about.hbs > THIRD-PARTY-NOTICES`"
+        "THIRD-PARTY-NOTICES lacks {missing:?}; regenerate it with `cargo about generate about.hbs | tr -d '\\r' > THIRD-PARTY-NOTICES`"
     );
 }

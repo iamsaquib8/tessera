@@ -155,9 +155,9 @@ jobs:
           tool: cargo-about@0.9.3
       - name: THIRD-PARTY-NOTICES is up to date
         run: |
-          cargo about generate about.hbs > "$RUNNER_TEMP/notices"
+          cargo about generate about.hbs | tr -d '\r' > "$RUNNER_TEMP/notices"
           diff -u THIRD-PARTY-NOTICES "$RUNNER_TEMP/notices" || {
-            echo "::error file=THIRD-PARTY-NOTICES::Out of date. Run: cargo about generate about.hbs > THIRD-PARTY-NOTICES"
+            echo "::error file=THIRD-PARTY-NOTICES::Out of date. Regenerate it as the header of about.hbs says."
             exit 1
           }
 
