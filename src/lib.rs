@@ -158,7 +158,7 @@ impl Index {
         let mut args = args.clone();
         args.target = workspace::repo_file_argument(&self.root, &self.root, &args.target)
             .unwrap_or(args.target);
-        query::refs(&self.conn, &args)
+        query::refs_at(&self.conn, Some(&self.root), &args)
     }
 
     pub fn blast(&self, args: &BlastArgs) -> Result<BlastResult> {
