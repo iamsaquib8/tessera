@@ -11,13 +11,13 @@ questions, and use it to check your own edits.
 
 ## Setup (once)
 
-Check `tessera --version`. If it is missing, try these in order:
+Check `tessera --version`. If it is missing, install it:
 
-1. `npx --yes tessera-codegraph <command>` (no install; needs Node 18+). Use
-   this prefix in place of `tessera` below.
-2. `curl -fsSL https://raw.githubusercontent.com/iamsaquib8/tessera/main/install.sh | sh`
-   (verifies the checksum; installs to `~/.local/bin`).
-3. `brew install iamsaquib8/tessera/tessera`.
+1. `curl -fsSL https://raw.githubusercontent.com/iamsaquib8/tessera/main/install.sh | sh`
+   (verifies the checksum; installs to `~/.local/bin`; add that directory to
+   PATH if the script says so).
+2. `cargo binstall tessera-codegraph` or `cargo install tessera-codegraph`
+   (installs `tessera` into `~/.cargo/bin`).
 
 There is no index step: the first command builds `.tessera/` and later
 commands refresh only what changed. If results look wrong, run

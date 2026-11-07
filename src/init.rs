@@ -76,8 +76,11 @@ pub struct InitPlan {
     pub changes: Vec<Change>,
     pub manual: Vec<ManualStep>,
     pub notes: Vec<Note>,
-    /// `tessera` is not on PATH, and every config runs it by that name.
+    /// `tessera` is not on PATH, so every config runs it by `launcher`.
     pub not_on_path: bool,
+    /// The program every config runs: `tessera`, or the full path of the
+    /// running binary when `tessera` is not on PATH.
+    pub launcher: String,
     /// What the plan was made from, so `apply` can plan a file again.
     #[serde(skip)]
     options: InitOptions,
@@ -93,7 +96,9 @@ struct Pending {
 
 struct Planner<'a> {
     options: &'a InitOptions,
-    on_path: bool,
+    /// What configs run: `tessera` when it is on PATH, otherwise the full path
+    /// of the binary running `init`.
+    program: String,
     root: PathBuf,
     files: BTreeMap<String, Pending>,
     manual: Vec<ManualStep>,
@@ -155,19 +160,15 @@ impl Planner<'_> {
         self.edit(rel.to_string(), absolute, agent, apply);
     }
 
-    /// How configs start Tessera: by name when it is on PATH, otherwise the
-    /// npm package at this version through npx, so a quick start with npx
-    /// works without a global install.
+    /// How configs start Tessera: by name when it is on PATH, otherwise by the
+    /// full path of the binary running `init`, which always exists.
     fn launcher(&self) -> Vec<String> {
-        if self.on_path {
-            vec!["tessera".to_string()]
-        } else {
-            vec![
-                "npx".to_string(),
-                "-y".to_string(),
-                format!("tessera-codegraph@{}", env!("CARGO_PKG_VERSION")),
-            ]
-        }
+        vec![self.program.clone()]
+    }
+
+    /// The launcher as the start of a shell command line.
+    fn command_line(&self) -> String {
+        shell_word(&self.program)
     }
 
     fn server(&self, target: &McpTarget, global: bool) -> Server {
@@ -205,7 +206,7 @@ impl Planner<'_> {
             }
         }
         if let Some(hooks) = agent.hooks {
-            let command = self.launcher().join(" ");
+            let command = self.command_line();
             if let Some(dir) = hooks.scripts {
                 for event in hooks.events {
                     let rel = format!("{dir}/{}", edit::script_name(event));
@@ -276,9 +277,16 @@ pub fn plan(options: &InitOptions) -> Result<InitPlan> {
     }
 
     let on_path = agents::on_path("tessera").is_some();
+    let program = if on_path {
+        "tessera".to_string()
+    } else {
+        std::env::current_exe()
+            .map(|path| path.to_string_lossy().into_owned())
+            .unwrap_or_else(|_| "tessera".to_string())
+    };
     let mut planner = Planner {
         options,
-        on_path,
+        program: program.clone(),
         root: root.clone(),
         files: BTreeMap::new(),
         manual: Vec::new(),
@@ -347,6 +355,7 @@ pub fn plan(options: &InitOptions) -> Result<InitPlan> {
         manual: planner.manual,
         notes,
         not_on_path: !on_path,
+        launcher: program,
         options: options.clone(),
     })
 }
@@ -492,10 +501,25 @@ impl Display for InitPlan {
         if self.not_on_path {
             writeln!(
                 f,
-                "\n`tessera` is not on your PATH, so these configs run it through npx, which adds a moment to each hook. For faster hooks, install it (npm i -g tessera-codegraph, Homebrew, or cargo) and put `tessera` in place of the npx command."
+                "\n`tessera` is not on your PATH, so these configs run it by its full path, {}. If you move or reinstall it, run `tessera init` again, or put it on your PATH and replace that path with `tessera`.",
+                self.launcher
             )?;
         }
         Ok(())
+    }
+}
+
+/// `word` as one word of a shell command line: quoted unless it is made only
+/// of characters every shell treats literally.
+fn shell_word(word: &str) -> String {
+    let plain = !word.is_empty()
+        && word
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || "_-./:+@".contains(c));
+    if plain {
+        word.to_string()
+    } else {
+        format!("\"{}\"", word.replace('"', "\\\""))
     }
 }
 
