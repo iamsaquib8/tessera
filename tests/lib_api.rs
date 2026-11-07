@@ -149,6 +149,69 @@ fn refs_on_a_file_lists_importers() {
     );
 }
 
+/// Importer files `refs <path>` lists for a repository of `files`.
+fn importers_in(files: &[(&str, &str)], target: &str) -> Vec<String> {
+    let temp = TempDir::new().unwrap();
+    let root = temp.path().join("repo");
+    for (path, body) in files {
+        let full = root.join(path);
+        std::fs::create_dir_all(full.parent().unwrap()).unwrap();
+        std::fs::write(full, body).unwrap();
+    }
+    let db = temp.path().join("tessera.db");
+    Index::build(
+        &root,
+        &db,
+        IndexOptions {
+            full: true,
+            ..IndexOptions::default()
+        },
+    )
+    .unwrap();
+    Index::open(&db)
+        .unwrap()
+        .refs(&RefsArgs {
+            target: target.to_string(),
+            ..RefsArgs::default()
+        })
+        .unwrap()
+        .importers
+}
+
+#[test]
+fn refs_on_a_file_lists_every_importer_the_resolver_linked() {
+    let files = [
+        (
+            "tsconfig.json",
+            r#"{ "compilerOptions": { "baseUrl": ".", "paths": { "@/*": ["src/*"] } } }"#,
+        ),
+        ("src/lib/util.ts", "export function util() { return 1 }\n"),
+        (
+            "src/a.ts",
+            "import { util } from \"./lib/util.js\";\nutil();\n",
+        ),
+        (
+            "src/b.ts",
+            "import { util } from \"@/lib/util\";\nutil();\n",
+        ),
+        (
+            "src/c.ts",
+            "import { util } from \"./lib/util\";\nutil();\n",
+        ),
+        ("src/lodash.js", "export const x = 1;\n"),
+        ("src/d.ts", "import _ from \"lodash\";\n_.x;\n"),
+        ("app/util.py", "def helper():\n    return 1\n"),
+        ("app/service.py", "from .util import helper\nhelper()\n"),
+    ];
+    assert_eq!(
+        importers_in(&files, "src/lib/util.ts"),
+        ["src/a.ts", "src/b.ts", "src/c.ts"]
+    );
+    assert_eq!(importers_in(&files, "app/util.py"), ["app/service.py"]);
+    // a bare package name is not a file called lodash.js somewhere in the repo
+    assert!(importers_in(&files, "src/lodash.js").is_empty());
+}
+
 #[test]
 fn refs_paginate_without_silent_caps() {
     let temp = TempDir::new().unwrap();

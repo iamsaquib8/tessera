@@ -153,7 +153,7 @@ impl Index {
     }
 
     pub fn refs(&self, args: &RefsArgs) -> Result<RefsResult> {
-        query::refs(&self.conn, args)
+        query::refs_at(&self.conn, Some(&self.root), args)
     }
 
     pub fn blast(&self, args: &BlastArgs) -> Result<BlastResult> {

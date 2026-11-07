@@ -12,7 +12,8 @@ use super::find::page_footer;
 use super::graph::{self, DefinitionSite};
 use crate::extract::truncate_chars;
 use crate::output::{paginate, AgentText, Confidence, Page};
-use crate::types::ReferenceRecord;
+use crate::resolve::modules::{ModuleResolver, ModuleTarget};
+use crate::types::{Language, ReferenceRecord};
 
 const JS_EXTENSIONS: &[&str] = &["ts", "tsx", "js", "jsx", "mjs", "cjs", "mts", "cts"];
 
@@ -48,6 +49,12 @@ pub struct RefsResult {
 }
 
 pub fn run(conn: &Connection, args: &RefsArgs) -> Result<RefsResult> {
+    run_at(conn, None, args)
+}
+
+/// [`run`], resolving a file's importers with the module resolver as well
+/// (tsconfig `paths`, workspace packages) when the repository root is known.
+pub fn run_at(conn: &Connection, root: Option<&Path>, args: &RefsArgs) -> Result<RefsResult> {
     let limit = limit_or_default(args.limit);
     let target = args
         .target
@@ -55,7 +62,7 @@ pub fn run(conn: &Connection, args: &RefsArgs) -> Result<RefsResult> {
         .trim_start_matches("./")
         .replace('\\', "/");
     if is_indexed_file(conn, &target)? {
-        let importers = importers_of(conn, &target)?;
+        let importers = importers_of(conn, root, &target)?;
         let (importers, page) = paginate(importers, limit, args.cursor.as_deref())?;
         return Ok(RefsResult {
             target,
@@ -101,24 +108,67 @@ fn is_indexed_file(conn: &Connection, path: &str) -> Result<bool> {
         .is_some())
 }
 
-fn importers_of(conn: &Connection, target: &str) -> Result<Vec<String>> {
+/// The files that import `target`: the ones the resolver linked
+/// (`import_bindings.target_path`), the ones whose other imports it resolves
+/// to `target`, and, as a last resort, a reading of the import string.
+fn importers_of(conn: &Connection, root: Option<&Path>, target: &str) -> Result<Vec<String>> {
+    let mut importers = BTreeSet::new();
+    let mut linked = conn.prepare(
+        "SELECT DISTINCT f.path FROM import_bindings b JOIN files f ON f.id = b.file_id
+         WHERE b.target_path = ?1",
+    )?;
+    for row in linked.query_map(params![target], |row| row.get::<_, String>(0))? {
+        importers.insert(row?);
+    }
+    let target_id: Option<i64> = conn
+        .query_row(
+            "SELECT id FROM files WHERE path = ?1",
+            params![target],
+            |r| r.get(0),
+        )
+        .optional()?;
+    let resolver = match root {
+        Some(root) => Some(ModuleResolver::build(conn, root)?),
+        None => None,
+    };
     let mut stmt = conn.prepare(
-        "SELECT f.path, i.source FROM imports i JOIN files f ON f.id = i.file_id ORDER BY f.path",
+        "SELECT f.path, f.language, i.source FROM imports i JOIN files f ON f.id = i.file_id
+         ORDER BY f.path",
     )?;
     let rows = stmt.query_map([], |row| {
-        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, String>(2)?,
+        ))
     })?;
-    let mut importers = BTreeSet::new();
     for row in rows {
-        let (from, source) = row?;
-        if from != target && import_points_at(&from, &source, target) {
+        let (from, language, source) = row?;
+        if from == target || importers.contains(&from) {
+            continue;
+        }
+        let lang = Language::from_name(&language);
+        let resolved = match (&resolver, lang, target_id) {
+            (Some(resolver), Some(lang), Some(id)) => {
+                resolver.resolve(&from, &source, lang) == ModuleTarget::File(id)
+            }
+            _ => false,
+        };
+        let js = matches!(
+            lang,
+            Some(Language::JavaScript | Language::TypeScript | Language::Tsx)
+        );
+        if resolved || import_points_at(&from, &source, target, js) {
             importers.insert(from);
         }
     }
     Ok(importers.into_iter().collect())
 }
 
-fn import_points_at(from: &str, source: &str, target: &str) -> bool {
+/// A reading of the import string alone: a relative specifier that names the
+/// target (with or without extension, or as a directory's index), and, outside
+/// JavaScript, a dotted module name that ends the target's path.
+fn import_points_at(from: &str, source: &str, target: &str, js: bool) -> bool {
     let target_stem = target.rsplit_once('.').map_or(target, |(stem, _)| stem);
     if source.starts_with('.') {
         let base = Path::new(from).parent().unwrap_or(Path::new(""));
@@ -129,6 +179,9 @@ fn import_points_at(from: &str, source: &str, target: &str) -> bool {
             || JS_EXTENSIONS
                 .iter()
                 .any(|ext| format!("{joined_str}/index.{ext}") == target);
+    }
+    if js {
+        return false;
     }
     let dotted = source.replace('.', "/");
     target_stem == dotted || target_stem.ends_with(&format!("/{dotted}"))
@@ -205,28 +258,45 @@ mod tests {
         assert!(import_points_at(
             "lib/email_worker.js",
             "./util",
-            "lib/util.js"
+            "lib/util.js",
+            true
         ));
         assert!(import_points_at(
             "specs/util.spec.js",
             "../lib/util",
-            "lib/util.js"
+            "lib/util.js",
+            true
         ));
         assert!(import_points_at(
             "src/a.ts",
             "./widgets",
-            "src/widgets/index.ts"
+            "src/widgets/index.ts",
+            true
         ));
         assert!(import_points_at(
             "app/service.py",
             "app.util",
-            "app/util.py"
+            "app/util.py",
+            false
         ));
         assert!(!import_points_at(
             "app/service.py",
             "app.models",
-            "app/util.py"
+            "app/util.py",
+            false
         ));
-        assert!(!import_points_at("lib/a.js", "./utility", "lib/util.js"));
+        assert!(!import_points_at(
+            "lib/a.js",
+            "./utility",
+            "lib/util.js",
+            true
+        ));
+        // a package name is not a file of that name elsewhere in a JS repo
+        assert!(!import_points_at(
+            "src/d.ts",
+            "lodash",
+            "src/lodash.js",
+            true
+        ));
     }
 }
