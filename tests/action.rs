@@ -264,6 +264,15 @@ fn outputs(text: &str) -> std::collections::BTreeMap<String, String> {
 
 /// Runs the `affected` step against `base` in `root`.
 fn affected_step(root: &std::path::Path, base: &str) -> std::collections::BTreeMap<String, String> {
+    affected_step_with(root, base, &[])
+}
+
+/// The same, with extra environment variables for the step.
+fn affected_step_with(
+    root: &std::path::Path,
+    base: &str,
+    env: &[(&str, &str)],
+) -> std::collections::BTreeMap<String, String> {
     let (script, _) = step("affected");
     let runner_temp = tempfile::TempDir::new().unwrap();
     let output = runner_temp.path().join("outputs");
@@ -274,6 +283,7 @@ fn affected_step(root: &std::path::Path, base: &str) -> std::collections::BTreeM
         .env("TESSERA", env!("CARGO_BIN_EXE_tessera"))
         .env("RUNNER_TEMP", runner_temp.path())
         .env("GITHUB_OUTPUT", &output)
+        .envs(env.iter().copied())
         .output()
         .unwrap();
     assert!(
@@ -284,11 +294,17 @@ fn affected_step(root: &std::path::Path, base: &str) -> std::collections::BTreeM
     let mut values = outputs(&fs::read_to_string(&output).unwrap());
     let file = values.get("tests-file").cloned().unwrap_or_default();
     let listed = fs::read_to_string(&file).unwrap_or_else(|_| panic!("tests-file {file}"));
-    assert_eq!(
-        listed.trim_end(),
-        values["tests"],
-        "the file and the output agree"
-    );
+    if values["tests-truncated"] == "true" {
+        assert_eq!(values["tests"], "", "a list over the limit is not output");
+    } else {
+        assert_eq!(
+            listed.trim_end(),
+            values["tests"],
+            "the file and the output agree"
+        );
+    }
+    // The file always holds the whole list.
+    values.insert("listed".to_string(), listed.trim_end().to_string());
     values.remove("tests-file");
     values
 }
@@ -296,12 +312,14 @@ fn affected_step(root: &std::path::Path, base: &str) -> std::collections::BTreeM
 #[test]
 fn the_action_outputs_the_tests_to_run_and_when_to_run_them_all() {
     let action = repo_file("action/action.yml");
-    for output in ["tests:", "tests-file:", "full-run:"] {
+    for output in ["tests:", "tests-file:", "tests-truncated:", "full-run:"] {
         assert!(
             action.contains(&format!("\n  {output}\n")),
             "output {output}"
         );
     }
+
+    assert!(repo_file("action/README.md").contains("`tests-truncated`"));
 
     let temp = tempfile::TempDir::new().unwrap();
     let root = temp.path();
@@ -328,7 +346,20 @@ fn the_action_outputs_the_tests_to_run_and_when_to_run_them_all() {
     .unwrap();
     let out = affected_step(root, &base);
     assert_eq!(out["tests"], "test/repo.test.ts", "{out:?}");
+    assert_eq!(out["tests-truncated"], "false", "{out:?}");
     assert_eq!(out["full-run"], "", "{out:?}");
+
+    // A list over the limit stays in the file; the step output is empty so
+    // the job does not hit GitHub's output size limit.
+    let out = affected_step_with(root, &base, &[("TESSERA_TESTS_OUTPUT_LIMIT", "5")]);
+    assert_eq!(out["tests-truncated"], "true", "{out:?}");
+    assert_eq!(out["tests"], "", "{out:?}");
+    assert_eq!(out["listed"], "test/repo.test.ts", "{out:?}");
+    assert_eq!(out["full-run"], "", "{out:?}");
+    // At exactly the limit it still fits.
+    let out = affected_step_with(root, &base, &[("TESSERA_TESTS_OUTPUT_LIMIT", "18")]);
+    assert_eq!(out["tests-truncated"], "false", "{out:?}");
+    assert_eq!(out["tests"], "test/repo.test.ts", "{out:?}");
 
     fs::write(root.join("package-lock.json"), "{ \"v\": 2 }\n").unwrap();
     let out = affected_step(root, &base);

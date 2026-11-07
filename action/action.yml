@@ -33,11 +33,14 @@ outputs:
     description: "`true` when the report has blocking problems."
     value: ${{ steps.report.outputs.blocking }}
   tests:
-    description: The test files the change reaches, one path per line (`tessera affected`).
+    description: The test files the change reaches, one path per line (`tessera affected`). Empty when `tests-truncated` is `true`.
     value: ${{ steps.affected.outputs.tests }}
   tests-file:
-    description: A file holding the same list, for `xargs` or a runner's own file option.
+    description: A file holding the same list, for `xargs` or a runner's own file option. Always complete, so read this one for large repositories.
     value: ${{ steps.affected.outputs.tests-file }}
+  tests-truncated:
+    description: "`true` when the list was too large for a step output (over 512 KB): `tests` is then empty and `tests-file` holds the list."
+    value: ${{ steps.affected.outputs.tests-truncated }}
   full-run:
     description: Why every test should run, when one should (a lockfile, build file or CI configuration changed, a `Tessera-No-Skip` trailer, no test files in the index, or Tessera could not select); empty otherwise.
     value: ${{ steps.affected.outputs.full-run }}
@@ -150,12 +153,21 @@ runs:
             full="no test files in the index; run them all"
           fi
         fi
+        # GitHub caps a step output at 1 MB, so a larger list stays in the file.
+        limit="${TESSERA_TESTS_OUTPUT_LIMIT:-524288}"
+        size=$(wc -c < "$tests" | tr -d ' ')
+        truncated=false
+        if [ "$size" -gt "$limit" ]; then
+          truncated=true
+          echo "The test list is $size bytes, too large for a step output; read it from tests-file." >&2
+        fi
         delimiter="tessera_$(od -An -N8 -tx1 /dev/urandom | tr -d ' \n')"
         {
           echo "tests-file=$tests"
+          echo "tests-truncated=$truncated"
           echo "full-run=$full"
           echo "tests<<$delimiter"
-          cat "$tests"
+          if [ "$truncated" = false ]; then cat "$tests"; fi
           echo "$delimiter"
         } >> "$GITHUB_OUTPUT"
 

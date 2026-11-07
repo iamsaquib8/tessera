@@ -1,0 +1,1 @@
+The SQLite built into Tessera is now 3.54.1 (it was 3.46.0), which includes the security fixes SQLite has made since May 2024, such as CVE-2025-29087 and CVE-2025-6965. A repository can hold its own `.tessera/tessera.db`, and Tessera opens it, so a current SQLite matters.

@@ -1,6 +1,6 @@
 name: Framework pack
 description: Teach Tessera how a framework links code (routes, queues, tables) for the contract map.
-labels: ["framework-pack"]
+labels: ["enhancement"]
 body:
   - type: input
     id: framework
