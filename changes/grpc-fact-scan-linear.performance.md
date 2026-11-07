@@ -1,1 +1,0 @@
-Indexing large Go files is up to about three times faster: the gRPC fact scan no longer re-reads the file from the top to find the line of every method call, so its cost grows with the size of the file instead of with its square. The indexed facts are unchanged.

@@ -170,7 +170,7 @@ For the [pre-commit](https://pre-commit.com) framework, add this to
 ```yaml
 repos:
   - repo: https://github.com/iamsaquib8/tessera
-    rev: v1.2.0
+    rev: v1.2.1
     hooks:
       - id: tessera-verify
 ```

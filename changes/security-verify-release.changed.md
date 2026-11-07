@@ -1,1 +1,0 @@
-SECURITY.md now says how to verify a release (`gh attestation verify` and `sha256sum -c`), names the only sockets Tessera opens and which installers use the network, and gives a response time for vulnerability reports (acknowledged within 3 days, a fix or mitigation plan within 30 days). The container image is shown as built from a checkout until a public image exists.

@@ -3,7 +3,7 @@
 # version, then the places the installers put it. A tessera older than this
 # plugin still runs; it only gets a warning on stderr. The npm package at the
 # plugin's version is the last resort, and only when that version is on npm.
-version=1.2.0
+version=1.2.1
 
 # True when version $1 is lower than version $2 (major.minor.patch).
 older() {

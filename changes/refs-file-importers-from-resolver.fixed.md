@@ -1,1 +1,0 @@
-`tessera refs <file>` lists every importer the module resolver linked, including ESM `.js` specifiers, tsconfig `paths` aliases and Python relative imports, and no longer treats a bare package such as `lodash` as an import of a file named `lodash.js`.

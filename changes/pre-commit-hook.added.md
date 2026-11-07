@@ -1,1 +1,0 @@
-The repository now has a `.pre-commit-hooks.yaml`, so the pre-commit framework can run `tessera verify --staged` with a `repos:` entry. The integrations page has matching recipes for lefthook and husky; all three refuse a commit only for a blocking problem, never for an index error.
