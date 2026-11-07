@@ -10,6 +10,7 @@ All notable changes to Tessera are documented here.
 
 ### Added
 
+- GitHub release notes come from the tag's `CHANGELOG.md` section instead of being generated from pull request titles, and the release workflow fails when the section is missing.
 - `verify --format junit` reports completed V1–V5 checks, including successful
   checks and unchanged affected callers, as schema-validated JUnit XML.
   Blocking findings fail their check/file case; advisory and waived findings
