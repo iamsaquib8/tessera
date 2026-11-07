@@ -134,7 +134,7 @@ fn homebrew_formula_renders_every_checksum() {
 #[test]
 fn release_workflow_builds_the_tag_and_keeps_prereleases_off_latest() {
     let workflow = fs::read_to_string(".github/workflows/release.yml").unwrap();
-    let checkouts = workflow.matches("uses: actions/checkout@v4").count();
+    let checkouts = workflow.matches("uses: actions/checkout@").count();
     let pinned = workflow.matches("ref: ${{ env.TAG }}").count();
     assert_eq!(checkouts, pinned, "every checkout builds the tag, not main");
     for (needle, why) in [
