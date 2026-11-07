@@ -104,26 +104,39 @@ pub fn find_definition_conn(conn: &Connection, symbol: &str) -> Result<Definitio
     })
 }
 
+/// What a `--path` argument names: `(file, directory prefix)`. A file path
+/// matches itself; a directory path matches what lies under `dir/`. `.`, the
+/// empty path and `**` name everything (an empty prefix). Matching is by
+/// whole segments and case-sensitive, and `_` and `%` are literal.
+fn path_scope(path: &str) -> (String, String) {
+    let path = path.replace('\\', "/");
+    let trimmed = path.trim_end_matches("**").trim_end_matches('/');
+    if trimmed.is_empty() || trimmed == "." {
+        return (path, String::new());
+    }
+    (trimmed.to_string(), format!("{trimmed}/"))
+}
+
+/// SQL for "the file path is the file or lies under the directory": bind `?1` to
+/// the file and `?2` to the directory prefix.
+const PATH_IN_SCOPE: &str = "(f.path = ?1 OR substr(f.path, 1, length(?2)) = ?2)";
+
 pub fn get_outline_conn(conn: &Connection, path: &Path) -> Result<OutlineResult> {
     let prefix = path.to_string_lossy().replace('\\', "/");
-    let like = if prefix == "." || prefix.is_empty() {
-        "%".to_string()
-    } else {
-        format!("{prefix}%")
-    };
-    let mut stmt = conn.prepare(
+    let (file, dir) = path_scope(&prefix);
+    let mut stmt = conn.prepare(&format!(
         "
         SELECT s.id, s.name, s.qualified_name, s.kind, s.file_id, f.path, f.language,
                s.start_line, s.end_line, s.signature, s.exported
         FROM symbols s
         JOIN files f ON f.id = s.file_id
-        WHERE f.path = ?1 OR f.path LIKE ?2
+        WHERE {PATH_IN_SCOPE}
         ORDER BY f.path, s.start_line
         LIMIT 100000
-        ",
-    )?;
+        "
+    ))?;
     let symbols = stmt
-        .query_map(params![prefix, like], db::map_symbol)?
+        .query_map(params![file, dir], db::map_symbol)?
         .collect::<rusqlite::Result<Vec<_>>>()?;
     let tokens = estimate_tokens(&symbols);
     Ok(OutlineResult {
@@ -447,23 +460,19 @@ fn parse_diff_path(rest: &str) -> Option<String> {
 }
 
 pub fn imports_conn(conn: &Connection, path: &str) -> Result<ImportsResult> {
-    let mut stmt = conn.prepare(
+    let (file, dir) = path_scope(path);
+    let mut stmt = conn.prepare(&format!(
         "
         SELECT i.source, f.path, i.line, i.kind
         FROM imports i
         JOIN files f ON f.id = i.file_id
-        WHERE f.path = ?1 OR f.path LIKE ?2
+        WHERE {PATH_IN_SCOPE}
         ORDER BY f.path, i.line
         LIMIT 100000
-        ",
-    )?;
-    let like = if path.ends_with('/') || path.ends_with("**") {
-        format!("{}%", path.trim_end_matches("**"))
-    } else {
-        format!("{}%", path)
-    };
+        "
+    ))?;
     let imports: Vec<ImportRecord> = stmt
-        .query_map(params![path, like], |row| {
+        .query_map(params![file, dir], |row| {
             Ok(ImportRecord {
                 source: row.get(0)?,
                 from_path: row.get(1)?,

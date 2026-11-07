@@ -106,6 +106,87 @@ fn find_path_gives_outline_and_imports() {
     assert!(result.imports.iter().any(|i| i.source == "../util/format"));
 }
 
+/// An index of a repository made of `files`, as (path, source) pairs.
+fn open_files(files: &[(&str, &str)]) -> (TempDir, Index) {
+    let temp = TempDir::new().unwrap();
+    let root = temp.path().join("repo");
+    for (path, body) in files {
+        let full = root.join(path);
+        std::fs::create_dir_all(full.parent().unwrap()).unwrap();
+        std::fs::write(full, body).unwrap();
+    }
+    let db = temp.path().join("tessera.db");
+    Index::build(
+        &root,
+        &db,
+        IndexOptions {
+            full: true,
+            ..IndexOptions::default()
+        },
+    )
+    .unwrap();
+    (temp, Index::open(&db).unwrap())
+}
+
+fn outline_paths(index: &Index, path: &str) -> Vec<String> {
+    let result = index
+        .find(&FindArgs {
+            path: Some(path.to_string()),
+            ..FindArgs::default()
+        })
+        .unwrap();
+    let mut paths: Vec<String> = result.outline.iter().map(|s| s.path.clone()).collect();
+    paths.dedup();
+    paths
+}
+
+#[test]
+fn find_path_matches_whole_path_segments() {
+    let (_temp, index) = open_files(&[
+        (
+            "src/api/index.ts",
+            "export function inApi() {}\nimport './x';\n",
+        ),
+        (
+            "src/api_v2/index.ts",
+            "export function inApiV2() {}\nimport './y';\n",
+        ),
+        (
+            "src/apiClient.ts",
+            "export function client() {}\nimport './z';\n",
+        ),
+        ("src/userXservice.ts", "export function userXservice() {}\n"),
+        ("src/user_service.ts", "export function user_service() {}\n"),
+    ]);
+    assert_eq!(outline_paths(&index, "src/api"), ["src/api/index.ts"]);
+    assert_eq!(outline_paths(&index, "src/api/"), ["src/api/index.ts"]);
+    assert_eq!(
+        outline_paths(&index, "src/user_service.ts"),
+        ["src/user_service.ts"]
+    );
+    assert!(outline_paths(&index, "SRC/API/index.ts").is_empty());
+    assert_eq!(
+        outline_paths(&index, "src/api/index.ts"),
+        ["src/api/index.ts"]
+    );
+    assert!(outline_paths(&index, ".").len() >= 5);
+    // the imports listed beside the outline follow the same boundary
+    let imports = index
+        .find(&FindArgs {
+            path: Some("src/api".to_string()),
+            ..FindArgs::default()
+        })
+        .unwrap()
+        .imports;
+    assert_eq!(
+        imports
+            .iter()
+            .map(|i| i.from_path.as_str())
+            .collect::<Vec<_>>(),
+        ["src/api/index.ts"]
+    );
+}
+
 #[test]
 fn refs_lists_cross_file_calls_and_tests() {
     let (_temp, index) = open("typescript");
