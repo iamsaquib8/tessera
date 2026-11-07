@@ -99,15 +99,17 @@ pub fn run(conn: &Connection, root: &Path, args: &ContextArgs) -> Result<Context
 }
 
 fn fit_to_budget(result: &mut ContextResult, budget: usize) {
-    loop {
-        result.tokens = estimate_tokens(&result.agent_text());
-        if result.tokens <= budget {
-            return;
-        }
-        let trimmed = result.siblings.pop().is_some()
-            || result.tests.pop().is_some()
-            || result.dependencies.pop().is_some()
-            || result.callers.pop().is_some();
+    // Render once and keep a running character count: each item removed takes
+    // its line (`"  "`, the item, `"\n"`) off the text, and emptying a section
+    // takes its header off too. Re-rendering after every removed item would
+    // cost the whole text each time, which is quadratic in the number of
+    // tests and callers.
+    let mut chars = result.agent_text().chars().count();
+    while chars.div_ceil(4) > budget {
+        let trimmed = pop_item(&mut result.siblings, SIBLINGS_TITLE, &mut chars)
+            || pop_item(&mut result.tests, TESTS_TITLE, &mut chars)
+            || pop_item(&mut result.dependencies, CALLS_TITLE, &mut chars)
+            || pop_item(&mut result.callers, CALLED_BY_TITLE, &mut chars);
         if trimmed {
             continue;
         }
@@ -116,12 +118,31 @@ fn fit_to_budget(result: &mut ContextResult, budget: usize) {
             if body.chars().count() > keep {
                 *body = body.chars().take(keep).collect::<String>()
                     + "\n… (body truncated to fit budget)";
-                continue;
             }
         }
-        return;
+        // Nothing is left to remove: the body was the last thing to cut.
+        break;
     }
+    result.tokens = estimate_tokens(&result.agent_text());
 }
+
+/// Removes the last item of a section and takes its lines off `chars`.
+fn pop_item(items: &mut Vec<String>, title: &str, chars: &mut usize) -> bool {
+    let Some(item) = items.pop() else {
+        return false;
+    };
+    *chars -= item.chars().count() + 3;
+    if items.is_empty() {
+        // `"{title}:\n"`
+        *chars -= title.chars().count() + 2;
+    }
+    true
+}
+
+const CALLS_TITLE: &str = "Calls";
+const CALLED_BY_TITLE: &str = "Called by";
+const TESTS_TITLE: &str = "Tests";
+const SIBLINGS_TITLE: &str = "Related (shared callers)";
 
 impl fmt::Display for ContextResult {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -150,10 +171,118 @@ impl AgentText for ContextResult {
                 }
             }
         };
-        section("Calls", &self.dependencies);
-        section("Called by", &self.callers);
-        section("Tests", &self.tests);
-        section("Related (shared callers)", &self.siblings);
+        section(CALLS_TITLE, &self.dependencies);
+        section(CALLED_BY_TITLE, &self.callers);
+        section(TESTS_TITLE, &self.tests);
+        section(SIBLINGS_TITLE, &self.siblings);
         out
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The loop that re-renders the whole text after every removed item.
+    fn fit_by_rendering(result: &mut ContextResult, budget: usize) {
+        loop {
+            result.tokens = estimate_tokens(&result.agent_text());
+            if result.tokens <= budget {
+                return;
+            }
+            let trimmed = result.siblings.pop().is_some()
+                || result.tests.pop().is_some()
+                || result.dependencies.pop().is_some()
+                || result.callers.pop().is_some();
+            if trimmed {
+                continue;
+            }
+            if let Some(body) = &mut result.body {
+                let keep = budget.saturating_mul(4) / 2;
+                if body.chars().count() > keep {
+                    *body = body.chars().take(keep).collect::<String>()
+                        + "\n… (body truncated to fit budget)";
+                    continue;
+                }
+            }
+            return;
+        }
+    }
+
+    fn bundle(body: Option<String>, neighbours: usize, tests: usize) -> ContextResult {
+        let list = |prefix: &str, n: usize| -> Vec<String> {
+            (0..n)
+                .map(|i| {
+                    format!("{prefix}{i}  src/módulo/{prefix}{i}.ts:{i}  function {prefix}{i}()")
+                })
+                .collect()
+        };
+        ContextResult {
+            symbol: Some(SymbolRecord {
+                id: 1,
+                name: "target".to_string(),
+                qualified_name: "Svc.target".to_string(),
+                kind: "method".to_string(),
+                file_id: 1,
+                path: "src/svc.ts".to_string(),
+                language: "typescript".to_string(),
+                start_line: 10,
+                end_line: 40,
+                signature: "target(a: number): number".to_string(),
+                exported: true,
+            }),
+            signature: "target(a: number): number".to_string(),
+            body,
+            dependencies: list("callee", neighbours),
+            callers: list("caller", neighbours),
+            tests: list("test", tests),
+            siblings: list("sibling", neighbours.min(5)),
+            tokens: 0,
+        }
+    }
+
+    #[test]
+    fn a_budget_smaller_than_the_truncation_note_still_terminates() {
+        // The truncated body plus its note can exceed a tiny budget; the old
+        // loop cut the body again and again, forever.
+        for budget in [1, 10, 40] {
+            let mut result = bundle(Some("let x = 1;\n".repeat(400)), 3, 3);
+            fit_to_budget(&mut result, budget);
+            assert!(result.callers.is_empty() && result.tests.is_empty());
+            let body = result.body.as_deref().unwrap();
+            assert!(body.ends_with("(body truncated to fit budget)"));
+            assert_eq!(result.tokens, estimate_tokens(&result.agent_text()));
+        }
+    }
+
+    #[test]
+    fn running_count_trims_exactly_as_rendering_every_time_did() {
+        let bodies = [
+            None,
+            Some("fn short() {}".to_string()),
+            Some("let x = 1;\n".repeat(400)),
+            Some("ñandú ".repeat(900)),
+        ];
+        for body in &bodies {
+            for (neighbours, tests) in [(0, 0), (3, 0), (60, 700), (60, 5)] {
+                for budget in [60, 200, 500, 2_000, 8_000, 40_000] {
+                    let mut expected = bundle(body.clone(), neighbours, tests);
+                    let mut got = expected.clone();
+                    fit_by_rendering(&mut expected, budget);
+                    fit_to_budget(&mut got, budget);
+                    assert_eq!(
+                        got.agent_text(),
+                        expected.agent_text(),
+                        "budget {budget}, {neighbours} neighbours, {tests} tests"
+                    );
+                    assert_eq!(got.tokens, expected.tokens);
+                    assert_eq!(got.tests, expected.tests);
+                    assert_eq!(got.callers, expected.callers);
+                    assert_eq!(got.dependencies, expected.dependencies);
+                    assert_eq!(got.siblings, expected.siblings);
+                    assert_eq!(got.body, expected.body);
+                }
+            }
+        }
     }
 }
