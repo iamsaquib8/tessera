@@ -1,5 +1,9 @@
 # Edit-safety hooks
 
+This page is the reference. For the steps, see
+[catch what an agent broke](guides/catch-what-an-agent-broke.md) and
+[connect your agent](guides/connect-your-agent.md).
+
 Agents edit code and say "done". The hooks make Tessera check each edit as it
 happens and hold the agent at the end of its turn until the breakage it
 caused is fixed. They never call a model, and everything stays on your

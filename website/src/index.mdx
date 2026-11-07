@@ -12,11 +12,15 @@ hero:
     - text: Get started
       link: quickstart/
       variant: primary
+    - text: Pick a task
+      link: "#what-do-you-want-to-do"
+      variant: secondary
     - text: View on GitHub
       link: https://github.com/iamsaquib8/tessera
       variant: minimal
 ---
 
+import { CardGrid, LinkCard } from "@astrojs/starlight/components";
 import light from "../../assets/how-it-works-light.svg";
 import dark from "../../assets/how-it-works-dark.svg";
 import demo from "../../assets/demo.svg";
@@ -31,8 +35,8 @@ import demo from "../../assets/demo.svg";
 </div>
 
 ```sh
-npx tessera-codegraph blast <symbol>    # in any repository; the first query builds the index
-claude mcp add tessera -- tessera mcp   # or any of 21 agents
+npx tessera-codegraph blast <symbol>   # in any repository; the first query builds the index
+npx tessera-codegraph init             # then wire it into your agents, with hooks
 ```
 
 Coding agents edit code they have only partly read. Tessera gives them an
@@ -41,8 +45,21 @@ it and find out what they broke before they say done. The map is built by
 tree-sitter and stored in SQLite: the same code always gives the same answer,
 and nothing leaves your machine.
 
-- **[Quickstart](quickstart/):** install and the first commands.
-- **[The first five minutes](first-five-minutes/):** the loop, with real output.
-- **[Integrations](integrations/):** Claude Code, Cursor, Codex, Gemini CLI,
-  Antigravity, Copilot, and 15 more.
-- **[Limits](when-not-to-use/):** what Tessera does not do yet.
+## What do you want to do?
+
+<CardGrid>
+  <LinkCard title="Connect my agent" description="Wire Tessera into Claude Code, Cursor, Codex and 18 more with one command." href="guides/connect-your-agent/" />
+  <LinkCard title="Check before an edit" description="See every caller a change affects, and the tests that reach it, before you or your agent make it." href="guides/check-before-you-edit/" />
+  <LinkCard title="Catch what an agent broke" description="Find calls and imports an edit broke, and hold the agent at “done” until they are fixed." href="guides/catch-what-an-agent-broke/" />
+  <LinkCard title="Run only the affected tests" description="Select the tests a change can reach, locally and in CI." href="guides/run-only-affected-tests/" />
+  <LinkCard title="Review a pull request" description="One comment per pull request: what it breaks, who calls it, which tests to run." href="guides/review-a-pull-request/" />
+  <LinkCard title="Adopt on a legacy repository" description="Turn the checks on without failing on problems that were already there." href="guides/adopt-on-a-legacy-repo/" />
+  <LinkCard title="Block a breaking API change" description="Stop a removed route, gRPC method or topic that another service still uses." href="guides/block-breaking-api-changes/" />
+  <LinkCard title="Work across repositories" description="Map and check a monorepo, or several repositories that call each other." href="guides/monorepo-and-several-repos/" />
+  <LinkCard title="Understand a new codebase" description="Outline files, search symbols, trace calls and draw the graph." href="guides/understand-a-new-codebase/" />
+</CardGrid>
+
+New to Tessera? The **[quickstart](quickstart/)** installs it and connects
+your agent in about five minutes. Know what you are looking for? Go to the
+**[reference](integrations/)**. To see where Tessera stops, read
+**[when not to rely on it](when-not-to-use/)**.
