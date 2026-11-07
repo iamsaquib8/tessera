@@ -108,3 +108,70 @@ between runs, mount a volume and set `-e TESSERA_DB=/index/tessera.db`.
 Paths are stored and printed with forward slashes. The npm package and the
 release zip both ship `tessera.exe`. If the npm launcher reports a missing
 platform package, reinstall without `--omit=optional`.
+
+## Frequently asked questions
+
+### Does Tessera send my code anywhere?
+
+No. The binary makes no network calls and opens no outbound connection; it
+reads the files under the repository root and writes only to `.tessera/`
+(or `--db`). The installers use the network to download it. See
+[SECURITY.md](../SECURITY.md).
+
+### Which models and agents does it work with?
+
+Any model, because Tessera never calls one. Any agent that speaks MCP gets the
+tools, and `tessera init` sets up 21 agents, with hooks where the agent's hook
+system can carry them. See [connect your agent](guides/connect-your-agent.md).
+
+### Should I commit `.tessera/`?
+
+Not the index. A `.gitignore` next to it ignores the index and lets
+`config.toml` through, so the project config can be committed. Commit
+`baseline.json` and `accepted.toml` too if you use them
+([adopt on a legacy repository](guides/adopt-on-a-legacy-repo.md)).
+
+### The hook held my agent for a problem it did not cause
+
+Only problems the agent introduced block. A problem that was in the code
+before the session started never does, even in a file the agent edits; the
+exception is another call site of the same problem that the agent adds. The
+hold also ends after three tries in one turn. If a finding is wrong or
+intended, `tessera accept <fingerprint> --reason …` records it, and
+`tessera stats` shows how often the hooks led to a fix.
+
+### Why does the hook say nothing about my Python or Go change?
+
+Only high-confidence findings in TypeScript, JavaScript and Java block, and
+the hooks show nothing for other languages. Run `tessera verify --changed` to
+see them.
+
+### How do I turn the hooks off?
+
+Remove Tessera's entries from the agent's hook file (listed in
+[edit-safety hooks](hooks.md#agents)), or uninstall the plugin. `tessera init`
+only adds entries, so your own hooks are untouched.
+
+### Can I use the Claude Code plugin and `tessera init`?
+
+Use one, not both. If both are wired, Tessera checks each event once and
+gives both runs the same answer.
+
+### Does `verify` replace my compiler or tests?
+
+No. It checks names, argument counts and imports against the index; it does
+not check types. Keep running `tsc`, `javac` and your tests
+([when not to rely on Tessera](when-not-to-use.md)).
+
+### A test I expected was not selected, or one I did not expect was
+
+Ask `tessera affected` why: `tessera affected origin/main --explain <test>`
+says whether the test is selected and the chain from it to the changed code.
+Calls Tessera cannot follow, such as dynamic dispatch and reflection, can hide
+a test from it; see [run only the affected tests](guides/run-only-affected-tests.md).
+
+### A `Tessera-No-Skip:` trailer in my commit is ignored in CI
+
+CI clones are often shallow (`actions/checkout` fetches one commit), and
+Tessera reads trailers from the history the clone has. It says so in a note.
+Set `fetch-depth: 0`.

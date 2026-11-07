@@ -29,7 +29,7 @@ cargo test --all-targets --all-features --no-fail-fast
 cargo test --release --test perf -- --ignored --test-threads=1   # perf budgets
 node --test npm/test/*.test.js scripts/*.test.js  # npm launcher and scripts
 node scripts/changelog.js check                   # changelog fragments
-(cd website && npm ci && npm run build)           # docs site
+(cd website && npm ci && npm run build && npm run check-links)   # docs site
 cargo check --locked --all-targets                # on Rust 1.90, the minimum
 cargo deny check                                  # advisories, licenses, sources
 python -m pip install -r tests/junit-requirements.txt
@@ -45,7 +45,7 @@ python tests/junit_schema.py target/debug/tessera # JUnit schema and CLI
 | `test` | The whole test suite on Linux (x86_64 and arm64), macOS and Windows |
 | `junit` | The JUnit output against its schema |
 | `npm` | The npm launcher and the repository's scripts on Node 18, 20 and 22, and the changelog fragments |
-| `docs-site` | That the documentation site in `website/` builds |
+| `docs-site` | That the documentation site in `website/` builds, and that no relative link in it or in the Markdown it is built from is dead (`website/scripts/check-links.mjs`) |
 | `msrv` | That the crate checks on the minimum supported Rust (`rust-version` in `Cargo.toml`) |
 | `musl` | The static Linux builds, x86_64 and arm64 |
 | `deny` | `cargo deny check`: advisories, licenses, sources and banned crates (`deny.toml`) |
