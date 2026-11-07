@@ -12,7 +12,26 @@ readme = "README.md"
 rust-version = "1.90"
 keywords = ["mcp", "codegraph", "tree-sitter", "agents", "cli"]
 categories = ["command-line-utilities", "development-tools"]
-exclude = [".github/ISSUE_TEMPLATE/*"]
+# What `cargo install` needs to build and run: the source and the query packs it
+# embeds. Everything else (the website, launch kit, tests and workflows) stays
+# in the repository only.
+include = [
+    "src/**",
+    "packs/**",
+    "/Cargo.toml",
+    "/Cargo.lock",
+    "/README.md",
+    "/LICENSE",
+    "/CHANGELOG.md",
+]
+
+[lints.rust]
+unsafe_code = "forbid"
+
+# CI runs clippy with `-D warnings`; denying `clippy::all` here makes a local
+# `cargo clippy` stop on the same findings.
+[lints.clippy]
+all = { level = "deny", priority = -1 }
 
 [lib]
 name = "tessera_codegraph"
@@ -30,7 +49,7 @@ globset = "0.4"
 ignore = "0.4"
 notify-debouncer-mini = "0.7"
 regex = "1"
-rusqlite = { version = "0.32", features = ["backup", "bundled"] }
+rusqlite = { version = "0.41", features = ["backup", "bundled"] }
 serde = { version = "1.0", features = ["derive"] }
 toml = { version = "1", default-features = false, features = ["parse", "serde"] }
 serde_json = { version = "1.0", features = ["preserve_order"] }
@@ -58,6 +77,11 @@ zstd = { version = "0.13", default-features = false }
 insta = { version = "1", features = ["json"] }
 assert_cmd = "2.0"
 predicates = "3.1"
+
+[profile.release]
+lto = "fat"
+codegen-units = 1
+strip = "symbols"
 
 [package.metadata.binstall]
 pkg-url = "{ repo }/releases/download/v{ version }/tessera-{ target }{ archive-suffix }"

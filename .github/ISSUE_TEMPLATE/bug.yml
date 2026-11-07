@@ -1,6 +1,6 @@
 name: Bug report
 description: Tessera gave a wrong answer, crashed, or failed to install.
-labels: ["bug", "needs-repro"]
+labels: ["bug"]
 body:
   - type: textarea
     id: what

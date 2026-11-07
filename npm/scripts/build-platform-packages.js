@@ -2,7 +2,8 @@
 "use strict";
 // Usage: node scripts/build-platform-packages.js <version> <dir-with-release-archives>
 // Stamps <version> into every package.json and unpacks each release archive
-// into npm/platforms/<platform>/bin/.
+// into npm/platforms/<platform>/bin/, and copies LICENSE and
+// THIRD-PARTY-NOTICES from the repository root into every package.
 
 const fs = require("fs");
 const path = require("path");
@@ -16,6 +17,20 @@ if (!version || !archives) {
 
 const root = path.join(__dirname, "..");
 const targets = JSON.parse(fs.readFileSync(path.join(root, "platforms", "targets.json"), "utf8"));
+
+const LICENSE_FILES = ["LICENSE", "THIRD-PARTY-NOTICES"];
+for (const name of LICENSE_FILES) {
+  if (!fs.existsSync(path.join(root, "..", name))) {
+    console.error(`missing ${name} in the repository root; it ships in every package`);
+    process.exit(1);
+  }
+}
+
+function copyLicenses(dir) {
+  for (const name of LICENSE_FILES) {
+    fs.copyFileSync(path.join(root, "..", name), path.join(dir, name));
+  }
+}
 
 function stamp(file, mutate) {
   const pkg = JSON.parse(fs.readFileSync(file, "utf8"));
@@ -45,11 +60,13 @@ for (const [platform, target] of Object.entries(targets)) {
     process.exit(1);
   }
   fs.chmodSync(exe, 0o755);
+  copyLicenses(dir);
   stamp(path.join(dir, "package.json"), (pkg) => {
     pkg.version = version;
   });
 }
 
+copyLicenses(root);
 stamp(path.join(root, "package.json"), (pkg) => {
   pkg.version = version;
   for (const name of Object.keys(pkg.optionalDependencies)) {
