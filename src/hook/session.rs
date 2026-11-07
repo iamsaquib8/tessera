@@ -143,7 +143,7 @@ fn file_name(id: &str) -> String {
 }
 
 pub fn hash(bytes: &[u8]) -> String {
-    format!("{:x}", Sha256::digest(bytes))
+    crate::indexer::hex(&Sha256::digest(bytes))
 }
 
 /// The content hash Stop compares against `Session::dirty`.
