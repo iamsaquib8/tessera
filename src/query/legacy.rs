@@ -266,7 +266,15 @@ pub fn diff_impact_conn(
             "--relative",
             "--no-renames",
         ])
-        .args(["--no-color", "--no-ext-diff"])
+        // Pin the output to what the parser reads: the user's git config
+        // (`diff.mnemonicPrefix`, `diff.noprefix`, `diff.srcPrefix`, ...) must
+        // not change the path prefixes.
+        .args([
+            "--no-prefix",
+            "--no-color",
+            "--no-ext-diff",
+            "--no-textconv",
+        ])
         .arg(&from);
     if let Some(to) = to_ref {
         command.arg(resolve_commit(root, to)?);
@@ -435,14 +443,11 @@ fn parse_diff_path(rest: &str) -> Option<String> {
     } else {
         trimmed
     };
-    let stripped = unquoted
-        .strip_prefix("b/")
-        .or_else(|| unquoted.strip_prefix("a/"))
-        .unwrap_or(unquoted);
-    if stripped.is_empty() {
+    // `git diff --no-prefix`: the path is what follows, `a/` and `b/` included.
+    if unquoted.is_empty() {
         None
     } else {
-        Some(stripped.to_string())
+        Some(unquoted.to_string())
     }
 }
 
@@ -1570,38 +1575,25 @@ mod tests {
 
     #[test]
     fn test_parse_diff_path() {
+        // `git diff --no-prefix`: the path is taken as written, so a real
+        // top-level directory named `a/` or `b/` survives.
         assert_eq!(
-            parse_diff_path("b/src/service.rs"),
-            Some("src/service.rs".to_string())
-        );
-        assert_eq!(
-            parse_diff_path("a/src/service.rs"),
+            parse_diff_path("src/service.rs"),
             Some("src/service.rs".to_string())
         );
         assert_eq!(parse_diff_path("/dev/null"), Some("/dev/null".to_string()));
+        for path in [
+            "b/b/service.rs",
+            "a/a/service.rs",
+            "b/a/service.rs",
+            "a/service.rs",
+        ] {
+            assert_eq!(parse_diff_path(path), Some(path.to_string()));
+        }
         assert_eq!(
-            parse_diff_path("b/b/service.rs"),
-            Some("b/service.rs".to_string())
-        );
-        assert_eq!(
-            parse_diff_path("a/a/service.rs"),
-            Some("a/service.rs".to_string())
-        );
-        assert_eq!(
-            parse_diff_path("b/a/service.rs"),
-            Some("a/service.rs".to_string())
-        );
-        assert_eq!(
-            parse_diff_path("a/b/service.rs"),
-            Some("b/service.rs".to_string())
-        );
-        assert_eq!(
-            parse_diff_path("\"b/path with spaces/file.rs\""),
+            parse_diff_path("\"path with spaces/file.rs\""),
             Some("path with spaces/file.rs".to_string())
         );
-        assert_eq!(
-            parse_diff_path("\"b/b/file.rs\""),
-            Some("b/file.rs".to_string())
-        );
+        assert_eq!(parse_diff_path(""), None);
     }
 }
