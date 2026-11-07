@@ -300,3 +300,23 @@ fn the_pull_request_report_says_why_a_finding_is_waived() {
         "{text}"
     );
 }
+
+#[test]
+fn the_markdown_report_honours_no_baseline() {
+    let temp = legacy_repo();
+    let root = temp.path();
+    touch_legacy(root);
+    tessera(root, &["baseline"]);
+    let report = |extra: &[&str]| {
+        let mut args = vec!["verify", "--changed", "--format", "markdown"];
+        args.extend_from_slice(extra);
+        tessera(root, &args)
+    };
+    let (code, text, _) = report(&[]);
+    assert_eq!(code, 0, "{text}");
+    assert!(text.contains("(in the baseline)"), "{text}");
+    let (code, text, _) = report(&["--no-baseline"]);
+    assert_eq!(code, 1, "{text}");
+    assert!(!text.contains("(in the baseline)"), "{text}");
+    assert!(text.contains("1 problem to fix"), "{text}");
+}
