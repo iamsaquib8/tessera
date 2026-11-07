@@ -15,6 +15,80 @@ pub fn discover_root(start: &Path) -> PathBuf {
         .unwrap_or(start)
 }
 
+/// A path argument as the repository-relative, `/`-separated form the index
+/// stores. `\` is read as `/`; a relative `input` is taken from `cwd`; `.`
+/// and `..` are resolved; an absolute `input` must lie under `root` (both are
+/// compared after resolving symlinks). A path that leaves the repository is
+/// an error that says so. The repository itself is `.`.
+pub fn repo_relative(root: &Path, cwd: &Path, input: &str) -> Result<String, String> {
+    let input = input.trim().replace('\\', "/");
+    let given = Path::new(if input.is_empty() { "." } else { &input });
+    let joined = if given.is_absolute() {
+        given.to_path_buf()
+    } else {
+        cwd.join(given)
+    };
+    let abs = resolve_existing_prefix(&lexically_normal(&joined));
+    let root_abs = resolve_existing_prefix(&lexically_normal(root));
+    let outside = || format!("{} is outside the repository {}", input, root_abs.display());
+    let rel = abs.strip_prefix(&root_abs).map_err(|_| outside())?;
+    let parts: Vec<String> = rel
+        .components()
+        .map(|c| c.as_os_str().to_string_lossy().into_owned())
+        .collect();
+    Ok(if parts.is_empty() {
+        ".".to_string()
+    } else {
+        parts.join("/")
+    })
+}
+
+/// `input` as a repository-relative file path when it names an existing file
+/// under `root` (relative to `cwd`); `None` for a symbol name or any other
+/// argument.
+pub fn repo_file_argument(root: &Path, cwd: &Path, input: &str) -> Option<String> {
+    let rel = repo_relative(root, cwd, input).ok()?;
+    resolve_existing_prefix(&lexically_normal(root))
+        .join(&rel)
+        .is_file()
+        .then_some(rel)
+}
+
+/// `path` with `.` removed and `..` applied to the component before it.
+fn lexically_normal(path: &Path) -> PathBuf {
+    use std::path::Component;
+    let mut out = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                out.pop();
+            }
+            other => out.push(other),
+        }
+    }
+    out
+}
+
+/// `path` with symlinks resolved as far as it exists; the part that does not
+/// exist yet is appended unchanged.
+fn resolve_existing_prefix(path: &Path) -> PathBuf {
+    let mut tail = Vec::new();
+    let mut head = path;
+    loop {
+        if let Ok(real) = head.canonicalize() {
+            return tail.iter().rev().fold(real, |acc, part| acc.join(part));
+        }
+        match (head.parent(), head.file_name()) {
+            (Some(parent), Some(name)) => {
+                tail.push(name.to_os_string());
+                head = parent;
+            }
+            _ => return path.to_path_buf(),
+        }
+    }
+}
+
 impl Workspace {
     /// True when the root is the home directory or the filesystem root, where an
     /// auto-built index would cover far more than one project.
@@ -181,6 +255,53 @@ mod tests {
     use tempfile::TempDir;
 
     use super::*;
+
+    #[test]
+    fn repo_relative_handles_cwd_absolute_and_backslash_inputs() {
+        let temp = TempDir::new().unwrap();
+        let root = temp.path().join("repo");
+        fs::create_dir_all(root.join("src/api")).unwrap();
+        fs::write(root.join("src/api/index.ts"), "").unwrap();
+        let src = root.join("src");
+        let abs = root.canonicalize().unwrap().join("src/api/index.ts");
+        let rel = |cwd: &Path, input: &str| repo_relative(&root, cwd, input);
+        for (cwd, input) in [
+            (&root, "src/api/index.ts"),
+            (&root, "./src/api/index.ts"),
+            (&root, ".\\src\\api\\index.ts"),
+            (&root, "src//api/../api/index.ts"),
+            (&root, abs.to_str().unwrap()),
+            (&src, "api/index.ts"),
+            (&src, "./api/index.ts"),
+            (&src, "../src/api/index.ts"),
+            (&src, abs.to_str().unwrap()),
+        ] {
+            assert_eq!(rel(cwd, input).unwrap(), "src/api/index.ts", "{input}");
+        }
+        assert_eq!(rel(&root, ".").unwrap(), ".");
+        assert_eq!(rel(&root, "").unwrap(), ".");
+        assert_eq!(rel(&src, "api/").unwrap(), "src/api");
+        assert_eq!(rel(&src, "..").unwrap(), ".");
+        // a file that is not there yet keeps its place under the root
+        assert_eq!(rel(&src, "api/new.ts").unwrap(), "src/api/new.ts");
+        let err = rel(&root, "../elsewhere.ts").unwrap_err();
+        assert!(err.contains("outside the repository"), "{err}");
+        assert!(rel(&root, "/etc/hosts").is_err());
+    }
+
+    #[test]
+    fn repo_file_argument_only_accepts_existing_files() {
+        let temp = TempDir::new().unwrap();
+        let root = temp.path();
+        fs::create_dir_all(root.join("src")).unwrap();
+        fs::write(root.join("src/a.ts"), "").unwrap();
+        assert_eq!(
+            repo_file_argument(root, root, "./src/a.ts").as_deref(),
+            Some("src/a.ts")
+        );
+        assert_eq!(repo_file_argument(root, root, "src"), None);
+        assert_eq!(repo_file_argument(root, root, "Index::find"), None);
+    }
 
     #[test]
     fn workspace_files_are_toml() {
