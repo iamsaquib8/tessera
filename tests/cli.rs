@@ -847,3 +847,90 @@ fn verify_reports_a_wrong_case_name_as_missing() {
         .assert()
         .success();
 }
+
+const SCOPE_REPO: &[(&str, &str)] = &[
+    (
+        "src/lib.rs",
+        "pub struct Index;\n\
+         impl Index { pub fn find(&self) -> i32 { 1 } }\n\
+         pub struct Other;\n\
+         impl Other { pub fn find(&self) -> i32 { 2 } }\n\
+         pub fn caller() -> i32 { Index.find() }\n",
+    ),
+    (
+        "lib/billing.rb",
+        "module Billing\n  class Invoice\n    def total\n      1\n    end\n  end\nend\n",
+    ),
+];
+
+/// A result with the echoed query removed, so two spellings compare equal.
+fn without_query(mut value: serde_json::Value) -> serde_json::Value {
+    if let Some(map) = value.as_object_mut() {
+        for key in ["query", "target", "from", "to"] {
+            map.remove(key);
+        }
+    }
+    value
+}
+
+#[test]
+fn double_colon_names_resolve_like_dotted_names() {
+    let temp = write_repo(SCOPE_REPO);
+    let cwd = temp.path();
+    for cmd in [&["find"][..], &["context"], &["blast"], &["refs"]] {
+        let dotted: Vec<&str> = cmd.iter().copied().chain(["Index.find"]).collect();
+        let colons: Vec<&str> = cmd.iter().copied().chain(["Index::find"]).collect();
+        let expected = without_query(json_of(cwd, &dotted));
+        assert_eq!(
+            without_query(json_of(cwd, &colons)),
+            expected,
+            "{cmd:?} differs between Index.find and Index::find"
+        );
+    }
+    let dotted = without_query(json_of(cwd, &["path", "caller", "Index.find"]));
+    assert_eq!(
+        without_query(json_of(cwd, &["path", "caller", "Index::find"])),
+        dotted
+    );
+    assert!(dotted.to_string().contains("Index.find"));
+}
+
+#[test]
+fn double_colon_find_is_an_exact_match() {
+    let temp = write_repo(SCOPE_REPO);
+    assert_eq!(
+        matches_of(temp.path(), "Index::find"),
+        [("Index.find".to_string(), "exact".to_string())]
+    );
+}
+
+#[test]
+fn blast_of_a_scoped_name_does_not_widen_to_other_owners() {
+    let temp = write_repo(SCOPE_REPO);
+    let refs = json_of(temp.path(), &["refs", "Index::find"]);
+    assert_eq!(refs["definitions"], 1, "{refs}");
+}
+
+#[test]
+fn hash_and_double_colon_name_a_ruby_method() {
+    let temp = write_repo(SCOPE_REPO);
+    for name in [
+        "Billing::Invoice#total",
+        "Billing::Invoice.total",
+        "Invoice#total",
+    ] {
+        assert_eq!(
+            matches_of(temp.path(), name)
+                .into_iter()
+                .map(|(n, k)| (n, k == "exact"))
+                .collect::<Vec<_>>(),
+            [("Billing.Invoice.total".to_string(), true)],
+            "{name}"
+        );
+        tessera(temp.path())
+            .args(["context", name])
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("Billing.Invoice.total"));
+    }
+}
