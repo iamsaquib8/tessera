@@ -1,0 +1,1 @@
+`install.sh` finds the latest release through GitHub's `releases/latest` redirect instead of the rate-limited REST API, and accepts `TESSERA_VERSION` (and the Action's `version`) written without the leading `v`. With `TESSERA_BASE_URL` set, `latest` needs `TESSERA_VERSION` or `TESSERA_LATEST_URL`.

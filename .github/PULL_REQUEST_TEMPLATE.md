@@ -10,4 +10,4 @@
 
 - [ ] `cargo fmt --check` and `cargo clippy --all-targets -- -D warnings` pass
 - [ ] `cargo test --all-targets` passes
-- [ ] User-facing change noted in `CHANGELOG.md` and the matching `docs/` page
+- [ ] User-facing change has a fragment in `changes/` (not an edit to `CHANGELOG.md`) and the matching `docs/` page

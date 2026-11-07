@@ -1,0 +1,1 @@
+The release workflow moves the major tag (`v1`) to each new stable release once every install channel passes its smoke tests, so `iamsaquib8/tessera/action@v1` follows the latest 1.x. Pre-releases and re-runs of older releases leave it alone.
