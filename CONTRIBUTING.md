@@ -87,6 +87,9 @@ python tests/junit_schema.py target/debug/tessera # JUnit schema and CLI
 | `tests/package_manifest.rs` | The lints, the size-tuned release profile and the crates.io package file list |
 | `tests/deny_config.rs` | `deny.toml` and the jobs that run it |
 | `tests/sqlite_version.rs` | That the bundled SQLite is at least the minimum version |
+| `tests/pre_commit.rs` | `.pre-commit-hooks.yaml` and the recipes in `docs/integrations.md` |
+| `tests/container.rs` | The container image: pinned bases, numeric non-root user, built on pull requests |
+| `tests/pages.rs` | The docs site publish job and its version banner |
 | `tests/repo_hygiene.rs` | That issue-form labels exist and these contributor docs match CI |
 
 When you change what Tessera extracts, the golden snapshot diff is the review.
