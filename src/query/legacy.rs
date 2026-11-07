@@ -67,13 +67,13 @@ impl ExportOptions {
 // from a path live at the bottom for the CLI.
 
 pub fn find_definition_conn(conn: &Connection, symbol: &str) -> Result<DefinitionResult> {
-    let mut stmt = conn.prepare(
+    let mut stmt = conn.prepare(&format!(
         "
         SELECT s.id, s.name, s.qualified_name, s.kind, s.file_id, f.path, f.language,
                s.start_line, s.end_line, s.signature, s.exported
         FROM symbols s
         JOIN files f ON f.id = s.file_id
-        WHERE s.qualified_name = ?1 OR s.name = ?1 OR s.qualified_name LIKE ?2
+        WHERE s.id IN ({ids})
         ORDER BY
             CASE
                 WHEN s.qualified_name = ?1 THEN 0
@@ -84,9 +84,11 @@ pub fn find_definition_conn(conn: &Connection, symbol: &str) -> Result<Definitio
             f.path
         LIMIT 1000
         ",
-    )?;
+        ids = db::NAME_MATCH_IDS
+    ))?;
+    let (tail, suffix) = db::name_match_params(symbol);
     let mut matches = stmt
-        .query_map(params![symbol, format!("%.{}", symbol)], db::map_symbol)?
+        .query_map(params![symbol, tail, suffix], db::map_symbol)?
         .collect::<rusqlite::Result<Vec<_>>>()?;
     let mut match_kind = MatchKind::Exact;
     if matches.is_empty() {
@@ -1172,15 +1174,13 @@ fn html_escape(value: &str) -> String {
 }
 
 fn symbol_exists(conn: &Connection, symbol: &str) -> Result<bool> {
-    let count: i64 = conn.query_row(
-        "
-        SELECT COUNT(*) FROM symbols
-        WHERE qualified_name = ?1 OR name = ?1 OR qualified_name LIKE ?2
-        ",
-        params![symbol, format!("%.{}", symbol)],
+    let (tail, suffix) = db::name_match_params(symbol);
+    let found: bool = conn.query_row(
+        &format!("SELECT EXISTS({})", db::NAME_MATCH_IDS),
+        params![symbol, tail, suffix],
         |row| row.get(0),
     )?;
-    Ok(count > 0)
+    Ok(found)
 }
 
 fn fuzzy_candidates(
