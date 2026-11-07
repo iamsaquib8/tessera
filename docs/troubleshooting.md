@@ -76,10 +76,18 @@ straight away and is indexing in the background. Retry after a few seconds;
 
 ## Docker
 
-Mount the repository at `/work`; the image uses it as the root:
+A public image is not available yet, so build it from a checkout of the
+repository:
 
 ```sh
-docker run --rm -v "$PWD:/work" ghcr.io/iamsaquib8/tessera status
+docker build -t tessera .
+```
+
+Mount the repository you want to check at `/work`; the image uses it as the
+root:
+
+```sh
+docker run --rm -v "$PWD:/work" tessera status
 ```
 
 The image keeps its index in `/tmp` inside the container, so it never writes

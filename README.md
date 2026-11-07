@@ -101,8 +101,7 @@ cargo binstall tessera-codegraph                 # prebuilt via cargo-binstall
 cargo install tessera-codegraph                  # from source, Rust 1.90+
 ```
 
-A Homebrew tap and a public container image (`ghcr.io/iamsaquib8/tessera`)
-are not available yet.
+A Homebrew tap and a public container image are not available yet.
 
 On Windows, use npm, `cargo install`, or the `.zip` on the
 [releases page](https://github.com/iamsaquib8/tessera/releases), which also
