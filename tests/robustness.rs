@@ -450,3 +450,93 @@ fn explicit_paths_obey_the_same_rules_as_the_walk() {
     assert!(!dump.contains("secret"), "{dump}");
     assert_eq!(fresh::check(&ws).unwrap(), fresh::Freshness::Fresh);
 }
+
+fn damage_index(db: &Path) {
+    let mut bytes = fs::read(db).unwrap();
+    assert!(
+        bytes.len() > 4096 * 6,
+        "fixture index is too small to damage"
+    );
+    for byte in &mut bytes[4096..4096 * 6] {
+        *byte = 0xAB;
+    }
+    fs::write(db, bytes).unwrap();
+}
+
+fn tessera_at(root: &Path, db: &Path) -> Command {
+    let mut cmd = Command::cargo_bin("tessera").unwrap();
+    cmd.arg("--root").arg(root).arg("--db").arg(db);
+    cmd
+}
+
+#[test]
+fn damaged_index_is_moved_aside_and_rebuilt_by_index() {
+    let (temp, db) = index_fixture("typescript");
+    let root = temp.path().join("repo");
+    damage_index(&db);
+    let output = tessera_at(&root, &db)
+        .arg("index")
+        .arg(&root)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("damaged") && stderr.contains(".corrupt"),
+        "{stderr}"
+    );
+    assert!(temp.path().join("tessera.db.corrupt").exists());
+    tessera_at(&root, &db)
+        .args(["find", "findById"])
+        .assert()
+        .success();
+}
+
+#[test]
+fn damaged_index_is_rebuilt_by_a_query_and_by_full_index() {
+    let (temp, db) = index_fixture("typescript");
+    let root = temp.path().join("repo");
+    damage_index(&db);
+    let output = tessera_at(&root, &db)
+        .args(["find", "findById"])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(String::from_utf8_lossy(&output.stdout).contains("findById"));
+    damage_index(&db);
+    tessera_at(&root, &db)
+        .args(["index", "--full"])
+        .arg(&root)
+        .assert()
+        .success();
+    tessera_at(&root, &db).arg("status").assert().success();
+}
+
+#[test]
+fn status_reports_a_damaged_index_without_failing() {
+    let (temp, db) = index_fixture("typescript");
+    let root = temp.path().join("repo");
+    damage_index(&db);
+    let output = tessera_at(&root, &db)
+        .args(["--json", "status"])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(value["freshness"]["state"], "corrupt");
+    let text = tessera_at(&root, &db).arg("status").output().unwrap();
+    assert!(text.status.success());
+    assert!(String::from_utf8_lossy(&text.stdout).contains("corrupt"));
+}
