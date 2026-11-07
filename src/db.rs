@@ -61,6 +61,10 @@ impl From<rusqlite::Error> for DbError {
 }
 
 pub fn open_rw(path: &Path) -> Result<Connection> {
+    recovering(path, || open_rw_once(path))
+}
+
+fn open_rw_once(path: &Path) -> Result<Connection> {
     if let Some(parent) = path.parent() {
         if !parent.as_os_str().is_empty() {
             fs::create_dir_all(parent)?;
@@ -76,13 +80,105 @@ pub fn open_rw(path: &Path) -> Result<Connection> {
     // SQLite's 2 MB default, pages spill to the WAL and are read back.
     conn.pragma_update(None, "cache_size", WRITER_CACHE_KIB)?;
     let version = user_version(&conn)?;
-    if version != SCHEMA_VERSION {
+    if version == SCHEMA_VERSION {
+        check_health(&conn, path)?;
+    } else {
         drop_all(&conn)?;
         create_schema(&conn)?;
         conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
         conn.pragma_update(None, "application_id", APPLICATION_ID)?;
     }
     Ok(conn)
+}
+
+/// Reads the small tables, and checks the whole file when a write-ahead log
+/// outlived its writer (a crash). Corruption shows up as SQLITE_CORRUPT.
+fn check_health(conn: &Connection, path: &Path) -> rusqlite::Result<()> {
+    conn.query_row("SELECT COUNT(*) FROM meta", [], |row| row.get::<_, i64>(0))?;
+    conn.query_row("SELECT COUNT(*) FROM files", [], |row| row.get::<_, i64>(0))?;
+    let unclean = fs::metadata(sidecar(path, "-wal")).is_ok_and(|meta| meta.len() > 0);
+    if unclean {
+        let verdict: String = conn.query_row("PRAGMA quick_check", [], |row| row.get(0))?;
+        if verdict != "ok" {
+            return Err(rusqlite::Error::SqliteFailure(
+                rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_CORRUPT),
+                Some(verdict),
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// True when `error` is SQLite reporting a damaged file or one that is no database.
+pub fn is_corrupt(error: &anyhow::Error) -> bool {
+    use rusqlite::ErrorCode::{DatabaseCorrupt, NotADatabase};
+    error.chain().any(|cause| {
+        let sqlite =
+            cause
+                .downcast_ref::<rusqlite::Error>()
+                .or(match cause.downcast_ref::<DbError>() {
+                    Some(DbError::Sqlite(error)) => Some(error),
+                    _ => None,
+                });
+        matches!(
+            sqlite,
+            Some(rusqlite::Error::SqliteFailure(failure, _))
+                if matches!(failure.code, DatabaseCorrupt | NotADatabase)
+        )
+    })
+}
+
+/// Runs `attempt`; if it fails because the index file is damaged, moves the
+/// file aside and runs it once more against a new index. Only files that carry
+/// Tessera's `application_id` are ever moved.
+pub fn recovering<T>(path: &Path, mut attempt: impl FnMut() -> Result<T>) -> Result<T> {
+    match attempt() {
+        Err(error) if is_corrupt(&error) && carries_application_id(path) => {
+            let moved = quarantine(path)?;
+            eprintln!(
+                "tessera: the index {} is damaged ({}); moved it to {} and rebuilding",
+                path.display(),
+                root_cause(&error),
+                moved.display()
+            );
+            attempt()
+        }
+        other => other,
+    }
+}
+
+fn root_cause(error: &anyhow::Error) -> String {
+    let text = error.root_cause().to_string();
+    text.split(": Error code")
+        .next()
+        .unwrap_or(&text)
+        .to_string()
+}
+
+fn carries_application_id(path: &Path) -> bool {
+    Connection::open(path)
+        .and_then(|conn| conn.query_row("PRAGMA application_id", [], |row| row.get::<_, i64>(0)))
+        .is_ok_and(|id| id == APPLICATION_ID)
+}
+
+fn sidecar(path: &Path, suffix: &str) -> PathBuf {
+    let mut name = path.as_os_str().to_os_string();
+    name.push(suffix);
+    PathBuf::from(name)
+}
+
+/// Moves the index and its `-wal`/`-shm` files to `<db>.corrupt…`, replacing
+/// an earlier quarantined copy.
+pub fn quarantine(path: &Path) -> Result<PathBuf> {
+    let moved = sidecar(path, ".corrupt");
+    for suffix in ["", "-wal", "-shm"] {
+        let (from, to) = (sidecar(path, suffix), sidecar(&moved, suffix));
+        let _ = fs::remove_file(&to);
+        if from.exists() {
+            fs::rename(&from, &to)?;
+        }
+    }
+    Ok(moved)
 }
 
 pub fn open_ro(path: &Path) -> std::result::Result<Connection, DbError> {

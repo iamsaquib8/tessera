@@ -618,6 +618,148 @@ fn project_config_can_be_committed() {
     assert!(ignored(".tessera/tessera.db"));
 }
 
+#[test]
+fn blast_diff_does_not_depend_on_the_users_diff_prefix_config() {
+    for config in [
+        &[][..],
+        &[("diff.mnemonicPrefix", "true")][..],
+        &[("diff.noprefix", "true")][..],
+        &[("diff.srcPrefix", "left/"), ("diff.dstPrefix", "right/")][..],
+    ] {
+        let temp = repo("typescript");
+        git_in(temp.path(), &["init", "-q"]);
+        git_in(temp.path(), &["add", "."]);
+        git_in(temp.path(), &["commit", "-q", "-m", "one"]);
+        for (key, value) in config {
+            git_in(temp.path(), &["config", key, value]);
+        }
+        fs::write(temp.path().join("src/util/format.ts"), FORMAT_V2).unwrap();
+        tessera(temp.path())
+            .args(["blast", "--diff", "HEAD"])
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("formatName"));
+    }
+}
+
+#[test]
+fn blast_diff_keeps_a_top_level_directory_named_a_or_b() {
+    let temp = TempDir::new().unwrap();
+    let dir = temp.path().join("a");
+    fs::create_dir_all(&dir).unwrap();
+    fs::write(dir.join("m.ts"), "export function one() { return 1; }\n").unwrap();
+    git_in(temp.path(), &["init", "-q"]);
+    git_in(temp.path(), &["config", "diff.noprefix", "true"]);
+    git_in(temp.path(), &["add", "."]);
+    git_in(temp.path(), &["commit", "-q", "-m", "one"]);
+    fs::write(dir.join("m.ts"), "export function one() { return 2; }\n").unwrap();
+    let output = tessera(temp.path())
+        .args(["--json", "blast", "--diff", "HEAD"])
+        .output()
+        .unwrap();
+    let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(value["changed"][0]["name"], "one", "{value}");
+}
+
+/// `a` (lines 1-20), `b` (21-30) and `c` (31-40), after `header` and before `trailer`.
+fn m_ts(header: &str, trailer: &str) -> String {
+    let function = |name: &str, body_lines: usize| {
+        let mut text = format!("export function {name}() {{\n");
+        for i in 0..body_lines {
+            text.push_str(&format!("  const {name}{i} = {i};\n"));
+        }
+        text.push_str("}\n");
+        text
+    };
+    format!(
+        "{header}{}{}{}{trailer}",
+        function("a", 18),
+        function("b", 8),
+        function("c", 8)
+    )
+}
+
+fn deletion_repo(header: &str, trailer: &str) -> TempDir {
+    let temp = TempDir::new().unwrap();
+    fs::create_dir_all(temp.path().join("src")).unwrap();
+    fs::write(temp.path().join("src/m.ts"), m_ts(header, trailer)).unwrap();
+    fs::write(
+        temp.path().join("src/use.ts"),
+        "import { b, c } from \"./m\";\nexport function useB() { return b(); }\nexport function useC() { return c(); }\n",
+    )
+    .unwrap();
+    git_in(temp.path(), &["init", "-q"]);
+    git_in(temp.path(), &["add", "."]);
+    git_in(temp.path(), &["commit", "-q", "-m", "one"]);
+    temp
+}
+
+fn changed_names(root: &Path) -> (Vec<String>, usize) {
+    let output = tessera(root)
+        .args(["--json", "blast", "--diff", "HEAD"])
+        .output()
+        .unwrap();
+    let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let mut names: Vec<String> = value["changed"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| s["name"].as_str().unwrap().to_string())
+        .collect();
+    names.sort();
+    (names, value["callers"].as_array().unwrap().len())
+}
+
+fn drop_lines(root: &Path, from: usize, to: usize) {
+    let path = root.join("src/m.ts");
+    let kept: Vec<String> = fs::read_to_string(&path)
+        .unwrap()
+        .lines()
+        .enumerate()
+        .filter(|(i, _)| !(from..=to).contains(&(i + 1)))
+        .map(|(_, line)| format!("{line}\n"))
+        .collect();
+    fs::write(path, kept.concat()).unwrap();
+}
+
+#[test]
+fn a_pure_deletion_flags_the_symbol_it_happened_in() {
+    let temp = deletion_repo("", "");
+    drop_lines(temp.path(), 3, 17);
+    assert_eq!(changed_names(temp.path()), (vec!["a".to_string()], 0));
+}
+
+#[test]
+fn a_deletion_at_the_top_or_end_of_a_file_flags_the_adjacent_symbol() {
+    let comments = |n: usize| "// note\n".repeat(n);
+    let temp = deletion_repo(&comments(25), "");
+    drop_lines(temp.path(), 1, 25);
+    assert_eq!(changed_names(temp.path()).0, vec!["a".to_string()]);
+
+    let temp = deletion_repo("", &comments(25));
+    drop_lines(temp.path(), 41, 65);
+    assert_eq!(changed_names(temp.path()).0, vec!["c".to_string()]);
+}
+
+#[test]
+fn a_large_deletion_before_a_small_edit_flags_both_symbols_and_nothing_else() {
+    let temp = deletion_repo("", "");
+    drop_lines(temp.path(), 3, 17);
+    // `c` now spans lines 16-25.
+    edit_line(temp.path(), "const c3 = 3;", "const c3 = 33;");
+    assert_eq!(
+        changed_names(temp.path()),
+        (vec!["a".to_string(), "c".to_string()], 1)
+    );
+}
+
+fn edit_line(root: &Path, from: &str, to: &str) {
+    let path = root.join("src/m.ts");
+    let text = fs::read_to_string(&path).unwrap();
+    assert!(text.contains(from));
+    fs::write(path, text.replacen(from, to, 1)).unwrap();
+}
+
 fn write_repo(files: &[(&str, &str)]) -> TempDir {
     let temp = TempDir::new().unwrap();
     for (path, body) in files {
