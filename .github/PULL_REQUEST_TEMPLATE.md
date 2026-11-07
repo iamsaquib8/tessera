@@ -8,6 +8,6 @@
 
 ## Checklist
 
-- [ ] `cargo fmt --check` and `cargo clippy --all-targets -- -D warnings` pass
-- [ ] `cargo test --all-targets` passes
+- [ ] `cargo fmt --check` and `cargo clippy --all-targets --all-features -- -D warnings` pass
+- [ ] `cargo test --all-targets --all-features` passes
 - [ ] User-facing change has a fragment in `changes/` (not an edit to `CHANGELOG.md`) and the matching `docs/` page
