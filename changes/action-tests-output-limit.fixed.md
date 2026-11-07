@@ -1,0 +1,1 @@
+The GitHub Action no longer fails or truncates when the list of tests to run is very large. Over 512 KB, the `tests` output is left empty, the new `tests-truncated` output is `true`, and the full list stays in `tests-file`.

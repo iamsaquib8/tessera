@@ -1,12 +1,20 @@
-- { name: bug, color: d64545, description: Wrong answer, crash, or broken install }
-- { name: needs-repro, color: f0b4b4, description: Needs a minimal example }
-- { name: language-support, color: 2b4bdb, description: New language or extraction gap }
-- { name: framework-pack, color: 5a74e6, description: Routes, queues, tables for the contract map }
-- { name: agents, color: 2e9e8f, description: Agent integrations, MCP config, hooks }
-- { name: mcp, color: 6bc1b4, description: MCP server and tools }
-- { name: cli, color: 6b7686, description: Command-line interface }
-- { name: docs, color: c5ccd6, description: Documentation }
-- { name: performance, color: 1c2330, description: Speed and memory }
-- { name: packaging, color: 8a97aa, description: npm, Homebrew, Docker, releases }
-- { name: good first issue, color: 7ee0c9, description: Scoped for a first contribution }
-- { name: help wanted, color: 9fb3f5, description: Maintainer would welcome a PR }
+- { name: "bug", color: "d73a4a", description: "Something isn't working" }
+- { name: "documentation", color: "0075ca", description: "Improvements or additions to documentation" }
+- { name: "duplicate", color: "cfd3d7", description: "This issue or pull request already exists" }
+- { name: "enhancement", color: "a2eeef", description: "New feature or request" }
+- { name: "good first issue", color: "7057ff", description: "Good for newcomers" }
+- { name: "help wanted", color: "008672", description: "Extra attention is needed" }
+- { name: "invalid", color: "e4e669", description: "This doesn't seem right" }
+- { name: "question", color: "d876e3", description: "Further information is requested" }
+- { name: "wontfix", color: "ffffff", description: "This will not be worked on" }
+- { name: "performance", color: "fbca04", description: "Performance improvements or bottlenecks" }
+- { name: "stability", color: "e99695", description: "Stability, crash, or concurrency issues" }
+- { name: "epic", color: "5319e7", description: "A theme made of several issues, tracked as a checklist" }
+- { name: "security", color: "b60205", description: "Security, supply chain or privacy" }
+- { name: "usability", color: "fbca04", description: "Makes Tessera easier to set up, read or use" }
+- { name: "testing", color: "bfd4f2", description: "Tests, fixtures, fuzzing or benchmarks" }
+- { name: "ci", color: "1d76db", description: "Continuous integration, release and packaging" }
+- { name: "dependencies", color: "0366d6", description: "Pull requests that update a dependency file" }
+- { name: "javascript", color: "168700", description: "Pull requests that update javascript code" }
+- { name: "rust", color: "000000", description: "Pull requests that update rust code" }
+- { name: "github_actions", color: "000000", description: "Pull requests that update GitHub Actions code" }
