@@ -53,8 +53,41 @@ pub struct BaselineEntry {
 
 #[derive(Debug, Default, Deserialize)]
 struct AcceptedFile {
+    /// Entries stay tables until each is checked, so one bad entry (an unknown
+    /// key, a missing field) drops that entry and not the whole file.
     #[serde(default)]
-    accept: Vec<Accepted>,
+    accept: Vec<toml::Table>,
+}
+
+const ACCEPTED_KEYS: [&str; 4] = ["fingerprint", "reason", "expires", "by"];
+
+/// The usable entries of `accepted.toml`, and a message per entry that is not
+/// usable. An entry with a key Tessera does not know (`expire =` for
+/// `expires =`) waives nothing, so a typo never turns a time-limited
+/// exception into a permanent one.
+fn parse_accepted(
+    text: &str,
+) -> std::result::Result<(Vec<Accepted>, Vec<String>), toml::de::Error> {
+    let file: AcceptedFile = toml::from_str(text)?;
+    let (mut entries, mut problems) = (Vec::new(), Vec::new());
+    for (index, table) in file.accept.into_iter().enumerate() {
+        let name = match table.get("fingerprint").and_then(toml::Value::as_str) {
+            Some(print) => format!("entry {} ({print})", index + 1),
+            None => format!("entry {}", index + 1),
+        };
+        if let Some(key) = table.keys().find(|k| !ACCEPTED_KEYS.contains(&k.as_str())) {
+            problems.push(format!(
+                "{name} has an unknown key `{key}` (known: {}), so that break counts again",
+                ACCEPTED_KEYS.join(", ")
+            ));
+            continue;
+        }
+        match table.try_into::<Accepted>() {
+            Ok(entry) => entries.push(entry),
+            Err(error) => problems.push(format!("{name} is ignored: {}", error.message())),
+        }
+    }
+    Ok((entries, problems))
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -151,9 +184,12 @@ impl Waivers {
         }
         let accepted = dir(root).join(ACCEPTED_FILE);
         if let Ok(text) = fs::read_to_string(&accepted) {
-            match toml::from_str::<AcceptedFile>(&text) {
-                Ok(file) => {
-                    for entry in &file.accept {
+            match parse_accepted(&text) {
+                Ok((entries, problems)) => {
+                    for problem in problems {
+                        eprintln!("tessera: {}: {problem}", accepted.display());
+                    }
+                    for entry in &entries {
                         if let Some(date) = entry.expires.as_deref().filter(|d| !is_date(d)) {
                             eprintln!(
                                 "tessera: {}: expires `{date}` for {} is not a date like 2026-12-31, so that break counts again",
@@ -162,8 +198,7 @@ impl Waivers {
                             );
                         }
                     }
-                    waivers.accepted = file
-                        .accept
+                    waivers.accepted = entries
                         .into_iter()
                         .map(|a| (a.fingerprint.clone(), a))
                         .collect();
@@ -322,8 +357,8 @@ pub struct WaiverSummary {
 pub fn summary(root: &Path) -> WaiverSummary {
     let accepted: Vec<Accepted> = fs::read_to_string(dir(root).join(ACCEPTED_FILE))
         .ok()
-        .and_then(|text| toml::from_str::<AcceptedFile>(&text).ok())
-        .map(|file| file.accept)
+        .and_then(|text| parse_accepted(&text).ok())
+        .map(|(entries, _)| entries)
         .unwrap_or_default();
     let today = today();
     WaiverSummary {
