@@ -164,7 +164,12 @@ fn find_path_matches_whole_path_segments() {
         outline_paths(&index, "src/user_service.ts"),
         ["src/user_service.ts"]
     );
-    assert!(outline_paths(&index, "SRC/API/index.ts").is_empty());
+    // Path matching is case-sensitive. A file system that ignores case
+    // (macOS, Windows) resolves `SRC/API/index.ts` to the stored name before
+    // the lookup, so only assert this where the name does not exist on disk.
+    if !_temp.path().join("repo/SRC/API/index.ts").exists() {
+        assert!(outline_paths(&index, "SRC/API/index.ts").is_empty());
+    }
     assert_eq!(
         outline_paths(&index, "src/api/index.ts"),
         ["src/api/index.ts"]
