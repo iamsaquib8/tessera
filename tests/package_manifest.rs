@@ -41,7 +41,8 @@ fn the_crates_io_package_ships_the_source_and_nothing_else() {
     let files: Vec<String> = String::from_utf8(out.stdout)
         .unwrap()
         .lines()
-        .map(str::to_string)
+        // Windows lists paths with backslashes.
+        .map(|line| line.replace('\\', "/"))
         .collect();
     for file in &files {
         let top = file.split('/').next().unwrap();
