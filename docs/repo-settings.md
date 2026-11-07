@@ -25,6 +25,11 @@ written down here so they can be applied once and checked later.
 - Enable **Pages** from GitHub Actions; `.github/workflows/pages.yml` deploys
   the docs site.
 - Enable **Private vulnerability reporting** (Security → Advisories).
+- Enable **Dependabot alerts** and **Dependabot security updates** (Settings →
+  Advanced Security). `.github/dependabot.yml` schedules the weekly version
+  updates; the alerts and security updates are separate switches. Check with
+  `gh api repos/iamsaquib8/tessera/vulnerability-alerts`, which returns 204
+  once alerts are on.
 
 ## Labels
 
