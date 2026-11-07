@@ -710,6 +710,18 @@ pub fn untouched() -> i32 {
     )
     .unwrap();
 
+    // Every CLI query re-indexes first: the index describes the working tree.
+    Command::cargo_bin("tessera")
+        .unwrap()
+        .current_dir(temp.path())
+        .args([
+            "index",
+            temp.path().to_str().unwrap(),
+            "--db",
+            db.to_str().unwrap(),
+        ])
+        .assert()
+        .success();
     let conn = Connection::open(&db).unwrap();
     let diff =
         tessera_codegraph::query::diff_impact_conn(&conn, temp.path(), "HEAD", None, 2).unwrap();
@@ -729,18 +741,18 @@ pub fn untouched() -> i32 {
     assert_eq!(calc.1, 2, "calculate added_lines");
     assert_eq!(calc.2, 3, "calculate removed_lines");
 
-    // to_be_deleted is recognized as changed with removed_lines > 0
-    let del = changed_names
+    // to_be_deleted is gone from the working tree and so from the index; the
+    // deletion at the end of the file is attributed to the symbol that now
+    // ends it, with the removed lines counted there.
+    let tail = changed_names
         .iter()
-        .find(|(name, _, _)| *name == "to_be_deleted")
-        .expect("to_be_deleted changed");
-    assert_eq!(del.1, 0, "to_be_deleted added_lines");
-    assert_eq!(del.2, 4, "to_be_deleted removed_lines");
-
-    // untouched is not changed
+        .find(|(name, _, _)| *name == "untouched")
+        .expect("the deletion at the end maps to the last symbol");
+    assert_eq!(tail.1, 0, "added_lines");
+    assert_eq!(tail.2, 4, "removed_lines");
     assert!(!changed_names
         .iter()
-        .any(|(name, _, _)| *name == "untouched"));
+        .any(|(name, _, _)| *name == "to_be_deleted"));
 
     // Callers are impacted
     let impacted_names: Vec<&str> = diff

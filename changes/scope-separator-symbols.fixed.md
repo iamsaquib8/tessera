@@ -1,0 +1,1 @@
+The documented `A::B`, `Class#method` and `A\B` symbol forms now find the same symbol as `A.B` in `find`, `context`, `path`, `blast`, `refs` and `verify`, instead of falling back to fuzzy matches or to every symbol with the same bare name.

@@ -141,7 +141,7 @@ Eleven queries are also MCP tools (`tessera mcp`): `find`, `search`, `refs`,
 `import_cycles` (the CLI's `cycles`). The tools are read-only, paginated, and
 return compact text so they cost few tokens ([docs/mcp.md](docs/mcp.md)).
 Every command takes `--json`. See
-[the five-minute tour](docs/first-five-minutes.md) for real output.
+[the guides](docs/guides/index.md) for real output.
 
 ## See the impact
 

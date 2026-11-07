@@ -1251,3 +1251,84 @@ fn stats_summarise_what_the_hooks_did_without_recording_code() {
         "{text:?}"
     );
 }
+
+fn event(session: &str, at: u64) -> tessera_codegraph::hook::events::HookEvent {
+    tessera_codegraph::hook::events::HookEvent {
+        at,
+        session: session.to_string(),
+        agent: "claude".to_string(),
+        event: "post-edit".to_string(),
+        reply: "none".to_string(),
+        open: 0,
+        fixed: 0,
+        released: 0,
+        ms: 1,
+    }
+}
+
+fn parse_log(dir: &Path) -> (usize, Vec<Value>) {
+    let text = fs::read_to_string(dir.join("events.jsonl")).unwrap();
+    let mut bad = 0;
+    let mut events = Vec::new();
+    for line in text.lines() {
+        match serde_json::from_str::<Value>(line) {
+            Ok(value) => events.push(value),
+            Err(_) => bad += 1,
+        }
+    }
+    (bad, events)
+}
+
+#[test]
+fn parallel_hook_runs_write_one_parseable_line_each() {
+    let temp = TempDir::new().unwrap();
+    let dir = temp.path().to_path_buf();
+    let threads: Vec<_> = (0..50u64)
+        .map(|i| {
+            let dir = dir.clone();
+            std::thread::spawn(move || {
+                tessera_codegraph::hook::events::record(&dir, &event(&format!("s{i}"), i + 1));
+            })
+        })
+        .collect();
+    for thread in threads {
+        thread.join().unwrap();
+    }
+    let (bad, events) = parse_log(&dir);
+    assert_eq!(bad, 0, "interleaved lines");
+    assert_eq!(events.len(), 50);
+}
+
+#[test]
+fn rotation_never_drops_an_event_appended_while_it_runs() {
+    let temp = TempDir::new().unwrap();
+    let dir = temp.path().to_path_buf();
+    // Past the 4 MB cap, so the first records rotate the log.
+    let old = serde_json::to_string(&event("old", 1)).unwrap();
+    let seed = format!("{old}\n").repeat(4 * 1024 * 1024 / (old.len() + 1) + 100);
+    fs::write(dir.join("events.jsonl"), seed).unwrap();
+    let threads: Vec<_> = (0..8u64)
+        .map(|t| {
+            let dir = dir.clone();
+            std::thread::spawn(move || {
+                for i in 0..25u64 {
+                    tessera_codegraph::hook::events::record(
+                        &dir,
+                        &event(&format!("new{t}"), 2 + i),
+                    );
+                }
+            })
+        })
+        .collect();
+    for thread in threads {
+        thread.join().unwrap();
+    }
+    let (bad, events) = parse_log(&dir);
+    assert_eq!(bad, 0);
+    let new = events
+        .iter()
+        .filter(|e| e["session"].as_str().is_some_and(|s| s.starts_with("new")))
+        .count();
+    assert_eq!(new, 200, "events lost to rotation");
+    assert!(events.len() < 20_000, "the old half was dropped");
+}

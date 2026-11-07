@@ -11,7 +11,8 @@ use serde::Serialize;
 
 use super::blast::{BlastArgs, BlastResult};
 use super::map::{self, MapArgs};
-use super::verify::{changed_paths, verify_paths, Changes, VerifyResult};
+use super::verify::{changed_paths, verify_paths_with, Changes, VerifyResult};
+use super::waivers::Waivers;
 
 /// The marker a bot looks for to update its own comment.
 pub const MARKER: &str = "<!-- tessera -->";
@@ -48,8 +49,18 @@ const GAP_DEPTH: usize = 4;
 const GAP_SCAN_CAP: usize = 2_000;
 
 pub fn run(conn: &Connection, root: &Path, changes: &Changes) -> Result<Report> {
+    run_with(conn, root, changes, &Waivers::load(root))
+}
+
+/// [`run`] with these waivers (`Waivers::none()` for `--no-baseline`).
+pub fn run_with(
+    conn: &Connection,
+    root: &Path,
+    changes: &Changes,
+    waivers: &Waivers,
+) -> Result<Report> {
     let changed = changed_paths(root, changes)?;
-    let verify = verify_paths(conn, root, &changed, changes)?;
+    let verify = verify_paths_with(conn, root, &changed, changes, waivers)?;
     let rev = match changes {
         Changes::Since(rev) => rev.clone(),
         _ => "HEAD".to_string(),

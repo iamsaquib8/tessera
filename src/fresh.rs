@@ -20,6 +20,8 @@ pub enum Freshness {
     },
     /// Built by another tessera version or under a different config.
     Outdated,
+    /// The index file is damaged; the next index run moves it aside and rebuilds it.
+    Corrupt,
     /// Every file is indexed, but an edit with too many dependents left
     /// them to be re-resolved by the next full pass.
     Pending,
@@ -34,6 +36,13 @@ pub enum Refresh {
 }
 
 pub fn check(ws: &Workspace) -> Result<Freshness> {
+    match check_index(ws) {
+        Err(error) if db::is_corrupt(&error) => Ok(Freshness::Corrupt),
+        other => other,
+    }
+}
+
+fn check_index(ws: &Workspace) -> Result<Freshness> {
     let conn = match db::open_ro(&ws.db_path) {
         Ok(conn) => conn,
         Err(DbError::Missing(_) | DbError::SchemaMismatch { .. }) => return Ok(Freshness::Missing),

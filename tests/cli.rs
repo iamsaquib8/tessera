@@ -49,6 +49,102 @@ fn queries_from_a_subdirectory_use_the_repo_root() {
     assert!(!temp.path().join("src/users/.tessera").exists());
 }
 
+fn outline_files(cwd: &Path, path: &str) -> Vec<String> {
+    let out = tessera(cwd)
+        .args(["find", "--path", path, "--json"])
+        .output()
+        .unwrap();
+    let value: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let mut files: Vec<String> = value["outline"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| s["path"].as_str().unwrap().to_string())
+        .collect();
+    files.dedup();
+    files
+}
+
+#[test]
+fn file_arguments_are_taken_relative_to_the_repository_root() {
+    let temp = repo("typescript");
+    fs::create_dir_all(temp.path().join(".git")).unwrap();
+    let root = temp.path();
+    let absolute = format!("{}/src/users/repo.ts", root.display());
+    let want = ["src/users/repo.ts".to_string()];
+    for path in [
+        "src/users/repo.ts",
+        "./src/users/repo.ts",
+        "src\\users\\repo.ts",
+        ".\\src\\users\\repo.ts",
+        "src/users/../users/repo.ts",
+        absolute.as_str(),
+    ] {
+        assert_eq!(outline_files(root, path), want, "from the root: {path}");
+    }
+    // typed from a subdirectory, a path is relative to where the user stands
+    let src = root.join("src");
+    assert_eq!(outline_files(&src, "users/repo.ts"), want);
+    assert_eq!(outline_files(&src, "./users/repo.ts"), want);
+    assert_eq!(outline_files(&src, "../src/users/repo.ts"), want);
+    assert_eq!(outline_files(&src, &absolute), want);
+    assert_eq!(
+        outline_files(&src.join("users"), "."),
+        want,
+        "a directory argument is relative to the cwd too"
+    );
+}
+
+#[test]
+fn a_path_outside_the_repository_is_a_usage_error() {
+    let temp = repo("typescript");
+    fs::create_dir_all(temp.path().join(".git")).unwrap();
+    for path in ["/etc/hosts", "../outside.ts"] {
+        tessera(temp.path())
+            .args(["find", "--path", path])
+            .assert()
+            .code(2)
+            .stderr(predicate::str::contains("outside the repository"));
+    }
+}
+
+#[test]
+fn refs_on_a_file_accepts_relative_and_absolute_paths() {
+    let temp = repo("typescript");
+    fs::create_dir_all(temp.path().join(".git")).unwrap();
+    let absolute = format!("{}/src/util/format.ts", temp.path().display());
+    let from_root = [
+        "src/util/format.ts",
+        "./src/util/format.ts",
+        absolute.as_str(),
+    ];
+    for target in from_root {
+        tessera(temp.path())
+            .args(["refs", target])
+            .assert()
+            .success()
+            .stdout(predicate::str::contains(
+                "Files importing src/util/format.ts",
+            ))
+            .stdout(predicate::str::contains("src/users/repo.ts"));
+    }
+    for target in ["util/format.ts", "./util/format.ts"] {
+        tessera(&temp.path().join("src"))
+            .args(["refs", target])
+            .assert()
+            .success()
+            .stdout(predicate::str::contains(
+                "Files importing src/util/format.ts",
+            ));
+    }
+    // a symbol name is still a symbol name
+    tessera(temp.path())
+        .args(["refs", "formatName"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Files importing").not());
+}
+
 #[test]
 fn verify_exit_codes() {
     let temp = repo("typescript");
@@ -505,6 +601,83 @@ fn verify_handles_non_ascii_text_before_a_member_call() {
 }
 
 #[test]
+fn an_unknown_symbol_is_not_reported_as_having_no_callers() {
+    let temp = repo("typescript");
+    for command in ["blast", "refs"] {
+        let out = tessera(temp.path())
+            .args([command, "loadUsr"])
+            .assert()
+            .success()
+            .stdout(predicate::str::contains(
+                "No definition of loadUsr; closest matches:",
+            ))
+            .stdout(predicate::str::contains("loadUser"))
+            .stdout(predicate::str::contains("No callers found").not())
+            .stdout(predicate::str::contains("No references to").not())
+            .get_output()
+            .stdout
+            .clone();
+        assert!(!out.is_empty());
+        let json: serde_json::Value = serde_json::from_slice(
+            &tessera(temp.path())
+                .args([command, "loadUsr", "--json"])
+                .output()
+                .unwrap()
+                .stdout,
+        )
+        .unwrap();
+        assert_eq!(json["found"], false, "{command}: {json}");
+        assert!(
+            json["suggestions"][0]["qualified_name"]
+                .as_str()
+                .unwrap()
+                .contains("loadUser"),
+            "{command}: {json}"
+        );
+        // a symbol that exists is found, even with nothing calling it
+        let known: serde_json::Value = serde_json::from_slice(
+            &tessera(temp.path())
+                .args([command, "loadUser", "--json"])
+                .output()
+                .unwrap()
+                .stdout,
+        )
+        .unwrap();
+        assert_eq!(known["found"], true, "{command}: {known}");
+    }
+    tessera(temp.path())
+        .args(["path", "nope", "formatFullName"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("No definition of nope"))
+        .stdout(predicate::str::contains("No call path").not());
+    let path: serde_json::Value = serde_json::from_slice(
+        &tessera(temp.path())
+            .args(["path", "loadUsr", "formatName", "--json"])
+            .output()
+            .unwrap()
+            .stdout,
+    )
+    .unwrap();
+    assert_eq!(path["found"], false);
+    assert_eq!(path["unknown"][0]["symbol"], "loadUsr");
+    assert!(path["unknown"][0]["suggestions"][0]["qualified_name"]
+        .as_str()
+        .unwrap()
+        .contains("loadUser"));
+}
+
+#[test]
+fn map_with_an_unknown_kind_is_a_usage_error() {
+    let temp = repo("typescript");
+    tessera(temp.path())
+        .args(["map", "bogus"])
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("unknown contract kind `bogus`"));
+}
+
+#[test]
 fn status_counts_files_with_syntax_errors() {
     let temp = repo("typescript");
     fs::write(
@@ -616,4 +789,321 @@ fn project_config_can_be_committed() {
     };
     assert!(!ignored(".tessera/config.toml"));
     assert!(ignored(".tessera/tessera.db"));
+}
+
+#[test]
+fn blast_diff_does_not_depend_on_the_users_diff_prefix_config() {
+    for config in [
+        &[][..],
+        &[("diff.mnemonicPrefix", "true")][..],
+        &[("diff.noprefix", "true")][..],
+        &[("diff.srcPrefix", "left/"), ("diff.dstPrefix", "right/")][..],
+    ] {
+        let temp = repo("typescript");
+        git_in(temp.path(), &["init", "-q"]);
+        git_in(temp.path(), &["add", "."]);
+        git_in(temp.path(), &["commit", "-q", "-m", "one"]);
+        for (key, value) in config {
+            git_in(temp.path(), &["config", key, value]);
+        }
+        fs::write(temp.path().join("src/util/format.ts"), FORMAT_V2).unwrap();
+        tessera(temp.path())
+            .args(["blast", "--diff", "HEAD"])
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("formatName"));
+    }
+}
+
+#[test]
+fn blast_diff_keeps_a_top_level_directory_named_a_or_b() {
+    let temp = TempDir::new().unwrap();
+    let dir = temp.path().join("a");
+    fs::create_dir_all(&dir).unwrap();
+    fs::write(dir.join("m.ts"), "export function one() { return 1; }\n").unwrap();
+    git_in(temp.path(), &["init", "-q"]);
+    git_in(temp.path(), &["config", "diff.noprefix", "true"]);
+    git_in(temp.path(), &["add", "."]);
+    git_in(temp.path(), &["commit", "-q", "-m", "one"]);
+    fs::write(dir.join("m.ts"), "export function one() { return 2; }\n").unwrap();
+    let output = tessera(temp.path())
+        .args(["--json", "blast", "--diff", "HEAD"])
+        .output()
+        .unwrap();
+    let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(value["changed"][0]["name"], "one", "{value}");
+}
+
+/// `a` (lines 1-20), `b` (21-30) and `c` (31-40), after `header` and before `trailer`.
+fn m_ts(header: &str, trailer: &str) -> String {
+    let function = |name: &str, body_lines: usize| {
+        let mut text = format!("export function {name}() {{\n");
+        for i in 0..body_lines {
+            text.push_str(&format!("  const {name}{i} = {i};\n"));
+        }
+        text.push_str("}\n");
+        text
+    };
+    format!(
+        "{header}{}{}{}{trailer}",
+        function("a", 18),
+        function("b", 8),
+        function("c", 8)
+    )
+}
+
+fn deletion_repo(header: &str, trailer: &str) -> TempDir {
+    let temp = TempDir::new().unwrap();
+    fs::create_dir_all(temp.path().join("src")).unwrap();
+    fs::write(temp.path().join("src/m.ts"), m_ts(header, trailer)).unwrap();
+    fs::write(
+        temp.path().join("src/use.ts"),
+        "import { b, c } from \"./m\";\nexport function useB() { return b(); }\nexport function useC() { return c(); }\n",
+    )
+    .unwrap();
+    git_in(temp.path(), &["init", "-q"]);
+    git_in(temp.path(), &["add", "."]);
+    git_in(temp.path(), &["commit", "-q", "-m", "one"]);
+    temp
+}
+
+fn changed_names(root: &Path) -> (Vec<String>, usize) {
+    let output = tessera(root)
+        .args(["--json", "blast", "--diff", "HEAD"])
+        .output()
+        .unwrap();
+    let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let mut names: Vec<String> = value["changed"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| s["name"].as_str().unwrap().to_string())
+        .collect();
+    names.sort();
+    (names, value["callers"].as_array().unwrap().len())
+}
+
+fn drop_lines(root: &Path, from: usize, to: usize) {
+    let path = root.join("src/m.ts");
+    let kept: Vec<String> = fs::read_to_string(&path)
+        .unwrap()
+        .lines()
+        .enumerate()
+        .filter(|(i, _)| !(from..=to).contains(&(i + 1)))
+        .map(|(_, line)| format!("{line}\n"))
+        .collect();
+    fs::write(path, kept.concat()).unwrap();
+}
+
+#[test]
+fn a_pure_deletion_flags_the_symbol_it_happened_in() {
+    let temp = deletion_repo("", "");
+    drop_lines(temp.path(), 3, 17);
+    assert_eq!(changed_names(temp.path()), (vec!["a".to_string()], 0));
+}
+
+#[test]
+fn a_deletion_at_the_top_or_end_of_a_file_flags_the_adjacent_symbol() {
+    let comments = |n: usize| "// note\n".repeat(n);
+    let temp = deletion_repo(&comments(25), "");
+    drop_lines(temp.path(), 1, 25);
+    assert_eq!(changed_names(temp.path()).0, vec!["a".to_string()]);
+
+    let temp = deletion_repo("", &comments(25));
+    drop_lines(temp.path(), 41, 65);
+    assert_eq!(changed_names(temp.path()).0, vec!["c".to_string()]);
+}
+
+#[test]
+fn a_large_deletion_before_a_small_edit_flags_both_symbols_and_nothing_else() {
+    let temp = deletion_repo("", "");
+    drop_lines(temp.path(), 3, 17);
+    // `c` now spans lines 16-25.
+    edit_line(temp.path(), "const c3 = 3;", "const c3 = 33;");
+    assert_eq!(
+        changed_names(temp.path()),
+        (vec!["a".to_string(), "c".to_string()], 1)
+    );
+}
+
+fn edit_line(root: &Path, from: &str, to: &str) {
+    let path = root.join("src/m.ts");
+    let text = fs::read_to_string(&path).unwrap();
+    assert!(text.contains(from));
+    fs::write(path, text.replacen(from, to, 1)).unwrap();
+}
+
+fn write_repo(files: &[(&str, &str)]) -> TempDir {
+    let temp = TempDir::new().unwrap();
+    for (path, body) in files {
+        let full = temp.path().join(path);
+        fs::create_dir_all(full.parent().unwrap()).unwrap();
+        fs::write(full, body).unwrap();
+    }
+    temp
+}
+
+fn json_of(cwd: &Path, args: &[&str]) -> serde_json::Value {
+    let out = tessera(cwd).args(args).arg("--json").output().unwrap();
+    serde_json::from_slice(&out.stdout)
+        .unwrap_or_else(|e| panic!("{args:?}: {e}: {}", String::from_utf8_lossy(&out.stdout)))
+}
+
+const CASE_REPO: &[(&str, &str)] = &[(
+    "src/a.ts",
+    "export class A { getUser() { return 1 } }\n\
+     export class B { GetUser() { return 2 } }\n\
+     export class C { getXuser() { return 3 } }\n",
+)];
+
+fn matches_of(cwd: &Path, symbol: &str) -> Vec<(String, String)> {
+    json_of(cwd, &["find", symbol])["matches"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|m| {
+            (
+                m["symbol"]["qualified_name"].as_str().unwrap().to_string(),
+                m["match_kind"]["kind"].as_str().unwrap().to_string(),
+            )
+        })
+        .collect()
+}
+
+#[test]
+fn symbol_lookup_is_case_sensitive() {
+    let temp = write_repo(CASE_REPO);
+    let exact = |symbol: &str| -> Vec<String> {
+        matches_of(temp.path(), symbol)
+            .into_iter()
+            .filter(|(_, kind)| kind == "exact")
+            .map(|(name, _)| name)
+            .collect()
+    };
+    assert_eq!(exact("getUser"), ["A.getUser"]);
+    assert_eq!(exact("B.GetUser"), ["B.GetUser"]);
+    assert!(exact("getuser").is_empty(), "{:?}", exact("getuser"));
+    assert!(exact("a.getUser").is_empty());
+}
+
+#[test]
+fn underscore_in_a_symbol_name_is_not_a_wildcard() {
+    let temp = write_repo(CASE_REPO);
+    assert!(!matches_of(temp.path(), "get_user")
+        .iter()
+        .any(|(name, kind)| name == "C.getXuser" && kind == "exact"));
+    // context must not return the body of a different method either
+    tessera(temp.path())
+        .args(["context", "get_user"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("getXuser").not());
+}
+
+#[test]
+fn verify_reports_a_wrong_case_name_as_missing() {
+    let temp = write_repo(CASE_REPO);
+    tessera(temp.path())
+        .args(["verify", "getuser"])
+        .assert()
+        .code(1)
+        .stdout(predicate::str::contains("getuser"))
+        .stdout(predicate::str::contains("A.getUser"));
+    tessera(temp.path())
+        .args(["verify", "--snippet", "-", "--language", "typescript"])
+        .write_stdin("export function go() { return getuser(); }\n")
+        .assert()
+        .code(1)
+        .stdout(predicate::str::contains("V1"));
+    tessera(temp.path())
+        .args(["verify", "getUser"])
+        .assert()
+        .success();
+}
+
+const SCOPE_REPO: &[(&str, &str)] = &[
+    (
+        "src/lib.rs",
+        "pub struct Index;\n\
+         impl Index { pub fn find(&self) -> i32 { 1 } }\n\
+         pub struct Other;\n\
+         impl Other { pub fn find(&self) -> i32 { 2 } }\n\
+         pub fn caller() -> i32 { Index.find() }\n",
+    ),
+    (
+        "lib/billing.rb",
+        "module Billing\n  class Invoice\n    def total\n      1\n    end\n  end\nend\n",
+    ),
+];
+
+/// A result with the echoed query removed, so two spellings compare equal.
+fn without_query(mut value: serde_json::Value) -> serde_json::Value {
+    if let Some(map) = value.as_object_mut() {
+        for key in ["query", "target", "from", "to"] {
+            map.remove(key);
+        }
+    }
+    value
+}
+
+#[test]
+fn double_colon_names_resolve_like_dotted_names() {
+    let temp = write_repo(SCOPE_REPO);
+    let cwd = temp.path();
+    for cmd in [&["find"][..], &["context"], &["blast"], &["refs"]] {
+        let dotted: Vec<&str> = cmd.iter().copied().chain(["Index.find"]).collect();
+        let colons: Vec<&str> = cmd.iter().copied().chain(["Index::find"]).collect();
+        let expected = without_query(json_of(cwd, &dotted));
+        assert_eq!(
+            without_query(json_of(cwd, &colons)),
+            expected,
+            "{cmd:?} differs between Index.find and Index::find"
+        );
+    }
+    let dotted = without_query(json_of(cwd, &["path", "caller", "Index.find"]));
+    assert_eq!(
+        without_query(json_of(cwd, &["path", "caller", "Index::find"])),
+        dotted
+    );
+    assert!(dotted.to_string().contains("Index.find"));
+}
+
+#[test]
+fn double_colon_find_is_an_exact_match() {
+    let temp = write_repo(SCOPE_REPO);
+    assert_eq!(
+        matches_of(temp.path(), "Index::find"),
+        [("Index.find".to_string(), "exact".to_string())]
+    );
+}
+
+#[test]
+fn blast_of_a_scoped_name_does_not_widen_to_other_owners() {
+    let temp = write_repo(SCOPE_REPO);
+    let refs = json_of(temp.path(), &["refs", "Index::find"]);
+    assert_eq!(refs["definitions"], 1, "{refs}");
+}
+
+#[test]
+fn hash_and_double_colon_name_a_ruby_method() {
+    let temp = write_repo(SCOPE_REPO);
+    for name in [
+        "Billing::Invoice#total",
+        "Billing::Invoice.total",
+        "Invoice#total",
+    ] {
+        assert_eq!(
+            matches_of(temp.path(), name)
+                .into_iter()
+                .map(|(n, k)| (n, k == "exact"))
+                .collect::<Vec<_>>(),
+            [("Billing.Invoice.total".to_string(), true)],
+            "{name}"
+        );
+        tessera(temp.path())
+            .args(["context", name])
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("Billing.Invoice.total"));
+    }
 }
