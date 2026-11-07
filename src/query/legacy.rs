@@ -11,9 +11,9 @@ use crate::db;
 use crate::output::MatchKind;
 use crate::types::{
     DefinitionResult, DiffChangedSymbol, DiffImpactResult, DiffImpactedSymbol, ExportResult,
-    ImportRecord, ImportsResult, KindCount, LanguageCount, OutlineResult, QueryMeta, SearchHit,
-    SearchOptions, SearchResult, Sibling, SiblingsResult, SignatureLine, SignatureResult,
-    StatsResult, SymbolRecord, SymbolSuggestion, TopFanout, ValidateResult,
+    ImportRecord, ImportsResult, OutlineResult, QueryMeta, SearchHit, SearchOptions, SearchResult,
+    Sibling, SiblingsResult, SignatureLine, SignatureResult, SymbolRecord, SymbolSuggestion,
+    ValidateResult,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -147,79 +147,6 @@ pub fn validate_conn(conn: &Connection, symbol: &str) -> Result<ValidateResult> 
         query: symbol.to_string(),
         exists,
         candidates,
-        meta: meta(tokens),
-    })
-}
-
-pub fn stats_conn(conn: &Connection, db_path: &Path) -> Result<StatsResult> {
-    let files = db::count_files(conn)?;
-    let symbols = db::count_symbols(conn)?;
-    let references = db::count_refs(conn)?;
-    let edges = db::count_edges(conn)?;
-
-    let mut languages = Vec::new();
-    {
-        let mut stmt =
-            conn.prepare("SELECT language, COUNT(*) FROM files GROUP BY language ORDER BY 2 DESC")?;
-        let rows = stmt.query_map([], |row| {
-            Ok(LanguageCount {
-                language: row.get::<_, String>(0)?,
-                count: row.get::<_, i64>(1)? as usize,
-            })
-        })?;
-        for row in rows {
-            languages.push(row?);
-        }
-    }
-
-    let mut kinds = Vec::new();
-    {
-        let mut stmt =
-            conn.prepare("SELECT kind, COUNT(*) FROM symbols GROUP BY kind ORDER BY 2 DESC")?;
-        let rows = stmt.query_map([], |row| {
-            Ok(KindCount {
-                kind: row.get::<_, String>(0)?,
-                count: row.get::<_, i64>(1)? as usize,
-            })
-        })?;
-        for row in rows {
-            kinds.push(row?);
-        }
-    }
-
-    let mut top_fanout = Vec::new();
-    {
-        let mut stmt = conn.prepare(
-            "
-            SELECT s.qualified_name, COUNT(DISTINCT e.from_symbol_id) AS callers
-            FROM edges e
-            JOIN symbols s ON s.name = e.to_symbol_name OR s.qualified_name = e.to_symbol_name
-            GROUP BY s.qualified_name
-            ORDER BY callers DESC
-            LIMIT 10
-            ",
-        )?;
-        let rows = stmt.query_map([], |row| {
-            Ok(TopFanout {
-                qualified_name: row.get::<_, String>(0)?,
-                callers: row.get::<_, i64>(1)? as usize,
-            })
-        })?;
-        for row in rows {
-            top_fanout.push(row?);
-        }
-    }
-
-    let tokens = symbols / 8 + 60;
-    Ok(StatsResult {
-        files,
-        symbols,
-        references,
-        edges,
-        languages,
-        kinds,
-        top_fanout,
-        db_path: db_path.to_string_lossy().to_string(),
         meta: meta(tokens),
     })
 }

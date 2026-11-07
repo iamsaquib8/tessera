@@ -7,7 +7,6 @@ use anyhow::Result;
 use rusqlite::Connection;
 use serde::Serialize;
 
-use super::legacy;
 use crate::db;
 use crate::fresh::{self, Freshness};
 use crate::output::AgentText;
@@ -77,12 +76,11 @@ pub fn run(ws: &Workspace) -> Result<StatusResult> {
 }
 
 fn fill_counts(status: &mut StatusResult, conn: &Connection) -> Result<()> {
-    let stats = legacy::stats_conn(conn, &status.db_path)?;
     status.schema = db::schema_version(conn)?;
-    status.files = stats.files;
-    status.symbols = stats.symbols;
-    status.refs = stats.references;
-    status.languages = stats.languages;
+    status.files = db::count_files(conn)?;
+    status.symbols = db::count_symbols(conn)?;
+    status.refs = db::count_refs(conn)?;
+    status.languages = language_counts(conn)?;
     status.skipped = conn.query_row(
         "SELECT COUNT(*) FROM skipped_files WHERE reason != 'excluded'",
         [],
@@ -94,6 +92,18 @@ fn fill_counts(status: &mut StatusResult, conn: &Connection) -> Result<()> {
     status.parse_error_first = parse_errors.into_iter().next();
     status.resolution = resolve::last_report(conn)?;
     Ok(())
+}
+
+fn language_counts(conn: &Connection) -> Result<Vec<LanguageCount>> {
+    let mut stmt =
+        conn.prepare("SELECT language, COUNT(*) FROM files GROUP BY language ORDER BY 2 DESC")?;
+    let rows = stmt.query_map([], |row| {
+        Ok(LanguageCount {
+            language: row.get::<_, String>(0)?,
+            count: row.get::<_, i64>(1)? as usize,
+        })
+    })?;
+    Ok(rows.collect::<rusqlite::Result<_>>()?)
 }
 
 fn hints(status: &StatusResult) -> Vec<String> {
