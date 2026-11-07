@@ -217,6 +217,61 @@ fn context_bundles_body_and_callers_within_budget() {
 }
 
 #[test]
+fn context_keeps_callers_and_tests_when_the_body_alone_exceeds_the_budget() {
+    let temp = TempDir::new().unwrap();
+    let root = temp.path().join("repo");
+    std::fs::create_dir_all(&root).unwrap();
+    let mut body =
+        String::from("export function indexAll(items: number[]): number {\n  let total = 0;\n");
+    for i in 0..100 {
+        body.push_str(&format!(
+            "  total += helper{i}(items[{i}]) + items.length;\n"
+        ));
+    }
+    body.push_str("  return total;\n}\n");
+    for i in 0..100 {
+        body.push_str(&format!(
+            "function helper{i}(x: number): number {{\n  return x + {i};\n}}\n"
+        ));
+    }
+    std::fs::write(root.join("index.ts"), body).unwrap();
+    std::fs::write(
+        root.join("app.ts"),
+        "import { indexAll } from \"./index\";\nexport function runApp() {\n  return indexAll([1, 2, 3]);\n}\nexport function runCli() {\n  return indexAll([4]);\n}\n",
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("index.test.ts"),
+        "import { indexAll } from \"./index\";\nexport function testIndexAll() {\n  return indexAll([]);\n}\n",
+    )
+    .unwrap();
+    let db = temp.path().join("t.db");
+    Index::build(&root, &db, IndexOptions::default()).unwrap();
+    let index = Index::open(&db).unwrap();
+    for budget in [400, 800, 1_500] {
+        let result = index
+            .context(&ContextArgs {
+                symbol: "indexAll".to_string(),
+                budget_tokens: budget,
+            })
+            .unwrap();
+        // `runApp`, `runCli` and the test function all call it.
+        assert_eq!(result.callers.len(), 3, "budget {budget}: {result}");
+        assert!(!result.tests.is_empty(), "budget {budget}: {result}");
+        assert!(
+            result.tokens <= budget,
+            "budget {budget}: {}",
+            result.tokens
+        );
+        assert!(
+            result.tokens * 100 >= budget * 85,
+            "budget {budget} left unused: {}",
+            result.tokens
+        );
+    }
+}
+
+#[test]
 fn verify_flags_only_invented_calls() {
     let (_temp, index) = open("typescript");
     let result = index

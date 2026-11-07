@@ -98,45 +98,122 @@ pub fn run(conn: &Connection, root: &Path, args: &ContextArgs) -> Result<Context
     Ok(result)
 }
 
+/// Appended to a body that was cut to fit the budget.
+const BODY_NOTE: &str = "\n… (body truncated to fit budget)";
+/// The most of the budget the body keeps when the lists need room; a shorter
+/// body keeps all of itself.
+const BODY_SHARE_PERCENT: usize = 55;
+/// How the room left by the body is split between callers, tests, callees and
+/// siblings, with unused room passed on to the next list. Callers come first:
+/// they say what an edit can break.
+const LIST_SHARES: [usize; 4] = [40, 20, 30, 10];
+const CALLERS: usize = 0;
+const TESTS: usize = 1;
+
+/// Cuts the bundle to `budget` tokens. Everything stays when it fits. Else the
+/// body keeps up to its share, the lists split the rest (at least the first
+/// caller and the first test when they fit), and the body takes what the lists
+/// leave, so the result fills the budget instead of stopping short of it.
+/// Renders twice, however many items there are.
 fn fit_to_budget(result: &mut ContextResult, budget: usize) {
-    // Render once and keep a running character count: each item removed takes
-    // its line (`"  "`, the item, `"\n"`) off the text, and emptying a section
-    // takes its header off too. Re-rendering after every removed item would
-    // cost the whole text each time, which is quadratic in the number of
-    // tests and callers.
-    let mut chars = result.agent_text().chars().count();
-    while chars.div_ceil(4) > budget {
-        let trimmed = pop_item(&mut result.siblings, SIBLINGS_TITLE, &mut chars)
-            || pop_item(&mut result.tests, TESTS_TITLE, &mut chars)
-            || pop_item(&mut result.dependencies, CALLS_TITLE, &mut chars)
-            || pop_item(&mut result.callers, CALLED_BY_TITLE, &mut chars);
-        if trimmed {
-            continue;
+    let cap = budget.saturating_mul(4);
+    let total = result.agent_text().chars().count();
+    if total.div_ceil(4) <= budget {
+        result.tokens = total.div_ceil(4);
+        return;
+    }
+    // Sizes in characters, from the rendering rules of `agent_text`: a line
+    // is `"  "`, the item and `"\n"`; a section adds `"{title}:\n"`.
+    let titles = [CALLED_BY_TITLE, TESTS_TITLE, CALLS_TITLE, SIBLINGS_TITLE];
+    let sizes: [Vec<usize>; 4] = [
+        &result.callers,
+        &result.tests,
+        &result.dependencies,
+        &result.siblings,
+    ]
+    .map(|items| items.iter().map(|i| i.chars().count() + 3).collect());
+    let body_chars = result.body.as_ref().map_or(0, |b| b.chars().count() + 1);
+    let lists_chars: usize = (0..4)
+        .map(|k| section_chars(titles[k], &sizes[k], sizes[k].len()))
+        .sum();
+    let header = total - body_chars - lists_chars;
+
+    let body_floor = body_chars.min((cap * BODY_SHARE_PERCENT / 100).saturating_sub(header));
+    let kept = share_room(&titles, &sizes, cap.saturating_sub(header + body_floor));
+    result.callers.truncate(kept[0]);
+    result.tests.truncate(kept[1]);
+    result.dependencies.truncate(kept[2]);
+    result.siblings.truncate(kept[3]);
+
+    let lists_kept: usize = (0..4)
+        .map(|k| section_chars(titles[k], &sizes[k], kept[k]))
+        .sum();
+    let body_room = cap.saturating_sub(header + lists_kept);
+    if let Some(body) = &mut result.body {
+        if body_chars > body_room {
+            let keep = body_room.saturating_sub(1 + BODY_NOTE.chars().count());
+            *body = body.chars().take(keep).collect::<String>() + BODY_NOTE;
         }
-        if let Some(body) = &mut result.body {
-            let keep = budget.saturating_mul(4) / 2;
-            if body.chars().count() > keep {
-                *body = body.chars().take(keep).collect::<String>()
-                    + "\n… (body truncated to fit budget)";
-            }
-        }
-        // Nothing is left to remove: the body was the last thing to cut.
-        break;
     }
     result.tokens = estimate_tokens(&result.agent_text());
 }
 
-/// Removes the last item of a section and takes its lines off `chars`.
-fn pop_item(items: &mut Vec<String>, title: &str, chars: &mut usize) -> bool {
-    let Some(item) = items.pop() else {
-        return false;
-    };
-    *chars -= item.chars().count() + 3;
-    if items.is_empty() {
-        // `"{title}:\n"`
-        *chars -= title.chars().count() + 2;
+/// Characters the first `kept` items of a section take, header included.
+fn section_chars(title: &str, sizes: &[usize], kept: usize) -> usize {
+    if kept == 0 {
+        0
+    } else {
+        title.chars().count() + 2 + sizes[..kept].iter().sum::<usize>()
     }
-    true
+}
+
+/// How many items of each list (callers, tests, callees, siblings) fit in
+/// `room` characters: the first caller and the first test, then each list's
+/// share in order, then the leftover room in the same order.
+fn share_room(titles: &[&str; 4], sizes: &[Vec<usize>; 4], room: usize) -> [usize; 4] {
+    let mut kept = [0usize; 4];
+    let mut used = [0usize; 4];
+    let mut spent = 0usize;
+    let cost = |k: usize, i: usize| {
+        sizes[k][i]
+            + if i == 0 {
+                titles[k].chars().count() + 2
+            } else {
+                0
+            }
+    };
+    for k in [CALLERS, TESTS] {
+        if !sizes[k].is_empty() && spent + cost(k, 0) <= room {
+            kept[k] = 1;
+            used[k] = cost(k, 0);
+            spent += used[k];
+        }
+    }
+    let mut carry = 0usize;
+    for k in 0..4 {
+        let allowance = room * LIST_SHARES[k] / 100 + carry;
+        while kept[k] < sizes[k].len() {
+            let c = cost(k, kept[k]);
+            if used[k] + c > allowance || spent + c > room {
+                break;
+            }
+            kept[k] += 1;
+            used[k] += c;
+            spent += c;
+        }
+        carry = allowance.saturating_sub(used[k]);
+    }
+    for k in 0..4 {
+        while kept[k] < sizes[k].len() {
+            let c = cost(k, kept[k]);
+            if spent + c > room {
+                break;
+            }
+            kept[k] += 1;
+            spent += c;
+        }
+    }
+    kept
 }
 
 const CALLS_TITLE: &str = "Calls";
@@ -183,32 +260,6 @@ impl AgentText for ContextResult {
 mod tests {
     use super::*;
 
-    /// The loop that re-renders the whole text after every removed item.
-    fn fit_by_rendering(result: &mut ContextResult, budget: usize) {
-        loop {
-            result.tokens = estimate_tokens(&result.agent_text());
-            if result.tokens <= budget {
-                return;
-            }
-            let trimmed = result.siblings.pop().is_some()
-                || result.tests.pop().is_some()
-                || result.dependencies.pop().is_some()
-                || result.callers.pop().is_some();
-            if trimmed {
-                continue;
-            }
-            if let Some(body) = &mut result.body {
-                let keep = budget.saturating_mul(4) / 2;
-                if body.chars().count() > keep {
-                    *body = body.chars().take(keep).collect::<String>()
-                        + "\n… (body truncated to fit budget)";
-                    continue;
-                }
-            }
-            return;
-        }
-    }
-
     fn bundle(body: Option<String>, neighbours: usize, tests: usize) -> ContextResult {
         let list = |prefix: &str, n: usize| -> Vec<String> {
             (0..n)
@@ -241,46 +292,93 @@ mod tests {
         }
     }
 
+    fn long_body() -> Option<String> {
+        Some("    let value = compute_something(first, second, third);\n".repeat(100))
+    }
+
     #[test]
-    fn a_budget_smaller_than_the_truncation_note_still_terminates() {
-        // The truncated body plus its note can exceed a tiny budget; the old
-        // loop cut the body again and again, forever.
-        for budget in [1, 10, 40] {
-            let mut result = bundle(Some("let x = 1;\n".repeat(400)), 3, 3);
+    fn a_bundle_that_fits_is_left_alone() {
+        let mut result = bundle(Some("fn short() {}".to_string()), 3, 2);
+        let before = result.agent_text();
+        fit_to_budget(&mut result, 100_000);
+        assert_eq!(result.agent_text(), before);
+        assert_eq!(result.tokens, estimate_tokens(&before));
+    }
+
+    #[test]
+    fn a_long_body_keeps_callers_tests_and_most_of_the_budget() {
+        // A 100-line body, 2 callers and 2 tests: before, the budget below
+        // dropped every caller and test, then cut the body to half the budget.
+        for budget in [400, 800, 1_500] {
+            let mut result = bundle(long_body(), 2, 2);
             fit_to_budget(&mut result, budget);
-            assert!(result.callers.is_empty() && result.tests.is_empty());
-            let body = result.body.as_deref().unwrap();
-            assert!(body.ends_with("(body truncated to fit budget)"));
+            assert!(!result.callers.is_empty(), "budget {budget}: no callers");
+            assert!(!result.tests.is_empty(), "budget {budget}: no tests");
+            assert!(
+                result.tokens <= budget,
+                "budget {budget}: {}",
+                result.tokens
+            );
+            assert!(
+                result.tokens * 100 >= budget * 90,
+                "budget {budget} left unused: {}",
+                result.tokens
+            );
             assert_eq!(result.tokens, estimate_tokens(&result.agent_text()));
         }
     }
 
     #[test]
-    fn running_count_trims_exactly_as_rendering_every_time_did() {
+    fn a_body_that_fits_stays_whole_while_the_lists_are_trimmed() {
+        let mut result = bundle(Some("fn small() {}".to_string()), 60, 700);
+        fit_to_budget(&mut result, 800);
+        assert_eq!(result.body.as_deref(), Some("fn small() {}"));
+        assert!(!result.callers.is_empty() && !result.tests.is_empty());
+        assert!(result.callers.len() < 60 && result.tests.len() < 700);
+        assert!(result.tokens <= 800 && result.tokens >= 720);
+    }
+
+    #[test]
+    fn lists_share_the_room_in_order() {
+        let mut result = bundle(long_body(), 60, 700);
+        fit_to_budget(&mut result, 2_000);
+        // Every list is represented, and callers get the largest share.
+        assert!(!result.callers.is_empty());
+        assert!(!result.tests.is_empty());
+        assert!(!result.dependencies.is_empty());
+        assert!(result.callers.len() >= result.tests.len());
+        assert!(result.tokens <= 2_000);
+    }
+
+    #[test]
+    fn every_budget_gives_a_bundle_within_it_or_the_smallest_one() {
         let bodies = [
             None,
             Some("fn short() {}".to_string()),
-            Some("let x = 1;\n".repeat(400)),
+            long_body(),
             Some("ñandú ".repeat(900)),
         ];
         for body in &bodies {
             for (neighbours, tests) in [(0, 0), (3, 0), (60, 700), (60, 5)] {
-                for budget in [60, 200, 500, 2_000, 8_000, 40_000] {
-                    let mut expected = bundle(body.clone(), neighbours, tests);
-                    let mut got = expected.clone();
-                    fit_by_rendering(&mut expected, budget);
-                    fit_to_budget(&mut got, budget);
-                    assert_eq!(
-                        got.agent_text(),
-                        expected.agent_text(),
-                        "budget {budget}, {neighbours} neighbours, {tests} tests"
-                    );
-                    assert_eq!(got.tokens, expected.tokens);
-                    assert_eq!(got.tests, expected.tests);
-                    assert_eq!(got.callers, expected.callers);
-                    assert_eq!(got.dependencies, expected.dependencies);
-                    assert_eq!(got.siblings, expected.siblings);
-                    assert_eq!(got.body, expected.body);
+                for budget in [1, 10, 40, 100, 200, 500, 2_000, 8_000] {
+                    let mut result = bundle(body.clone(), neighbours, tests);
+                    fit_to_budget(&mut result, budget);
+                    assert_eq!(result.tokens, estimate_tokens(&result.agent_text()));
+                    // From 200 tokens up, the header, one caller, one test and
+                    // the note always fit.
+                    if budget >= 200 {
+                        assert!(
+                            result.tokens <= budget,
+                            "budget {budget}: {}",
+                            result.tokens
+                        );
+                    }
+                    if budget >= 500 && neighbours > 0 {
+                        assert!(!result.callers.is_empty(), "budget {budget}");
+                    }
+                    if budget >= 500 && tests > 0 {
+                        assert!(!result.tests.is_empty(), "budget {budget}");
+                    }
                 }
             }
         }
