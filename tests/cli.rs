@@ -505,6 +505,83 @@ fn verify_handles_non_ascii_text_before_a_member_call() {
 }
 
 #[test]
+fn an_unknown_symbol_is_not_reported_as_having_no_callers() {
+    let temp = repo("typescript");
+    for command in ["blast", "refs"] {
+        let out = tessera(temp.path())
+            .args([command, "loadUsr"])
+            .assert()
+            .success()
+            .stdout(predicate::str::contains(
+                "No definition of loadUsr; closest matches:",
+            ))
+            .stdout(predicate::str::contains("loadUser"))
+            .stdout(predicate::str::contains("No callers found").not())
+            .stdout(predicate::str::contains("No references to").not())
+            .get_output()
+            .stdout
+            .clone();
+        assert!(!out.is_empty());
+        let json: serde_json::Value = serde_json::from_slice(
+            &tessera(temp.path())
+                .args([command, "loadUsr", "--json"])
+                .output()
+                .unwrap()
+                .stdout,
+        )
+        .unwrap();
+        assert_eq!(json["found"], false, "{command}: {json}");
+        assert!(
+            json["suggestions"][0]["qualified_name"]
+                .as_str()
+                .unwrap()
+                .contains("loadUser"),
+            "{command}: {json}"
+        );
+        // a symbol that exists is found, even with nothing calling it
+        let known: serde_json::Value = serde_json::from_slice(
+            &tessera(temp.path())
+                .args([command, "loadUser", "--json"])
+                .output()
+                .unwrap()
+                .stdout,
+        )
+        .unwrap();
+        assert_eq!(known["found"], true, "{command}: {known}");
+    }
+    tessera(temp.path())
+        .args(["path", "nope", "formatFullName"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("No definition of nope"))
+        .stdout(predicate::str::contains("No call path").not());
+    let path: serde_json::Value = serde_json::from_slice(
+        &tessera(temp.path())
+            .args(["path", "loadUsr", "formatName", "--json"])
+            .output()
+            .unwrap()
+            .stdout,
+    )
+    .unwrap();
+    assert_eq!(path["found"], false);
+    assert_eq!(path["unknown"][0]["symbol"], "loadUsr");
+    assert!(path["unknown"][0]["suggestions"][0]["qualified_name"]
+        .as_str()
+        .unwrap()
+        .contains("loadUser"));
+}
+
+#[test]
+fn map_with_an_unknown_kind_is_a_usage_error() {
+    let temp = repo("typescript");
+    tessera(temp.path())
+        .args(["map", "bogus"])
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("unknown contract kind `bogus`"));
+}
+
+#[test]
 fn status_counts_files_with_syntax_errors() {
     let temp = repo("typescript");
     fs::write(
