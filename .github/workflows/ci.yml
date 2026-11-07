@@ -76,7 +76,8 @@ jobs:
         with:
           node-version: ${{ matrix.node }}
       # A glob: Node 21 and later no longer run every test in a directory.
-      - run: node --test npm/test/*.test.js
+      - run: node --test npm/test/*.test.js scripts/*.test.js
+      - run: node scripts/changelog.js check
 
   docs-site:
     runs-on: ubuntu-latest

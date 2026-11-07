@@ -1,25 +1,8 @@
 # Changelog
 
-All notable changes to Tessera are documented here.
-
-## Unreleased
-
-### Fixed
-
-- The Claude Code plugin runs the `tessera` on PATH whatever its version (with a warning on stderr when it is older than the plugin), then `~/.local/bin/tessera` and `~/.cargo/bin/tessera`, and uses npx only as a last resort for a version that exists on npm. Before, a `tessera` that was not exactly the plugin's version was skipped for an npm package that did not exist, and every hook did nothing.
-- `tessera init` writes the full path of the running binary when `tessera` is not on PATH, instead of an `npx` command, and replaces entries an earlier `init` wrote as `npx … tessera-codegraph@…`.
-- `install.sh` finds the latest release through GitHub's `releases/latest` redirect instead of the rate-limited REST API, and accepts `TESSERA_VERSION` (and the Action's `version`) written without the leading `v`. With `TESSERA_BASE_URL` set, `latest` needs `TESSERA_VERSION` or `TESSERA_LATEST_URL`.
-- Reject non-loopback `Host` headers on loopback-bound MCP HTTP servers, including `/health`, to prevent DNS-rebinding access. Deliberate non-loopback binds remain supported.
-
-### Added
-
-- The release workflow moves the major tag (`v1`) to each new stable release once every install channel passes its smoke tests, so `iamsaquib8/tessera/action@v1` follows the latest 1.x. Pre-releases and re-runs of older releases leave it alone.
-- GitHub release notes come from the tag's `CHANGELOG.md` section instead of being generated from pull request titles, and the release workflow fails when the section is missing.
-- `verify --format junit` reports completed V1–V5 checks, including successful
-  checks and unchanged affected callers, as schema-validated JUnit XML.
-  Blocking findings fail their check/file case; advisory and waived findings
-  remain visible. Suite properties preserve finding fingerprints. Includes
-  Jenkins, CircleCI and Buildkite ingestion recipes.
+All notable changes to Tessera are documented here. Changes not yet
+released are in [changes/](changes/), one file each, and are assembled into
+a section here when a release is cut.
 
 ## 1.2.0 - 2026-11-03
 

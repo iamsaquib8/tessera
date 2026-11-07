@@ -177,6 +177,24 @@ fn a_release_candidate_uses_its_own_section_or_unreleased() {
 }
 
 #[test]
+fn a_release_candidate_can_use_the_changelog_fragments() {
+    let dir = changelog_dir("# Changelog\n\n## 1.2.0\n\n- Zero.\n");
+    fs::create_dir_all(dir.path().join("scripts")).unwrap();
+    fs::copy(
+        manifest().join("scripts/changelog.js"),
+        dir.path().join("scripts/changelog.js"),
+    )
+    .unwrap();
+    fs::create_dir_all(dir.path().join("changes")).unwrap();
+    fs::write(dir.path().join("changes/a.fixed.md"), "Fix A.\n").unwrap();
+    fs::write(dir.path().join("changes/b.added.md"), "Add B.\n").unwrap();
+    let notes = extract(dir.path(), "v1.3.0-rc.1").body.unwrap();
+    assert_eq!(notes, "### Added\n\n- Add B.\n\n### Fixed\n\n- Fix A.\n");
+    // A stable tag still needs its own section.
+    assert!(!extract(dir.path(), "v1.3.0").ok);
+}
+
+#[test]
 fn the_release_is_created_from_the_notes_file() {
     let workflow = fs::read_to_string(manifest().join(".github/workflows/release.yml")).unwrap();
     assert!(!workflow.contains("--generate-notes"));

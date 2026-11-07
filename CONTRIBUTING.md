@@ -59,10 +59,13 @@ Explain each changed line in your PR description.
 
 - One change per PR, with the test that proves it.
 - Run the checks above before you push.
-- New user-facing behaviour needs a line in `CHANGELOG.md` and, if it changes
-  a command, the matching page in `docs/`.
-- The GitHub release body is the `CHANGELOG.md` section of the tag: before
-  tagging `vX.Y.Z`, rename `## Unreleased` to `## X.Y.Z - <date>`. The release
-  workflow fails without that section.
+- New user-facing behaviour needs a changelog fragment in `changes/` (see
+  [changes/README.md](changes/README.md); do not edit `CHANGELOG.md`, so that
+  pull requests never conflict there) and, if it changes a command, the
+  matching page in `docs/`.
+- The GitHub release body is the `CHANGELOG.md` section of the tag. Before
+  tagging `vX.Y.Z`, run `node scripts/changelog.js release X.Y.Z`, add the
+  summary paragraph, and commit; the release workflow fails without that
+  section.
 
 By contributing you agree your work is licensed under Apache-2.0.

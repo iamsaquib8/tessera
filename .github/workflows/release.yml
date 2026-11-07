@@ -57,9 +57,13 @@ jobs:
             ' CHANGELOG.md
           }
           section "$version" > "$notes"
-          # A release candidate may be described by `## Unreleased` instead.
+          # A release candidate may be described by `## Unreleased` or by the
+          # fragments in changes/ that the final release will assemble.
           if [ ! -s "$notes" ] && [ "$PRERELEASE" = true ]; then
             section Unreleased > "$notes"
+          fi
+          if [ ! -s "$notes" ] && [ "$PRERELEASE" = true ]; then
+            node scripts/changelog.js preview > "$notes" || true
           fi
           if [ ! -s "$notes" ]; then
             echo "::error file=CHANGELOG.md::CHANGELOG.md has no non-empty '## $version' section for $TAG. Add one (with its date) before releasing."
