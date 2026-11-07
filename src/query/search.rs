@@ -36,7 +36,7 @@ pub struct SearchResults {
 
 pub fn run(conn: &Connection, args: &SearchArgs) -> Result<SearchResults> {
     let limit = limit_or_default(args.limit);
-    let (hits, note) = if args.unused {
+    let (mut hits, mut note) = if args.unused {
         (
             unused(conn, args)?,
             Some(
@@ -52,12 +52,31 @@ pub fn run(conn: &Connection, args: &SearchArgs) -> Result<SearchResults> {
                 languages: args.languages.clone(),
                 exported: args.exported,
                 path_prefix: args.path.clone(),
-                limit: legacy::SEARCH_SCAN_LIMIT,
+                limit: legacy::SEARCH_SCAN_LIMIT + 1,
             },
         )?;
         (result.hits, None)
     };
-    let (hits, page) = paginate(hits, limit, args.cursor.as_deref())?;
+    // The scans stop at a fixed number of matches. A list that reaches it is
+    // not the whole result, and the page must not claim it is.
+    let scan_limit = if args.unused {
+        UNUSED_SCAN_LIMIT
+    } else {
+        legacy::SEARCH_SCAN_LIMIT
+    };
+    let capped = hits.len() > scan_limit;
+    hits.truncate(scan_limit);
+    let (hits, mut page) = paginate(hits, limit, args.cursor.as_deref())?;
+    if capped {
+        page.truncated = true;
+        let cap_note = format!(
+            "Stopped at {scan_limit} matches, so more exist. Narrow the pattern, or add --kind, --language or --path, to see the rest."
+        );
+        note = Some(match note {
+            Some(note) => format!("{cap_note} {note}"),
+            None => cap_note,
+        });
+    }
     Ok(SearchResults {
         pattern: args.pattern.clone(),
         hits,
@@ -182,7 +201,7 @@ fn unused(conn: &Connection, args: &SearchArgs) -> Result<Vec<SearchHit>> {
             continue;
         }
         hits.push(SearchHit { symbol, score: 0.0 });
-        if hits.len() >= UNUSED_SCAN_LIMIT {
+        if hits.len() > UNUSED_SCAN_LIMIT {
             break;
         }
     }
