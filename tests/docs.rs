@@ -144,31 +144,3 @@ fn readme_agent_grid_matches_the_registry() {
         );
     }
 }
-
-#[test]
-fn translated_readmes_are_drafts_with_working_links() {
-    for lang in ["zh-CN", "ja", "ko", "es", "pt-BR"] {
-        let name = format!("README.{lang}.md");
-        let text = fs::read_to_string(&name).unwrap();
-        assert!(
-            text.contains("Draft translation awaiting review"),
-            "{name} must say it is a draft"
-        );
-        assert!(
-            fs::read_to_string("README.md").unwrap().contains(&name),
-            "README.md must link {name}"
-        );
-        for target in text
-            .split("](")
-            .skip(1)
-            .chain(text.split("href=\"").skip(1))
-            .filter_map(|rest| rest.split([')', '"', '#']).next())
-            .filter(|target| !target.is_empty() && !target.starts_with("http"))
-        {
-            assert!(
-                std::path::Path::new(target).exists(),
-                "{name} links to missing {target}"
-            );
-        }
-    }
-}

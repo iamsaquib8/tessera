@@ -21,15 +21,6 @@
 </p>
 
 <p align="center">
-  English ·
-  <a href="README.zh-CN.md">简体中文</a> ·
-  <a href="README.ja.md">日本語</a> ·
-  <a href="README.ko.md">한국어</a> ·
-  <a href="README.es.md">Español</a> ·
-  <a href="README.pt-BR.md">Português (Brasil)</a>
-</p>
-
-<p align="center">
   <img src="assets/demo.svg" alt="tessera blast ranks the callers of formatName; tessera context shows findById with its callers and callees; tessera verify catches two calls to functions that do not exist" width="760">
 </p>
 
