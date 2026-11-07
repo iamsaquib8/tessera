@@ -320,3 +320,67 @@ fn the_markdown_report_honours_no_baseline() {
     assert!(!text.contains("(in the baseline)"), "{text}");
     assert!(text.contains("1 problem to fix"), "{text}");
 }
+
+#[test]
+fn a_misspelt_key_in_an_accepted_entry_is_named_and_the_break_still_blocks() {
+    let temp = legacy_repo();
+    let root = temp.path();
+    touch_legacy(root);
+    let (_, value) = verify(root, &[]);
+    let print = problems(&value)[0]["fingerprint"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    fs::create_dir_all(root.join(".tessera")).unwrap();
+    fs::write(
+        root.join(".tessera/accepted.toml"),
+        format!(
+            "[[accept]]\nfingerprint = \"{print}\"\nreason = \"orders v1 retired\"\nexpire = \"2999-12-31\"\n"
+        ),
+    )
+    .unwrap();
+    let (code, out, err) = tessera(root, &["--json", "verify", "--changed"]);
+    assert_eq!(
+        code, 1,
+        "the typo must not accept the break for good: {out}"
+    );
+    assert!(err.contains("expire") && err.contains(&print), "{err}");
+    let value: Value = serde_json::from_str(&out).unwrap();
+    assert!(problems(&value)[0]["waived"].is_null(), "{value}");
+
+    // Another entry in the same file still applies.
+    let (_, value) = verify(root, &[]);
+    let good = problems(&value)[0]["fingerprint"].as_str().unwrap();
+    assert_eq!(good, print);
+    fs::write(
+        root.join(".tessera/accepted.toml"),
+        format!(
+            "[[accept]]\nfingerprint = \"{print}\"\nreason = \"fine\"\nexpires = \"2999-12-31\"\n\n[[accept]]\nfingerprint = \"0000000000000000\"\nreason = \"x\"\nexpire = \"2999-12-31\"\n"
+        ),
+    )
+    .unwrap();
+    let (code, out, err) = tessera(root, &["--json", "verify", "--changed"]);
+    assert_eq!(code, 0, "{out}{err}");
+    assert!(err.contains("expire"), "{err}");
+}
+
+#[test]
+fn pruning_refuses_an_unreadable_baseline_and_leaves_it_alone() {
+    let temp = legacy_repo();
+    let root = temp.path();
+    tessera(root, &["baseline"]);
+    let path = root.join(".tessera/baseline.json");
+    for damaged in [
+        "<<<<<<< HEAD\n{}\n=======\n{}\n>>>>>>> branch\n".to_string(),
+        "{\"fingerprints\": 0, \"findings\": []}".to_string(),
+    ] {
+        fs::write(&path, &damaged).unwrap();
+        let (code, out, err) = tessera(root, &["baseline", "--prune"]);
+        assert_eq!(code, 2, "{out}{err}");
+        assert!(err.contains("baseline.json"), "{err}");
+        assert_eq!(fs::read_to_string(&path).unwrap(), damaged);
+    }
+    // A plain `baseline` still rewrites from scratch.
+    let (code, out, err) = tessera(root, &["baseline"]);
+    assert_eq!(code, 0, "{out}{err}");
+}

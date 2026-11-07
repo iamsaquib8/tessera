@@ -51,6 +51,15 @@ tree. If you edited files through a tool that preserves mtimes, run
 `tessera index`. To start over, delete `.tessera/` or run
 `tessera index --full`.
 
+## "database disk image is malformed"
+
+The index file is damaged (a crash while the disk was full, a copy taken
+mid-write, a sync tool). Tessera moves a damaged index to
+`.tessera/tessera.db.corrupt` and rebuilds it on the next query, hook or
+`tessera index`, and says so on stderr. `tessera status` reports the state as
+`corrupt`. The `.corrupt` copy is only kept for inspection; delete it freely.
+A file that is not a Tessera index is never moved: pass a different `--db`.
+
 ## "Index uses schema vN, this binary needs vM"
 
 This happens when a newer or older Tessera opens your index. CLI queries and
