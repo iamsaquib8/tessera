@@ -119,6 +119,7 @@ const WRITES: &[(&str, &str, &[&str])] = &[
     ("release.yml", "npm", &["id-token"]),
     ("release.yml", "docker", &["packages"]),
     ("release.yml", "major-tag", &["contents"]),
+    ("release.yml", "docs", &["id-token", "pages"]),
     ("docker.yml", "image", &["packages"]),
     ("pages.yml", "deploy", &["id-token", "pages"]),
     ("tessera.yml", "report", &["pull-requests"]),

@@ -355,6 +355,20 @@ jobs:
       version: ${{ inputs.tag || github.ref_name }}
       prerelease: ${{ contains(inputs.tag || github.ref_name, '-') }}
 
+  # The docs site describes the latest release, so it is published here, from
+  # the release's own tag, and only for a stable release.
+  docs:
+    name: docs site
+    needs: smoke
+    if: ${{ needs.smoke.result == 'success' && !contains(inputs.tag || github.ref_name, '-') }}
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    uses: ./.github/workflows/pages.yml
+    with:
+      tag: ${{ inputs.tag || github.ref_name }}
+
   # `iamsaquib8/tessera/action@v1` resolves to the `v1` tag, so it follows the
   # newest stable 1.x release. Moved last, once every channel installs.
   major-tag:

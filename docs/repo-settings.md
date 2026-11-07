@@ -23,7 +23,13 @@ written down here so they can be applied once and checked later.
 - Enable **Discussions** with the categories Q&A, Ideas, and Show and tell.
   The show-and-tell form is in `.github/DISCUSSION_TEMPLATE/`.
 - Enable **Pages** from GitHub Actions; `.github/workflows/pages.yml` deploys
-  the docs site.
+  the docs site. The site documents the latest release: `release.yml` calls
+  the workflow from the release tag, and a push to `main` does not publish.
+  The `github-pages` environment must allow deployments from release tags
+  (Settings → Environments → github-pages → Deployment branches and tags:
+  add the tag rule `v*.*.*`); by default it allows only `main`, and the deploy
+  job would be refused. To publish a docs fix between releases, run the
+  workflow by hand with `ref` set to `main`.
 - Enable **Private vulnerability reporting** (Security → Advisories).
 - Enable **Dependabot alerts** and **Dependabot security updates** (Settings →
   Advanced Security). `.github/dependabot.yml` schedules the weekly version

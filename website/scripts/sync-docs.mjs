@@ -6,8 +6,14 @@ import path from "node:path";
 
 const root = path.resolve(import.meta.dirname, "..", "..");
 const docs = path.join(root, "docs");
-const out = path.join(import.meta.dirname, "..", "src", "content", "docs");
+const out = process.env.TESSERA_DOCS_OUT ?? path.join(import.meta.dirname, "..", "src", "content", "docs");
 const repo = "https://github.com/iamsaquib8/tessera/blob/main";
+
+// The version every page says it describes: the release being published (set
+// by the Pages workflow), else the crate version of this checkout.
+const cargoVersion = fs.readFileSync(path.join(root, "Cargo.toml"), "utf8").match(/^version = "([^"]+)"/m)[1];
+const version = process.env.TESSERA_DOCS_VERSION || `${cargoVersion} (this checkout)`;
+const banner = `These docs describe Tessera ${version}.`;
 
 const pages = {
   "quickstart.md": "Get started in a minute.",
@@ -62,8 +68,9 @@ for (const [sourcePath, [file, description]] of sources) {
   const source = fs.readFileSync(sourcePath, "utf8");
   const [, title = file] = source.match(/^#\s+(.+)$/m) ?? [];
   const body = rewriteLinks(source.replace(/^#\s+.+\n+/, ""), path.dirname(sourcePath));
-  const frontmatter = `---\ntitle: ${JSON.stringify(title)}\ndescription: ${JSON.stringify(description)}\n---\n\n`;
+  const frontmatter = `---\ntitle: ${JSON.stringify(title)}\ndescription: ${JSON.stringify(description)}\nbanner:\n  content: ${JSON.stringify(banner)}\n---\n\n`;
   fs.writeFileSync(path.join(out, file), frontmatter + body);
 }
-fs.copyFileSync(path.join(import.meta.dirname, "..", "src", "index.mdx"), path.join(out, "index.mdx"));
+const home = fs.readFileSync(path.join(import.meta.dirname, "..", "src", "index.mdx"), "utf8");
+fs.writeFileSync(path.join(out, "index.mdx"), home.replace(/^---\n/, `---\nbanner:\n  content: ${JSON.stringify(banner)}\n`));
 console.log(`synced ${sources.size} pages`);
