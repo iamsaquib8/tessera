@@ -15,6 +15,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends git ca-certific
     && rm -rf /var/lib/apt/lists/* && useradd -m -u 10001 tessera \
     && git config --system --add safe.directory '*'
 COPY --from=build /src/target/release/tessera /usr/local/bin/tessera
+COPY LICENSE THIRD-PARTY-NOTICES /usr/share/doc/tessera/
 # A numeric user, so Kubernetes `runAsNonRoot` can check it.
 USER 10001:10001
 WORKDIR /work

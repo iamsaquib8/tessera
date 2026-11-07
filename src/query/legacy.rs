@@ -805,7 +805,14 @@ pub fn export_conn_with_options(conn: &Connection, options: ExportOptions) -> Re
         };
         fs::write(
             path,
-            render_html_preview(&preview_diagram, &scope, options.group_by),
+            render_html_preview(
+                &nodes,
+                &edges,
+                &node_meta,
+                &preview_diagram,
+                &scope,
+                options.group_by,
+            ),
         )?;
         Some(path.to_string_lossy().to_string())
     } else {
@@ -1067,45 +1074,91 @@ fn mermaid_label(s: &str) -> String {
     s.replace('"', "'").replace('[', "(").replace(']', ")")
 }
 
-fn render_html_preview(diagram: &str, scope: &str, group_by: ExportGroupBy) -> String {
+/// Writes a page that needs nothing from the network: no script, no remote
+/// stylesheet, no remote font. It lists each group with its symbols and what
+/// they call, and keeps the Mermaid source in the page for copying into a
+/// renderer of the reader's choice.
+fn render_html_preview(
+    nodes: &[String],
+    edges: &[(String, String)],
+    node_meta: &HashMap<String, GraphNode>,
+    diagram: &str,
+    scope: &str,
+    group_by: ExportGroupBy,
+) -> String {
+    let mut calls: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
+    for (a, b) in edges {
+        calls.entry(a.as_str()).or_default().push(b.as_str());
+    }
+    let mut groups: BTreeMap<String, Vec<&String>> = BTreeMap::new();
+    for n in nodes {
+        groups
+            .entry(graph_group(node_meta.get(n), group_by))
+            .or_default()
+            .push(n);
+    }
+    let mut body = String::new();
+    for (group, members) in &groups {
+        if group_by != ExportGroupBy::None {
+            body.push_str(&format!("    <h2>{}</h2>\n", html_escape(group)));
+        }
+        body.push_str("    <ul>\n");
+        for n in members {
+            body.push_str(&format!("      <li><code>{}</code>", html_escape(n)));
+            if let Some(targets) = calls.get(n.as_str()) {
+                body.push_str("\n        <ul class=\"calls\">");
+                for t in targets {
+                    body.push_str(&format!("<li>calls <code>{}</code></li>", html_escape(t)));
+                }
+                body.push_str("</ul>\n      ");
+            }
+            body.push_str("</li>\n");
+        }
+        body.push_str("    </ul>\n");
+    }
     format!(
         r#"<!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'">
   <title>Tessera Graph Preview</title>
-  <script type="module">
-    import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.esm.min.mjs";
-    mermaid.initialize({{ startOnLoad: true, theme: "default" }});
-  </script>
   <style>
     body {{ margin: 0; font: 14px system-ui, sans-serif; color: #17202a; background: #f7f8fa; }}
     header {{ display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 14px 18px; background: white; border-bottom: 1px solid #d9dee7; }}
     main {{ padding: 18px; }}
+    h2 {{ margin: 20px 0 6px; font-size: 14px; color: #5e6b7a; }}
+    ul {{ margin: 0; padding-left: 20px; }}
+    .calls {{ color: #5e6b7a; }}
     button {{ border: 1px solid #9aa7b7; background: #fff; border-radius: 6px; padding: 8px 12px; cursor: pointer; }}
     .meta {{ color: #5e6b7a; }}
-    .mermaid {{ background: white; border: 1px solid #d9dee7; border-radius: 8px; padding: 18px; overflow: auto; }}
-    pre {{ position: absolute; left: -9999px; }}
+    details {{ margin-top: 24px; }}
+    pre {{ background: white; border: 1px solid #d9dee7; border-radius: 8px; padding: 14px; overflow: auto; }}
   </style>
 </head>
 <body>
   <header>
     <div>
       <strong>Tessera Graph Preview</strong>
-      <div class="meta">scope: {scope} · grouped by: {group_by}</div>
+      <div class="meta">scope: {scope} · grouped by: {group_by} · {node_count} symbols, {edge_count} edges</div>
     </div>
     <button type="button" onclick="navigator.clipboard.writeText(document.getElementById('diagram').textContent)">Copy Mermaid</button>
   </header>
   <main>
-    <pre id="diagram">{diagram}</pre>
-    <div class="mermaid">{diagram}</div>
+{body}    <details>
+      <summary>Mermaid source</summary>
+      <pre id="diagram">{diagram}</pre>
+    </details>
   </main>
 </body>
 </html>
 "#,
         scope = html_escape(scope),
         group_by = group_by.as_str(),
+        node_count = nodes.len(),
+        edge_count = edges.len(),
+        body = body,
         diagram = html_escape(diagram)
     )
 }
@@ -1433,6 +1486,51 @@ pub(crate) fn diff_changed_symbols(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn html_preview_makes_no_network_request() {
+        let nodes = vec!["a::run".to_string(), "b::load".to_string()];
+        let edges = vec![("a::run".to_string(), "b::load".to_string())];
+        let mut meta = HashMap::new();
+        for (name, path) in [("a::run", "src/a.rs"), ("b::load", "src/b.rs")] {
+            meta.insert(
+                name.to_string(),
+                GraphNode {
+                    name: name.to_string(),
+                    path: path.to_string(),
+                    language: "rust".to_string(),
+                    exported: true,
+                },
+            );
+        }
+        let diagram = render_mermaid(&nodes, &edges, &meta, ExportGroupBy::File);
+        let html = render_html_preview(
+            &nodes,
+            &edges,
+            &meta,
+            &diagram,
+            "from run",
+            ExportGroupBy::File,
+        );
+        assert!(!html.contains("http://"), "preview names an http URL");
+        assert!(!html.contains("https://"), "preview names an https URL");
+        assert!(!html.contains("<script src"), "preview loads a script");
+        assert!(!html.contains("import "), "preview imports a module");
+        assert!(!html.contains("<link"), "preview links a resource");
+        assert!(html.contains("a::run"));
+        assert!(html.contains("b::load"));
+        assert!(html.contains("src/a.rs"));
+    }
+
+    #[test]
+    fn html_preview_escapes_symbol_names() {
+        let nodes = vec!["<img src=x onerror=alert(1)>".to_string()];
+        let meta = HashMap::new();
+        let diagram = render_mermaid(&nodes, &[], &meta, ExportGroupBy::None);
+        let html = render_html_preview(&nodes, &[], &meta, &diagram, "s", ExportGroupBy::None);
+        assert!(!html.contains("<img src=x"));
+        assert!(html.contains("&lt;img src=x"));
+    }
 
     #[test]
     fn test_path_rules() {

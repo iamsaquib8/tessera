@@ -223,6 +223,22 @@ fn export_renders_mermaid() {
 }
 
 #[test]
+fn export_html_preview_loads_nothing_from_the_network() {
+    let temp = repo("typescript");
+    let out = temp.path().join("preview.html");
+    tessera(temp.path())
+        .args(["export", "--from", "loadUser", "--html-out"])
+        .arg(&out)
+        .assert()
+        .success();
+    let page = fs::read_to_string(&out).unwrap();
+    assert!(page.contains("loadUser"), "preview should list the symbol");
+    for needle in ["http://", "https://", "<script src", "<link", "import "] {
+        assert!(!page.contains(needle), "preview contains `{needle}`");
+    }
+}
+
+#[test]
 fn completions_zsh_lists_commands() {
     let temp = TempDir::new().unwrap();
     tessera(temp.path())

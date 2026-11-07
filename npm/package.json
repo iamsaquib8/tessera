@@ -7,7 +7,9 @@
   },
   "files": [
     "bin/tessera.js",
-    "lib/resolve.js"
+    "lib/resolve.js",
+    "LICENSE",
+    "THIRD-PARTY-NOTICES"
   ],
   "keywords": [
     "mcp",
