@@ -190,7 +190,7 @@ gets from install to a hook holding their agent in under five minutes.
   large-repository wins (index-backed lookups, faster `context`), a public
   demo, the eval report on the docs site, a release candidate to the beta
   group first. The plan is in
-  [docs/plans/2026-11-07-public-launch.md](docs/plans/2026-11-07-public-launch.md).
+  [docs/design/2026-11-07-public-launch.md](docs/design/2026-11-07-public-launch.md).
 
 **Gate:** a reproducible report per agent and language (breaks caught at
 "done" with and without Tessera, false blocks per 100 edits, time added per
