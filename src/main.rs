@@ -603,6 +603,10 @@ fn run() -> Result<u8> {
             out.print(&hook::events::stats(index_dir, &ws.root, days, now))?;
         }
         Commands::Baseline { prune } => {
+            if prune {
+                tessera_codegraph::query::waivers::readable_baseline(&ws.root)
+                    .map_err(|message| usage(&message))?;
+            }
             let Some(index) = open_fresh(&ws, &out)? else {
                 return Ok(0);
             };
@@ -783,7 +787,7 @@ fn run() -> Result<u8> {
                 } else {
                     query::Changes::WorkingTree
                 };
-                let report = index.report(&changes)?;
+                let report = index.report_with(&changes, !no_baseline)?;
                 if out.json {
                     out.print_json(&report)?;
                 } else {

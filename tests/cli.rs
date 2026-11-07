@@ -618,6 +618,49 @@ fn project_config_can_be_committed() {
     assert!(ignored(".tessera/tessera.db"));
 }
 
+#[test]
+fn blast_diff_does_not_depend_on_the_users_diff_prefix_config() {
+    for config in [
+        &[][..],
+        &[("diff.mnemonicPrefix", "true")][..],
+        &[("diff.noprefix", "true")][..],
+        &[("diff.srcPrefix", "left/"), ("diff.dstPrefix", "right/")][..],
+    ] {
+        let temp = repo("typescript");
+        git_in(temp.path(), &["init", "-q"]);
+        git_in(temp.path(), &["add", "."]);
+        git_in(temp.path(), &["commit", "-q", "-m", "one"]);
+        for (key, value) in config {
+            git_in(temp.path(), &["config", key, value]);
+        }
+        fs::write(temp.path().join("src/util/format.ts"), FORMAT_V2).unwrap();
+        tessera(temp.path())
+            .args(["blast", "--diff", "HEAD"])
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("formatName"));
+    }
+}
+
+#[test]
+fn blast_diff_keeps_a_top_level_directory_named_a_or_b() {
+    let temp = TempDir::new().unwrap();
+    let dir = temp.path().join("a");
+    fs::create_dir_all(&dir).unwrap();
+    fs::write(dir.join("m.ts"), "export function one() { return 1; }\n").unwrap();
+    git_in(temp.path(), &["init", "-q"]);
+    git_in(temp.path(), &["config", "diff.noprefix", "true"]);
+    git_in(temp.path(), &["add", "."]);
+    git_in(temp.path(), &["commit", "-q", "-m", "one"]);
+    fs::write(dir.join("m.ts"), "export function one() { return 2; }\n").unwrap();
+    let output = tessera(temp.path())
+        .args(["--json", "blast", "--diff", "HEAD"])
+        .output()
+        .unwrap();
+    let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(value["changed"][0]["name"], "one", "{value}");
+}
+
 /// `a` (lines 1-20), `b` (21-30) and `c` (31-40), after `header` and before `trailer`.
 fn m_ts(header: &str, trailer: &str) -> String {
     let function = |name: &str, body_lines: usize| {
