@@ -496,7 +496,10 @@ fn status_reports_external_shadow_through_parent_directory_component() {
         .join(outside.path().file_name().unwrap());
     let original_path = std::env::var("PATH").unwrap_or_default();
     tessera(root.path())
-        .env("PATH", format!("{}:{original_path}", through_parent.display()))
+        .env(
+            "PATH",
+            format!("{}:{original_path}", through_parent.display()),
+        )
         .arg("status")
         .assert()
         .success()
@@ -533,9 +536,7 @@ fn status_skips_non_executable_file_before_external_shadow() {
         .assert()
         .success()
         .stdout(predicate::str::contains(fake.to_string_lossy().as_ref()))
-        .stdout(predicate::str::contains(
-            not_executable.to_string_lossy().as_ref(),
-        ).not());
+        .stdout(predicate::str::contains(not_executable.to_string_lossy().as_ref()).not());
     assert!(!marker.exists(), "status executed a PATH-discovered binary");
 }
 
