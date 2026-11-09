@@ -440,7 +440,10 @@ fn status_ignores_empty_relative_and_repository_path_entries() {
         .arg("status")
         .assert()
         .success();
-    assert!(!marker.exists(), "status ran a repository-local PATH executable");
+    assert!(
+        !marker.exists(),
+        "status ran a repository-local PATH executable"
+    );
 }
 
 #[cfg(unix)]
@@ -462,7 +465,10 @@ fn status_reports_external_shadow_without_executing_it() {
     fs::set_permissions(&fake, fs::Permissions::from_mode(0o755)).unwrap();
     let original_path = std::env::var("PATH").unwrap_or_default();
     tessera(root.path())
-        .env("PATH", format!("{}:{}", outside.path().display(), original_path))
+        .env(
+            "PATH",
+            format!("{}:{}", outside.path().display(), original_path),
+        )
         .arg("status")
         .assert()
         .success()
