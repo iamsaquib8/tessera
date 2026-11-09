@@ -1,6 +1,8 @@
 use std::env;
 use std::fmt;
-use std::path::{Path, PathBuf};
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
+use std::path::{Component, Path, PathBuf};
 
 use anyhow::Result;
 use rusqlite::Connection;
@@ -168,6 +170,20 @@ fn hints(status: &StatusResult) -> Vec<String> {
     hints
 }
 
+fn lexical_normalize(path: &Path) -> PathBuf {
+    let mut normalized = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::ParentDir => {
+                normalized.pop();
+            }
+            Component::CurDir => {}
+            other => normalized.push(other.as_os_str()),
+        }
+    }
+    normalized
+}
+
 fn shadowing_binaries(current: Option<&Path>, root: &Path) -> Vec<ShadowBinary> {
     let exe_name = if cfg!(windows) {
         "tessera.exe"
@@ -188,10 +204,18 @@ fn shadowing_binaries(current: Option<&Path>, root: &Path) -> Vec<ShadowBinary> 
         if !candidate.is_file() {
             continue;
         }
+        #[cfg(unix)]
+        if !candidate
+            .metadata()
+            .is_ok_and(|file| file.permissions().mode() & 0o111 != 0)
+        {
+            continue;
+        }
         let canonical = candidate.canonicalize().unwrap_or(candidate.clone());
         // A repository may contain a deliberately malicious or test executable.
-        // Compare both paths to catch symlinks into or out of the root.
-        if candidate.starts_with(&root) || canonical.starts_with(&root) {
+        // Check both lexical containment (including symlinks out) and resolved
+        // containment (including symlinks in), without misclassifying parent paths.
+        if lexical_normalize(&candidate).starts_with(&root) || canonical.starts_with(&root) {
             continue;
         }
         if Some(canonical.as_path()) == current {
