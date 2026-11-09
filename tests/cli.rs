@@ -417,6 +417,63 @@ fn raising_max_file_bytes_reindexes_skipped_files() {
 
 #[cfg(unix)]
 #[test]
+fn status_ignores_empty_relative_and_repository_path_entries() {
+    use std::os::unix::fs::PermissionsExt;
+    let root = repo("typescript");
+    let marker = root.path().join("executed");
+    fs::create_dir_all(root.path().join("bin")).unwrap();
+    for candidate in [root.path().join("tessera"), root.path().join("bin/tessera")] {
+        fs::write(
+            &candidate,
+            format!(
+                "#!/bin/sh\ntouch '{}'\necho tessera 0.0.1\n",
+                marker.display()
+            ),
+        )
+        .unwrap();
+        fs::set_permissions(&candidate, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let original_path = std::env::var("PATH").unwrap_or_default();
+    let path = format!(":{}:bin:{}", root.path().display(), original_path);
+    tessera(root.path())
+        .env("PATH", path)
+        .arg("status")
+        .assert()
+        .success();
+    assert!(!marker.exists(), "status ran a repository-local PATH executable");
+}
+
+#[cfg(unix)]
+#[test]
+fn status_reports_external_shadow_without_executing_it() {
+    use std::os::unix::fs::PermissionsExt;
+    let root = repo("typescript");
+    let outside = TempDir::new().unwrap();
+    let marker = outside.path().join("executed");
+    let fake = outside.path().join("tessera");
+    fs::write(
+        &fake,
+        format!(
+            "#!/bin/sh\ntouch '{}'\necho tessera 0.0.1\n",
+            marker.display()
+        ),
+    )
+    .unwrap();
+    fs::set_permissions(&fake, fs::Permissions::from_mode(0o755)).unwrap();
+    let original_path = std::env::var("PATH").unwrap_or_default();
+    tessera(root.path())
+        .env("PATH", format!("{}:{}", outside.path().display(), original_path))
+        .arg("status")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(fake.to_string_lossy().as_ref()))
+        .stdout(predicate::str::contains("not this binary"))
+        .stdout(predicate::str::contains("not checked"));
+    assert!(!marker.exists(), "status executed a PATH-discovered binary");
+}
+
+#[cfg(unix)]
+#[test]
 fn queries_do_not_run_other_binaries_on_path() {
     use std::os::unix::fs::PermissionsExt;
     let temp = repo("typescript");

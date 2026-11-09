@@ -1,7 +1,6 @@
 use std::env;
 use std::fmt;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 use anyhow::Result;
 use rusqlite::Connection;
@@ -48,7 +47,8 @@ pub fn run(ws: &Workspace) -> Result<StatusResult> {
     let binary = env::current_exe()
         .ok()
         .and_then(|exe| exe.canonicalize().ok());
-    let shadowing = shadowing_binaries(binary.as_deref());
+    // PATH discovery is reserved for the explicit CLI status command.
+    let shadowing = Vec::new();
     let mut status = StatusResult {
         version: env!("CARGO_PKG_VERSION").to_string(),
         binary,
@@ -73,6 +73,15 @@ pub fn run(ws: &Workspace) -> Result<StatusResult> {
     } else if let Ok(conn) = db::open_ro(&ws.db_path) {
         fill_counts(&mut status, &conn)?;
     }
+    status.hints = hints(&status);
+    Ok(status)
+}
+
+/// The interactive CLI may report PATH shadowing; MCP and UI status never
+/// inspect PATH or trigger another executable.
+pub fn run_with_shadowing(ws: &Workspace) -> Result<StatusResult> {
+    let mut status = run(ws)?;
+    status.shadowing = shadowing_binaries(status.binary.as_deref(), &ws.root);
     status.hints = hints(&status);
     Ok(status)
 }
@@ -151,7 +160,7 @@ fn hints(status: &StatusResult) -> Vec<String> {
     }
     for shadow in &status.shadowing {
         hints.push(format!(
-            "`tessera` on PATH resolves to {} ({}), not this binary; agents may run the older one.",
+            "`tessera` on PATH resolves to {} ({}), not this binary; check which executable your shell selects.",
             shadow.path.display(),
             shadow.version
         ));
@@ -159,7 +168,7 @@ fn hints(status: &StatusResult) -> Vec<String> {
     hints
 }
 
-fn shadowing_binaries(current: Option<&Path>) -> Vec<ShadowBinary> {
+fn shadowing_binaries(current: Option<&Path>, root: &Path) -> Vec<ShadowBinary> {
     let exe_name = if cfg!(windows) {
         "tessera.exe"
     } else {
@@ -168,31 +177,34 @@ fn shadowing_binaries(current: Option<&Path>) -> Vec<ShadowBinary> {
     let Some(path_var) = env::var_os("PATH") else {
         return Vec::new();
     };
+    let root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
     let mut found = Vec::new();
     for dir in env::split_paths(&path_var) {
+        // Empty and relative entries resolve against the current directory.
+        if dir.as_os_str().is_empty() || !dir.is_absolute() {
+            continue;
+        }
         let candidate = dir.join(exe_name);
         if !candidate.is_file() {
             continue;
         }
         let canonical = candidate.canonicalize().unwrap_or(candidate.clone());
+        // A repository may contain a deliberately malicious or test executable.
+        // Compare both paths to catch symlinks into or out of the root.
+        if candidate.starts_with(&root) || canonical.starts_with(&root) {
+            continue;
+        }
         if Some(canonical.as_path()) == current {
             break;
         }
         if found.iter().any(|s: &ShadowBinary| s.path == canonical) {
             continue;
         }
-        let version = Command::new(&canonical)
-            .arg("--version")
-            .output()
-            .ok()
-            .map(|out| String::from_utf8_lossy(&out.stdout).trim().to_string())
-            .unwrap_or_else(|| "unknown version".to_string());
-        if version.trim_start_matches("tessera ") != env!("CARGO_PKG_VERSION") {
-            found.push(ShadowBinary {
-                path: canonical,
-                version,
-            });
-        }
+        // Never run a PATH-discovered executable from a read-only status call.
+        found.push(ShadowBinary {
+            path: canonical,
+            version: "not checked".to_string(),
+        });
         break;
     }
     found
