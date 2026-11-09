@@ -543,6 +543,7 @@ fn main() -> ExitCode {
     }
 }
 
+/// Parse CLI options and dispatch the requested command, returning its exit code.
 fn run() -> Result<u8> {
     let cli = Cli::parse();
     if let Commands::Hook { agent, event } = &cli.command {

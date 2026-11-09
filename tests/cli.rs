@@ -415,6 +415,7 @@ fn raising_max_file_bytes_reindexes_skipped_files() {
         .stdout(predicate::str::contains("src/big.ts"));
 }
 
+/// Ignore unsafe or repository-local PATH entries without executing them.
 #[cfg(unix)]
 #[test]
 fn status_ignores_empty_relative_and_repository_path_entries() {
@@ -446,6 +447,7 @@ fn status_ignores_empty_relative_and_repository_path_entries() {
     );
 }
 
+/// Report an external PATH candidate without running its version command.
 #[cfg(unix)]
 #[test]
 fn status_reports_external_shadow_without_executing_it() {
@@ -535,6 +537,7 @@ fn status_skips_directory_alias_into_repository_even_if_file_links_out() {
     assert!(!marker.exists(), "status executed a PATH-discovered binary");
 }
 
+/// A lexical parent component outside the repository remains external.
 #[cfg(unix)]
 #[test]
 fn status_reports_external_shadow_through_parent_directory_component() {
@@ -564,6 +567,7 @@ fn status_reports_external_shadow_through_parent_directory_component() {
     assert!(!marker.exists(), "status executed a PATH-discovered binary");
 }
 
+/// Skip a non-executable PATH candidate before reporting an external binary.
 #[cfg(unix)]
 #[test]
 fn status_skips_non_executable_file_before_external_shadow() {
