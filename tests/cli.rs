@@ -415,6 +415,192 @@ fn raising_max_file_bytes_reindexes_skipped_files() {
         .stdout(predicate::str::contains("src/big.ts"));
 }
 
+/// Ignore unsafe or repository-local PATH entries without executing them.
+#[cfg(unix)]
+#[test]
+fn status_ignores_empty_relative_and_repository_path_entries() {
+    use std::os::unix::fs::PermissionsExt;
+    let root = repo("typescript");
+    let marker = root.path().join("executed");
+    fs::create_dir_all(root.path().join("bin")).unwrap();
+    for candidate in [root.path().join("tessera"), root.path().join("bin/tessera")] {
+        fs::write(
+            &candidate,
+            format!(
+                "#!/bin/sh\ntouch '{}'\necho tessera 0.0.1\n",
+                marker.display()
+            ),
+        )
+        .unwrap();
+        fs::set_permissions(&candidate, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let original_path = std::env::var("PATH").unwrap_or_default();
+    let path = format!(":{}:bin:{}", root.path().display(), original_path);
+    tessera(root.path())
+        .env("PATH", path)
+        .arg("status")
+        .assert()
+        .success();
+    assert!(
+        !marker.exists(),
+        "status ran a repository-local PATH executable"
+    );
+}
+
+/// Report an external PATH candidate without running its version command.
+#[cfg(unix)]
+#[test]
+fn status_reports_external_shadow_without_executing_it() {
+    use std::os::unix::fs::PermissionsExt;
+    let root = repo("typescript");
+    let outside = TempDir::new().unwrap();
+    let marker = outside.path().join("executed");
+    let fake = outside.path().join("tessera");
+    fs::write(
+        &fake,
+        format!(
+            "#!/bin/sh\ntouch '{}'\necho tessera 0.0.1\n",
+            marker.display()
+        ),
+    )
+    .unwrap();
+    fs::set_permissions(&fake, fs::Permissions::from_mode(0o755)).unwrap();
+    let original_path = std::env::var("PATH").unwrap_or_default();
+    tessera(root.path())
+        .env(
+            "PATH",
+            format!("{}:{}", outside.path().display(), original_path),
+        )
+        .arg("status")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(fake.to_string_lossy().as_ref()))
+        .stdout(predicate::str::contains("not this binary"))
+        .stdout(predicate::str::contains("not checked"));
+    assert!(!marker.exists(), "status executed a PATH-discovered binary");
+}
+
+/// A repository-local alias to this executable must stop PATH scanning.
+#[cfg(unix)]
+#[test]
+fn status_stops_at_current_binary_before_skipping_repository_entries() {
+    use std::os::unix::fs::{symlink, PermissionsExt};
+    let root = repo("typescript");
+    let repo_bin = root.path().join("bin");
+    fs::create_dir_all(&repo_bin).unwrap();
+    symlink(env!("CARGO_BIN_EXE_tessera"), repo_bin.join("tessera")).unwrap();
+
+    let outside = TempDir::new().unwrap();
+    let fake = outside.path().join("tessera");
+    let marker = outside.path().join("executed");
+    fs::write(&fake, format!("#!/bin/sh\ntouch '{}'\n", marker.display())).unwrap();
+    fs::set_permissions(&fake, fs::Permissions::from_mode(0o755)).unwrap();
+
+    tessera(root.path())
+        .env(
+            "PATH",
+            format!("{}:{}", repo_bin.display(), outside.path().display()),
+        )
+        .arg("status")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("not this binary").not());
+    assert!(!marker.exists(), "status executed a PATH-discovered binary");
+}
+
+/// A directory alias into the repository stays local even when its file links out.
+#[cfg(unix)]
+#[test]
+fn status_skips_directory_alias_into_repository_even_if_file_links_out() {
+    use std::os::unix::fs::{symlink, PermissionsExt};
+    let root = repo("typescript");
+    let repo_bin = root.path().join("bin");
+    fs::create_dir_all(&repo_bin).unwrap();
+
+    let outside = TempDir::new().unwrap();
+    let fake = outside.path().join("tessera");
+    let marker = outside.path().join("executed");
+    fs::write(&fake, format!("#!/bin/sh\ntouch '{}'\n", marker.display())).unwrap();
+    fs::set_permissions(&fake, fs::Permissions::from_mode(0o755)).unwrap();
+    symlink(&fake, repo_bin.join("tessera")).unwrap();
+
+    let alias_parent = TempDir::new().unwrap();
+    let alias = alias_parent.path().join("bin-alias");
+    symlink(&repo_bin, &alias).unwrap();
+
+    tessera(root.path())
+        .env("PATH", &alias)
+        .arg("status")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("not this binary").not());
+    assert!(!marker.exists(), "status executed a PATH-discovered binary");
+}
+
+/// A lexical parent component outside the repository remains external.
+#[cfg(unix)]
+#[test]
+fn status_reports_external_shadow_through_parent_directory_component() {
+    use std::os::unix::fs::PermissionsExt;
+    let root = repo("typescript");
+    let outside = TempDir::new_in(root.path().parent().unwrap()).unwrap();
+    let marker = outside.path().join("executed");
+    let fake = outside.path().join("tessera");
+    fs::write(&fake, format!("#!/bin/sh\ntouch '{}'\n", marker.display())).unwrap();
+    fs::set_permissions(&fake, fs::Permissions::from_mode(0o755)).unwrap();
+
+    // The raw path begins inside the repository but resolves to its sibling.
+    let through_parent = root
+        .path()
+        .join("..")
+        .join(outside.path().file_name().unwrap());
+    let original_path = std::env::var("PATH").unwrap_or_default();
+    tessera(root.path())
+        .env(
+            "PATH",
+            format!("{}:{original_path}", through_parent.display()),
+        )
+        .arg("status")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(fake.to_string_lossy().as_ref()));
+    assert!(!marker.exists(), "status executed a PATH-discovered binary");
+}
+
+/// Skip a non-executable PATH candidate before reporting an external binary.
+#[cfg(unix)]
+#[test]
+fn status_skips_non_executable_file_before_external_shadow() {
+    use std::os::unix::fs::PermissionsExt;
+    let root = repo("typescript");
+    let ignored = TempDir::new().unwrap();
+    let outside = TempDir::new().unwrap();
+    let not_executable = ignored.path().join("tessera");
+    fs::write(&not_executable, "#!/bin/sh\nexit 1\n").unwrap();
+    fs::set_permissions(&not_executable, fs::Permissions::from_mode(0o644)).unwrap();
+
+    let marker = outside.path().join("executed");
+    let fake = outside.path().join("tessera");
+    fs::write(&fake, format!("#!/bin/sh\ntouch '{}'\n", marker.display())).unwrap();
+    fs::set_permissions(&fake, fs::Permissions::from_mode(0o755)).unwrap();
+    let original_path = std::env::var("PATH").unwrap_or_default();
+    tessera(root.path())
+        .env(
+            "PATH",
+            format!(
+                "{}:{}:{original_path}",
+                ignored.path().display(),
+                outside.path().display()
+            ),
+        )
+        .arg("status")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(fake.to_string_lossy().as_ref()))
+        .stdout(predicate::str::contains(not_executable.to_string_lossy().as_ref()).not());
+    assert!(!marker.exists(), "status executed a PATH-discovered binary");
+}
+
 #[cfg(unix)]
 #[test]
 fn queries_do_not_run_other_binaries_on_path() {

@@ -1,7 +1,8 @@
 use std::env;
 use std::fmt;
-use std::path::{Path, PathBuf};
-use std::process::Command;
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
+use std::path::{Component, Path, PathBuf};
 
 use anyhow::Result;
 use rusqlite::Connection;
@@ -43,12 +44,14 @@ pub struct StatusResult {
     pub hints: Vec<String>,
 }
 
+/// Build a read-only status snapshot without inspecting or executing PATH entries.
 pub fn run(ws: &Workspace) -> Result<StatusResult> {
     let freshness = fresh::check(ws)?;
     let binary = env::current_exe()
         .ok()
         .and_then(|exe| exe.canonicalize().ok());
-    let shadowing = shadowing_binaries(binary.as_deref());
+    // PATH discovery is reserved for the explicit CLI status command.
+    let shadowing = Vec::new();
     let mut status = StatusResult {
         version: env!("CARGO_PKG_VERSION").to_string(),
         binary,
@@ -77,6 +80,16 @@ pub fn run(ws: &Workspace) -> Result<StatusResult> {
     Ok(status)
 }
 
+/// The interactive CLI may report PATH shadowing; MCP and UI status never
+/// inspect PATH or trigger another executable.
+pub fn run_with_shadowing(ws: &Workspace) -> Result<StatusResult> {
+    let mut status = run(ws)?;
+    status.shadowing = shadowing_binaries(status.binary.as_deref(), &ws.root);
+    status.hints = hints(&status);
+    Ok(status)
+}
+
+/// Populate index counts and the most recent resolution summary from the database.
 fn fill_counts(status: &mut StatusResult, conn: &Connection) -> Result<()> {
     status.schema = db::schema_version(conn)?;
     status.files = db::count_files(conn)?;
@@ -96,6 +109,7 @@ fn fill_counts(status: &mut StatusResult, conn: &Connection) -> Result<()> {
     Ok(())
 }
 
+/// Return indexed file counts grouped by language, largest groups first.
 fn language_counts(conn: &Connection) -> Result<Vec<LanguageCount>> {
     let mut stmt =
         conn.prepare("SELECT language, COUNT(*) FROM files GROUP BY language ORDER BY 2 DESC")?;
@@ -108,6 +122,7 @@ fn language_counts(conn: &Connection) -> Result<Vec<LanguageCount>> {
     Ok(rows.collect::<rusqlite::Result<_>>()?)
 }
 
+/// Explain stale or missing index state and any safely observed PATH shadowing.
 fn hints(status: &StatusResult) -> Vec<String> {
     let mut hints = Vec::new();
     match status.freshness {
@@ -151,7 +166,7 @@ fn hints(status: &StatusResult) -> Vec<String> {
     }
     for shadow in &status.shadowing {
         hints.push(format!(
-            "`tessera` on PATH resolves to {} ({}), not this binary; agents may run the older one.",
+            "`tessera` on PATH resolves to {} ({}), not this binary; check which executable your shell selects.",
             shadow.path.display(),
             shadow.version
         ));
@@ -159,7 +174,24 @@ fn hints(status: &StatusResult) -> Vec<String> {
     hints
 }
 
-fn shadowing_binaries(current: Option<&Path>) -> Vec<ShadowBinary> {
+/// Collapse lexical `.` and `..` components without following filesystem symlinks.
+fn lexical_normalize(path: &Path) -> PathBuf {
+    let mut normalized = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::ParentDir => {
+                normalized.pop();
+            }
+            Component::CurDir => {}
+            other => normalized.push(other.as_os_str()),
+        }
+    }
+    normalized
+}
+
+/// Report an external PATH candidate before the running binary without executing it.
+/// Repository-local entries are ignored, including directory and file symlinks.
+fn shadowing_binaries(current: Option<&Path>, root: &Path) -> Vec<ShadowBinary> {
     let exe_name = if cfg!(windows) {
         "tessera.exe"
     } else {
@@ -168,31 +200,51 @@ fn shadowing_binaries(current: Option<&Path>) -> Vec<ShadowBinary> {
     let Some(path_var) = env::var_os("PATH") else {
         return Vec::new();
     };
+    let root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
     let mut found = Vec::new();
     for dir in env::split_paths(&path_var) {
+        // Empty and relative entries resolve against the current directory.
+        if dir.as_os_str().is_empty() || !dir.is_absolute() {
+            continue;
+        }
         let candidate = dir.join(exe_name);
         if !candidate.is_file() {
             continue;
         }
+        #[cfg(unix)]
+        if !candidate
+            .metadata()
+            .is_ok_and(|file| file.permissions().mode() & 0o111 != 0)
+        {
+            continue;
+        }
         let canonical = candidate.canonicalize().unwrap_or(candidate.clone());
+        // The current executable ends shell shadowing regardless of whether its
+        // PATH entry is located inside the repository.
         if Some(canonical.as_path()) == current {
             break;
+        }
+        // A repository may contain a deliberately malicious or test executable.
+        // Check lexical containment, the resolved executable, and the resolved
+        // parent directory independently: the file itself may link outside.
+        let parent_in_repo = dir
+            .canonicalize()
+            .ok()
+            .is_some_and(|parent| parent.join(exe_name).starts_with(&root));
+        if lexical_normalize(&candidate).starts_with(&root)
+            || canonical.starts_with(&root)
+            || parent_in_repo
+        {
+            continue;
         }
         if found.iter().any(|s: &ShadowBinary| s.path == canonical) {
             continue;
         }
-        let version = Command::new(&canonical)
-            .arg("--version")
-            .output()
-            .ok()
-            .map(|out| String::from_utf8_lossy(&out.stdout).trim().to_string())
-            .unwrap_or_else(|| "unknown version".to_string());
-        if version.trim_start_matches("tessera ") != env!("CARGO_PKG_VERSION") {
-            found.push(ShadowBinary {
-                path: canonical,
-                version,
-            });
-        }
+        // Never run a PATH-discovered executable from a read-only status call.
+        found.push(ShadowBinary {
+            path: canonical,
+            version: "not checked".to_string(),
+        });
         break;
     }
     found

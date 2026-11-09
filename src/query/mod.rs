@@ -52,6 +52,7 @@ pub use refs::run as refs;
 pub use refs::run_at as refs_at;
 pub use search::run as search;
 pub use status::run as status;
+pub use status::run_with_shadowing as status_with_shadowing;
 pub use verify::run as verify;
 pub use verify::run_junit as verify_junit;
 

@@ -543,6 +543,7 @@ fn main() -> ExitCode {
     }
 }
 
+/// Parse CLI options and dispatch the requested command, returning its exit code.
 fn run() -> Result<u8> {
     let cli = Cli::parse();
     if let Commands::Hook { agent, event } = &cli.command {
@@ -594,7 +595,7 @@ fn run() -> Result<u8> {
             })?;
             return run_init(&plan, yes, dry_run, &out);
         }
-        Commands::Status => out.print(&query::status(&ws)?)?,
+        Commands::Status => out.print(&query::status_with_shadowing(&ws)?)?,
         Commands::Stats { days } => {
             let now = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
