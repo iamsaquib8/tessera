@@ -478,6 +478,63 @@ fn status_reports_external_shadow_without_executing_it() {
     assert!(!marker.exists(), "status executed a PATH-discovered binary");
 }
 
+/// A repository-local alias to this executable must stop PATH scanning.
+#[cfg(unix)]
+#[test]
+fn status_stops_at_current_binary_before_skipping_repository_entries() {
+    use std::os::unix::fs::{symlink, PermissionsExt};
+    let root = repo("typescript");
+    let repo_bin = root.path().join("bin");
+    fs::create_dir_all(&repo_bin).unwrap();
+    symlink(env!("CARGO_BIN_EXE_tessera"), repo_bin.join("tessera")).unwrap();
+
+    let outside = TempDir::new().unwrap();
+    let fake = outside.path().join("tessera");
+    let marker = outside.path().join("executed");
+    fs::write(&fake, format!("#!/bin/sh\ntouch '{}'\n", marker.display())).unwrap();
+    fs::set_permissions(&fake, fs::Permissions::from_mode(0o755)).unwrap();
+
+    tessera(root.path())
+        .env(
+            "PATH",
+            format!("{}:{}", repo_bin.display(), outside.path().display()),
+        )
+        .arg("status")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("not this binary").not());
+    assert!(!marker.exists(), "status executed a PATH-discovered binary");
+}
+
+/// A directory alias into the repository stays local even when its file links out.
+#[cfg(unix)]
+#[test]
+fn status_skips_directory_alias_into_repository_even_if_file_links_out() {
+    use std::os::unix::fs::{symlink, PermissionsExt};
+    let root = repo("typescript");
+    let repo_bin = root.path().join("bin");
+    fs::create_dir_all(&repo_bin).unwrap();
+
+    let outside = TempDir::new().unwrap();
+    let fake = outside.path().join("tessera");
+    let marker = outside.path().join("executed");
+    fs::write(&fake, format!("#!/bin/sh\ntouch '{}'\n", marker.display())).unwrap();
+    fs::set_permissions(&fake, fs::Permissions::from_mode(0o755)).unwrap();
+    symlink(&fake, repo_bin.join("tessera")).unwrap();
+
+    let alias_parent = TempDir::new().unwrap();
+    let alias = alias_parent.path().join("bin-alias");
+    symlink(&repo_bin, &alias).unwrap();
+
+    tessera(root.path())
+        .env("PATH", &alias)
+        .arg("status")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("not this binary").not());
+    assert!(!marker.exists(), "status executed a PATH-discovered binary");
+}
+
 #[cfg(unix)]
 #[test]
 fn status_reports_external_shadow_through_parent_directory_component() {

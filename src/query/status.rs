@@ -44,6 +44,7 @@ pub struct StatusResult {
     pub hints: Vec<String>,
 }
 
+/// Build a read-only status snapshot without inspecting or executing PATH entries.
 pub fn run(ws: &Workspace) -> Result<StatusResult> {
     let freshness = fresh::check(ws)?;
     let binary = env::current_exe()
@@ -88,6 +89,7 @@ pub fn run_with_shadowing(ws: &Workspace) -> Result<StatusResult> {
     Ok(status)
 }
 
+/// Populate index counts and the most recent resolution summary from the database.
 fn fill_counts(status: &mut StatusResult, conn: &Connection) -> Result<()> {
     status.schema = db::schema_version(conn)?;
     status.files = db::count_files(conn)?;
@@ -107,6 +109,7 @@ fn fill_counts(status: &mut StatusResult, conn: &Connection) -> Result<()> {
     Ok(())
 }
 
+/// Return indexed file counts grouped by language, largest groups first.
 fn language_counts(conn: &Connection) -> Result<Vec<LanguageCount>> {
     let mut stmt =
         conn.prepare("SELECT language, COUNT(*) FROM files GROUP BY language ORDER BY 2 DESC")?;
@@ -119,6 +122,7 @@ fn language_counts(conn: &Connection) -> Result<Vec<LanguageCount>> {
     Ok(rows.collect::<rusqlite::Result<_>>()?)
 }
 
+/// Explain stale or missing index state and any safely observed PATH shadowing.
 fn hints(status: &StatusResult) -> Vec<String> {
     let mut hints = Vec::new();
     match status.freshness {
@@ -170,6 +174,7 @@ fn hints(status: &StatusResult) -> Vec<String> {
     hints
 }
 
+/// Collapse lexical `.` and `..` components without following filesystem symlinks.
 fn lexical_normalize(path: &Path) -> PathBuf {
     let mut normalized = PathBuf::new();
     for component in path.components() {
@@ -184,6 +189,8 @@ fn lexical_normalize(path: &Path) -> PathBuf {
     normalized
 }
 
+/// Report an external PATH candidate before the running binary without executing it.
+/// Repository-local entries are ignored, including directory and file symlinks.
 fn shadowing_binaries(current: Option<&Path>, root: &Path) -> Vec<ShadowBinary> {
     let exe_name = if cfg!(windows) {
         "tessera.exe"
@@ -212,14 +219,23 @@ fn shadowing_binaries(current: Option<&Path>, root: &Path) -> Vec<ShadowBinary> 
             continue;
         }
         let canonical = candidate.canonicalize().unwrap_or(candidate.clone());
-        // A repository may contain a deliberately malicious or test executable.
-        // Check both lexical containment (including symlinks out) and resolved
-        // containment (including symlinks in), without misclassifying parent paths.
-        if lexical_normalize(&candidate).starts_with(&root) || canonical.starts_with(&root) {
-            continue;
-        }
+        // The current executable ends shell shadowing regardless of whether its
+        // PATH entry is located inside the repository.
         if Some(canonical.as_path()) == current {
             break;
+        }
+        // A repository may contain a deliberately malicious or test executable.
+        // Check lexical containment, the resolved executable, and the resolved
+        // parent directory independently: the file itself may link outside.
+        let parent_in_repo = dir
+            .canonicalize()
+            .ok()
+            .is_some_and(|parent| parent.join(exe_name).starts_with(&root));
+        if lexical_normalize(&candidate).starts_with(&root)
+            || canonical.starts_with(&root)
+            || parent_in_repo
+        {
+            continue;
         }
         if found.iter().any(|s: &ShadowBinary| s.path == canonical) {
             continue;
