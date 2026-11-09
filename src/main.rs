@@ -594,7 +594,7 @@ fn run() -> Result<u8> {
             })?;
             return run_init(&plan, yes, dry_run, &out);
         }
-        Commands::Status => out.print(&query::status::run_with_shadowing(&ws)?)?,
+        Commands::Status => out.print(&query::status_with_shadowing(&ws)?)?,
         Commands::Stats { days } => {
             let now = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
