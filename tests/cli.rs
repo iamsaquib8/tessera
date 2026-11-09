@@ -480,6 +480,67 @@ fn status_reports_external_shadow_without_executing_it() {
 
 #[cfg(unix)]
 #[test]
+fn status_reports_external_shadow_through_parent_directory_component() {
+    use std::os::unix::fs::PermissionsExt;
+    let root = repo("typescript");
+    let outside = TempDir::new_in(root.path().parent().unwrap()).unwrap();
+    let marker = outside.path().join("executed");
+    let fake = outside.path().join("tessera");
+    fs::write(&fake, format!("#!/bin/sh\ntouch '{}'\n", marker.display())).unwrap();
+    fs::set_permissions(&fake, fs::Permissions::from_mode(0o755)).unwrap();
+
+    // The raw path begins inside the repository but resolves to its sibling.
+    let through_parent = root
+        .path()
+        .join("..")
+        .join(outside.path().file_name().unwrap());
+    let original_path = std::env::var("PATH").unwrap_or_default();
+    tessera(root.path())
+        .env("PATH", format!("{}:{original_path}", through_parent.display()))
+        .arg("status")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(fake.to_string_lossy().as_ref()));
+    assert!(!marker.exists(), "status executed a PATH-discovered binary");
+}
+
+#[cfg(unix)]
+#[test]
+fn status_skips_non_executable_file_before_external_shadow() {
+    use std::os::unix::fs::PermissionsExt;
+    let root = repo("typescript");
+    let ignored = TempDir::new().unwrap();
+    let outside = TempDir::new().unwrap();
+    let not_executable = ignored.path().join("tessera");
+    fs::write(&not_executable, "#!/bin/sh\nexit 1\n").unwrap();
+    fs::set_permissions(&not_executable, fs::Permissions::from_mode(0o644)).unwrap();
+
+    let marker = outside.path().join("executed");
+    let fake = outside.path().join("tessera");
+    fs::write(&fake, format!("#!/bin/sh\ntouch '{}'\n", marker.display())).unwrap();
+    fs::set_permissions(&fake, fs::Permissions::from_mode(0o755)).unwrap();
+    let original_path = std::env::var("PATH").unwrap_or_default();
+    tessera(root.path())
+        .env(
+            "PATH",
+            format!(
+                "{}:{}:{original_path}",
+                ignored.path().display(),
+                outside.path().display()
+            ),
+        )
+        .arg("status")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(fake.to_string_lossy().as_ref()))
+        .stdout(predicate::str::contains(
+            not_executable.to_string_lossy().as_ref(),
+        ).not());
+    assert!(!marker.exists(), "status executed a PATH-discovered binary");
+}
+
+#[cfg(unix)]
+#[test]
 fn queries_do_not_run_other_binaries_on_path() {
     use std::os::unix::fs::PermissionsExt;
     let temp = repo("typescript");
